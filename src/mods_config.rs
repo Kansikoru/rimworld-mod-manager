@@ -93,12 +93,19 @@ pub fn load_active_mods(config_path: &Path) -> Vec<String> {
 }
 
 pub fn save_active_mods(config_path: &Path, active_mods: &[String]) -> Result<(), String> {
+    let backup_dir = crate::game_install::manager_data_dir().join("backups");
+    save_active_mods_with_backup(config_path, active_mods, &backup_dir)
+}
+
+/// Writes the active list. IDs are written in lower case, the way RimWorld itself writes
+/// them: RimWorld 1.7 compares them case-sensitively, and a mixed-case ID ("Nals.FacialAnimation")
+/// shows the mod in both the enabled and the disabled list in the game.
+pub fn save_active_mods_with_backup(config_path: &Path, active_mods: &[String], backup_dir: &Path) -> Result<(), String> {
     if !config_path.exists() {
         return Err(tr!("Файл не найден: {}", "File not found: {}", config_path.display()));
     }
 
-    let backup_dir = crate::game_install::manager_data_dir().join("backups");
-    backup_config(config_path, &backup_dir, MAX_CONFIG_BACKUPS).map_err(|e| {
+    backup_config(config_path, backup_dir, MAX_CONFIG_BACKUPS).map_err(|e| {
         tr!(
             "Не удалось сделать копию ModsConfig.xml в {}: {}",
             "Could not back up ModsConfig.xml to {}: {}",
@@ -107,10 +114,12 @@ pub fn save_active_mods(config_path: &Path, active_mods: &[String]) -> Result<()
         )
     })?;
 
+
     let mut unique: Vec<String> = Vec::with_capacity(active_mods.len());
     for m in active_mods {
-        if !unique.iter().any(|u| u.eq_ignore_ascii_case(m)) {
-            unique.push(m.clone());
+        let id = m.trim().to_lowercase();
+        if !id.is_empty() && !unique.contains(&id) {
+            unique.push(id);
         }
     }
     let active_mods: &[String] = &unique;
@@ -310,19 +319,24 @@ mod tests {
         let dir = temp_dir("save");
         let cfg = dir.join("ModsConfig.xml");
         std::fs::write(&cfg, SAMPLE).unwrap();
-        let mods: Vec<String> = ["ludeon.rimworld", "brrainz.harmony", "BRRAINZ.HARMONY", "someone.notinstalled"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        save_active_mods(&cfg, &mods).unwrap();
+        let mods: Vec<String> =
+            ["ludeon.rimworld", "brrainz.harmony", "BRRAINZ.HARMONY", "Nals.FacialAnimation", "someone.notinstalled"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+        // Backups go to the test folder, never to the user's real backups.
+        let backups = dir.join("backups");
+        save_active_mods_with_backup(&cfg, &mods, &backups).unwrap();
 
         assert_eq!(
             load_active_mods(&cfg),
-            vec!["ludeon.rimworld", "brrainz.harmony", "someone.notinstalled"]
+            vec!["ludeon.rimworld", "brrainz.harmony", "nals.facialanimation", "someone.notinstalled"],
+            "written in lower case, like the game does"
         );
         let text = std::fs::read_to_string(&cfg).unwrap();
         assert!(text.contains("<knownExpansions>") && text.contains("1.7.4985 rev1269"));
         assert!(!cfg.with_extension("xml.tmp").exists());
+        assert_eq!(std::fs::read_dir(&backups).unwrap().count(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
