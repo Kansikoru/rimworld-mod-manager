@@ -26,6 +26,43 @@ pub fn badge(ui: &mut Ui, text: &str, bg: Color32, fg: Color32) -> Response {
     response
 }
 
+/// Badge pill with an SVG icon (tinted with `fg`) in front of the text.
+pub fn icon_badge(
+    ui: &mut Ui,
+    icon: egui::ImageSource<'static>,
+    text: &str,
+    bg: Color32,
+    fg: Color32,
+) -> Response {
+    let padding = Vec2::new(6.0, 3.0);
+    let icon_size = 11.0;
+    let gap = if text.is_empty() { 0.0 } else { 4.0 };
+    let font_id = egui::FontId::proportional(11.0);
+
+    let galley = ui.painter().layout_no_wrap(text.to_string(), font_id, fg);
+    let content_h = galley.size().y.max(icon_size);
+    let desired_size = Vec2::new(
+        padding.x * 2.0 + icon_size + gap + galley.size().x,
+        padding.y * 2.0 + content_h,
+    );
+
+    let (rect, response) = ui.allocate_exact_size(desired_size, Sense::hover());
+    if ui.is_rect_visible(rect) {
+        ui.painter().rect(rect, Rounding::same(4.0), bg, Stroke::NONE);
+        let icon_rect = egui::Rect::from_min_size(
+            Pos2::new(rect.min.x + padding.x, rect.center().y - icon_size / 2.0),
+            Vec2::splat(icon_size),
+        );
+        egui::Image::new(icon).tint(fg).paint_at(ui, icon_rect);
+        let text_pos = Pos2::new(
+            icon_rect.max.x + gap,
+            rect.center().y - galley.size().y / 2.0,
+        );
+        ui.painter().galley(text_pos, galley, fg);
+    }
+    response
+}
+
 /// Primary button with Cyan / Sky blue glow
 pub fn primary_button(ui: &mut Ui, text: &str) -> Response {
     let padding = Vec2::new(14.0, 7.0);

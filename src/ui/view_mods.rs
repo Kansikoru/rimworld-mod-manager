@@ -71,11 +71,7 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
 
         card_container(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("⚠️")
-                        .size(16.0)
-                        .color(THEME.accent_amber),
-                );
+                ui.add(svg_icon(ICON_STATUS_WARNING, Vec2::splat(18.0), THEME.accent_amber));
                 ui.vertical(|ui| {
                     ui.label(
                         egui::RichText::new(format!(
@@ -105,14 +101,17 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
     // Duplicate copies of the same mod (e.g. Workshop + game Mods folder)
     if !app.duplicate_mods.is_empty() {
         card_container(ui, |ui| {
-            ui.label(
-                egui::RichText::new(fmt(
-                    t.get(TranslationKey::ModsDuplicatesTitle),
-                    &[&app.duplicate_mods.len().to_string()],
-                ))
-                .color(THEME.accent_amber)
-                .strong(),
-            );
+            ui.horizontal(|ui| {
+                ui.add(svg_icon(ICON_STATUS_DUPLICATE, Vec2::splat(18.0), THEME.accent_amber));
+                ui.label(
+                    egui::RichText::new(fmt(
+                        t.get(TranslationKey::ModsDuplicatesTitle),
+                        &[&app.duplicate_mods.len().to_string()],
+                    ))
+                    .color(THEME.accent_amber)
+                    .strong(),
+                );
+            });
             for dup in &app.duplicate_mods {
                 ui.label(
                     egui::RichText::new(format!("{} ({})", dup.name, dup.package_id))
@@ -121,8 +120,7 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
                 );
                 for (origin, dir) in &dup.origins {
                     ui.horizontal(|ui| {
-                        let origin_label = if *origin == ModOrigin::Workshop { "Steam" } else { "Local" };
-                        badge(ui, origin_label, THEME.bg_dark, THEME.text_muted);
+                        origin_badge(ui, *origin);
                         if ui
                             .link(egui::RichText::new(dir.display().to_string()).size(11.0))
                             .clicked()
@@ -219,14 +217,25 @@ fn render_category_filter(app: &mut App, ui: &mut Ui) {
                 continue;
             };
             let selected = app.category_filter.contains(&cat);
-            let text = format!("{} {} ({})", cat.icon(), cat.label(t.language()), n);
-            let (_, fg) = cat.colors();
-            let label = egui::RichText::new(text).color(if selected {
-                Color32::WHITE
+            let (bg, fg) = cat.colors();
+            let fg = Color32::from_rgb(fg[0], fg[1], fg[2]);
+            let chip = egui::Button::image_and_text(
+                svg_icon(category_icon(cat), Vec2::splat(13.0), fg),
+                egui::RichText::new(format!("{} ({})", cat.label(t.language()), n))
+                    .color(fg)
+                    .size(12.0),
+            )
+            .fill(if selected {
+                Color32::from_rgb(bg[0], bg[1], bg[2])
             } else {
-                Color32::from_rgb(fg[0], fg[1], fg[2])
-            });
-            if ui.selectable_label(selected, label).clicked() {
+                THEME.bg_card
+            })
+            .stroke(Stroke::new(
+                1.0,
+                if selected { fg } else { THEME.border_subtle },
+            ))
+            .rounding(Rounding::same(10.0));
+            if ui.add(chip).clicked() {
                 if selected {
                     app.category_filter.remove(&cat);
                 } else {
@@ -241,17 +250,18 @@ fn render_category_filter(app: &mut App, ui: &mut Ui) {
 fn category_badges(ui: &mut Ui, cats: &[ModCategory], t: crate::i18n::I18n, max: usize) {
     for cat in cats.iter().take(max) {
         let (bg, fg) = cat.colors();
-        badge(
+        icon_badge(
             ui,
-            &format!("{} {}", cat.icon(), cat.label(t.language())),
-            Color32::from_rgb(bg[0], bg[1], bg[2]).linear_multiply(0.6),
+            category_icon(*cat),
+            cat.label(t.language()),
+            Color32::from_rgb(bg[0], bg[1], bg[2]),
             Color32::from_rgb(fg[0], fg[1], fg[2]),
         );
     }
     if cats.len() > max {
         let rest: Vec<String> = cats[max..]
             .iter()
-            .map(|c| format!("{} {}", c.icon(), c.label(t.language())))
+            .map(|c| c.label(t.language()).to_string())
             .collect();
         badge(ui, &format!("+{}", cats.len() - max), THEME.bg_dark, THEME.text_muted)
             .on_hover_text(rest.join("\n"));
@@ -272,12 +282,13 @@ fn category_context_menu(
     ui.menu_button(t.get(TranslationKey::CategoriesMenu), |ui| {
         for cat in ModCategory::ALL {
             let mut on = cats.contains(&cat);
-            if ui
-                .checkbox(&mut on, format!("{} {}", cat.icon(), cat.label(t.language())))
-                .changed()
-            {
-                *toggle = Some((pkg_id.to_string(), cat));
-            }
+            let (_, fg) = cat.colors();
+            ui.horizontal(|ui| {
+                ui.add(svg_icon(category_icon(cat), Vec2::splat(13.0), Color32::from_rgb(fg[0], fg[1], fg[2])));
+                if ui.checkbox(&mut on, cat.label(t.language())).changed() {
+                    *toggle = Some((pkg_id.to_string(), cat));
+                }
+            });
         }
         if is_manual {
             ui.separator();
@@ -304,10 +315,40 @@ fn apply_category_actions(app: &mut App, toggle: Option<(String, ModCategory)>, 
 }
 
 /// Helper function to draw a distinctive mod icon badge or real image
+/// "Steam" (Workshop) or "Local" badge with its icon.
+fn origin_badge(ui: &mut Ui, origin: ModOrigin) {
+    let (icon, text) = match origin {
+        ModOrigin::Workshop => (ICON_STATUS_WORKSHOP, "Steam"),
+        ModOrigin::Local => (ICON_STATUS_LOCAL, "Local"),
+    };
+    icon_badge(ui, icon, text, THEME.bg_dark, THEME.text_muted);
+}
+
+/// Icon, background and foreground for a mod without a preview image:
+/// shield for protected content, otherwise the icon of its strongest category.
+fn mod_fallback_icon(
+    is_protected: bool,
+    category: Option<ModCategory>,
+) -> (egui::ImageSource<'static>, Color32, Color32) {
+    if is_protected {
+        return (ICON_SHIELD, Color32::from_rgb(45, 26, 12), Color32::from_rgb(251, 191, 36));
+    }
+    match category {
+        Some(cat) => {
+            let (bg, fg) = cat.colors();
+            (
+                category_icon(cat),
+                Color32::from_rgb(bg[0], bg[1], bg[2]),
+                Color32::from_rgb(fg[0], fg[1], fg[2]),
+            )
+        }
+        None => (ICON_MODS, Color32::from_rgb(20, 28, 44), Color32::from_rgb(148, 163, 184)),
+    }
+}
+
 fn render_mod_icon_pill(
     ui: &mut Ui,
-    pkg_id: &str,
-    is_trans: bool,
+    category: Option<ModCategory>,
     is_protected: bool,
     texture: Option<&egui::TextureHandle>,
 ) {
@@ -317,25 +358,9 @@ fn render_mod_icon_pill(
         return;
     }
 
-    let lower = pkg_id.to_lowercase();
-    let (icon_text, bg_col, fg_col) = if is_protected {
-        ("🛡", Color32::from_rgb(45, 26, 12), Color32::from_rgb(251, 191, 36))
-    } else if lower.contains("harmony") || lower.contains("hugslib") {
-        ("⚙", Color32::from_rgb(15, 35, 65), Color32::from_rgb(56, 189, 248))
-    } else if is_trans || lower.contains("russian") || lower.contains("translation") {
-        ("🌐", Color32::from_rgb(20, 30, 70), Color32::from_rgb(96, 165, 250))
-    } else if lower.contains("combat") || lower.contains("ce") || lower.contains("weapon") {
-        ("⚔", Color32::from_rgb(60, 20, 25), Color32::from_rgb(251, 113, 133))
-    } else if lower.contains("ui") || lower.contains("hud") || lower.contains("camera") {
-        ("🖥", Color32::from_rgb(30, 25, 60), Color32::from_rgb(192, 132, 252))
-    } else if lower.contains("hospitality") || lower.contains("faction") {
-        ("👥", Color32::from_rgb(20, 50, 40), Color32::from_rgb(74, 222, 128))
-    } else {
-        ("📦", Color32::from_rgb(20, 28, 44), Color32::from_rgb(148, 163, 184))
-    };
-
+    let (icon, bg_col, fg_col) = mod_fallback_icon(is_protected, category);
     let frame = egui::Frame {
-        inner_margin: egui::Margin::symmetric(4.0, 2.0),
+        inner_margin: egui::Margin::same(3.0),
         outer_margin: egui::Margin::ZERO,
         rounding: Rounding::same(4.0),
         fill: bg_col,
@@ -343,7 +368,7 @@ fn render_mod_icon_pill(
         shadow: egui::epaint::Shadow::NONE,
     };
     frame.show(ui, |ui| {
-        ui.label(egui::RichText::new(icon_text).size(11.0).color(fg_col));
+        ui.add(svg_icon(icon, Vec2::splat(14.0), fg_col));
     });
 }
 
@@ -501,13 +526,17 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                         );
 
                         // Mod Icon badge
-                        let is_trans = mod_info_opt.map(|m| m.is_translation_mod).unwrap_or(false);
                         let tex_opt = app.mod_textures.get(pkg_id);
                         if tex_opt.is_none() {
                             missing_icons.push((pkg_id.clone(), mod_info_opt.and_then(|m| m.preview_path.clone())));
                         }
                         let texture = tex_opt.and_then(|t| t.as_ref());
-                        render_mod_icon_pill(ui, pkg_id, is_trans, is_protected, texture);
+                        render_mod_icon_pill(
+                            ui,
+                            mod_info_opt.and_then(|m| m.categories.first().copied()),
+                            is_protected,
+                            texture,
+                        );
 
                         // Mod Name (selectable)
                         let label_resp = ui.selectable_label(
@@ -639,14 +668,14 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                         }
                         // Listed in ModsConfig.xml but not found by the scanner: kept on save, not dropped.
                         if mod_info_opt.is_none() {
-                            badge(ui, app.i18n.get(TranslationKey::ModsNotOnDisk), Color32::from_rgb(225, 29, 72).linear_multiply(0.3), Color32::from_rgb(251, 113, 133));
+                            icon_badge(ui, ICON_STATUS_NOT_ON_DISK, app.i18n.get(TranslationKey::ModsNotOnDisk), Color32::from_rgb(0x7F, 0x1D, 0x1D), Color32::from_rgb(0xFE, 0xE2, 0xE2));
                         }
 
                         // Missing or Disabled dependency pill
                         if let Some(prob) = dep_problem {
                             match prob {
                                 DependencyProblem::Disabled { required_id, .. } => {
-                                    badge(ui, app.i18n.get(TranslationKey::ModsDepNotInList), Color32::from_rgb(180, 83, 9).linear_multiply(0.3), Color32::from_rgb(251, 191, 36));
+                                    icon_badge(ui, ICON_STATUS_WARNING, app.i18n.get(TranslationKey::ModsDepNotInList), Color32::from_rgb(0x78, 0x35, 0x0F), Color32::from_rgb(0xFE, 0xF3, 0xC7));
                                     let btn = egui::Button::new(
                                         egui::RichText::new(app.i18n.get(TranslationKey::ModsDepEnable))
                                             .color(Color32::from_rgb(74, 222, 128))
@@ -662,10 +691,10 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                     }
                                 }
                                 DependencyProblem::Missing { .. } => {
-                                    badge(ui, app.i18n.get(TranslationKey::ModsDepNotFound), Color32::from_rgb(225, 29, 72).linear_multiply(0.3), Color32::from_rgb(251, 113, 133));
+                                    icon_badge(ui, ICON_STATUS_MISSING, app.i18n.get(TranslationKey::ModsDepNotFound), Color32::from_rgb(0x7F, 0x1D, 0x1D), Color32::from_rgb(0xFE, 0xE2, 0xE2));
                                 }
                                 DependencyProblem::WrongOrder { .. } => {
-                                    badge(ui, app.i18n.get(TranslationKey::ModsDepOrder), Color32::from_rgb(180, 83, 9).linear_multiply(0.3), Color32::from_rgb(251, 191, 36));
+                                    icon_badge(ui, ICON_SORT, app.i18n.get(TranslationKey::ModsDepOrder), Color32::from_rgb(0x78, 0x35, 0x0F), Color32::from_rgb(0xFE, 0xF3, 0xC7));
                                 }
                             }
                         }
@@ -858,7 +887,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                             missing_icons.push((m.package_id.clone(), m.preview_path.clone()));
                         }
                         let texture = tex_opt.and_then(|t| t.as_ref());
-                        render_mod_icon_pill(ui, &m.package_id, m.is_translation_mod, false, texture);
+                        render_mod_icon_pill(ui, m.categories.first().copied(), false, texture);
 
                         let label_resp = ui.selectable_label(
                             is_selected,
@@ -956,7 +985,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
 
                         category_badges(ui, &m.categories, t, 2);
                         if m.origin == ModOrigin::Workshop {
-                            badge(ui, "Steam", THEME.accent_cyan.linear_multiply(0.2), THEME.accent_cyan);
+                            icon_badge(ui, ICON_STATUS_WORKSHOP, "Steam", THEME.accent_cyan.linear_multiply(0.2), THEME.accent_cyan);
                         }
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1066,14 +1095,9 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
                     ui.add(egui::Image::new(tex).fit_to_exact_size(egui::vec2(64.0, 64.0)));
                 } else {
                     // Fallback block if no image or loading
-                    let (icon_text, bg_col, fg_col) = if is_protected {
-                        ("🛡", Color32::from_rgb(45, 26, 12), Color32::from_rgb(251, 191, 36))
-                    } else if m.is_translation_mod || m.package_id.to_lowercase().contains("russian") {
-                        ("🌐", Color32::from_rgb(20, 30, 70), Color32::from_rgb(96, 165, 250))
-                    } else {
-                        ("📦", Color32::from_rgb(20, 28, 44), Color32::from_rgb(148, 163, 184))
-                    };
-                    
+                    let (icon, bg_col, fg_col) =
+                        mod_fallback_icon(is_protected, m.categories.first().copied());
+
                     let frame = egui::Frame {
                         inner_margin: egui::Margin::ZERO,
                         outer_margin: egui::Margin::ZERO,
@@ -1085,7 +1109,7 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
                     frame.show(ui, |ui| {
                         ui.allocate_ui(egui::vec2(64.0, 64.0), |ui| {
                             ui.centered_and_justified(|ui| {
-                                ui.label(egui::RichText::new(icon_text).size(32.0).color(fg_col));
+                                ui.add(svg_icon(icon, Vec2::splat(32.0), fg_col));
                             });
                         });
                     });
@@ -1103,14 +1127,9 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
                 );
 
                 if is_protected {
-                    badge(ui, app.i18n.get(TranslationKey::ModsBadgeProtected), Color32::from_rgb(107, 33, 168).linear_multiply(0.4), Color32::from_rgb(192, 132, 252));
+                    icon_badge(ui, ICON_SHIELD, app.i18n.get(TranslationKey::ModsBadgeProtected), Color32::from_rgb(107, 33, 168).linear_multiply(0.4), Color32::from_rgb(192, 132, 252));
                 }
-                badge(
-                    ui,
-                    if m.origin == ModOrigin::Workshop { "Steam" } else { "Local" },
-                    THEME.bg_dark,
-                    THEME.text_muted,
-                );
+                origin_badge(ui, m.origin);
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(ref steam_id) = m.steam_item_id {

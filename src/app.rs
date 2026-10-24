@@ -827,8 +827,9 @@ impl eframe::App for App {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 // App Logo / Title
+                ui.add(egui::Image::new(ICON_LOGO).fit_to_exact_size(egui::vec2(24.0, 24.0)));
                 ui.heading(
-                    egui::RichText::new("⚡ RimWorld Mod Manager")
+                    egui::RichText::new("RimWorld Mod Manager")
                         .color(THEME.accent_cyan)
                         .size(17.0)
                         .strong(),

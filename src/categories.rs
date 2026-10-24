@@ -89,22 +89,22 @@ impl ModCategory {
         }
     }
 
-    /// (background, foreground) RGB for the badge.
+    /// (background, foreground) RGB for the badge — from assets/icons_v2/design_tokens.json.
     pub fn colors(&self) -> ([u8; 3], [u8; 3]) {
         match self {
-            ModCategory::Framework => ([30, 58, 138], [191, 219, 254]),
-            ModCategory::QoL => ([22, 78, 99], [165, 243, 252]),
-            ModCategory::Race => ([88, 28, 135], [233, 213, 255]),
-            ModCategory::Faction => ([127, 29, 29], [254, 202, 202]),
-            ModCategory::Building => ([120, 53, 15], [253, 230, 138]),
-            ModCategory::Weapon => ([136, 19, 55], [254, 205, 211]),
-            ModCategory::Apparel => ([112, 26, 117], [245, 208, 254]),
-            ModCategory::Animal => ([20, 83, 45], [187, 247, 208]),
-            ModCategory::Biome => ([6, 78, 59], [167, 243, 208]),
-            ModCategory::Storyteller => ([67, 56, 202], [224, 231, 255]),
-            ModCategory::Patch => ([55, 65, 81], [229, 231, 235]),
-            ModCategory::Retexture => ([131, 24, 67], [251, 207, 232]),
-            ModCategory::Translation => ([30, 64, 175], [147, 197, 253]),
+            ModCategory::Framework => ([0x0C, 0x4A, 0x6E], [0xE0, 0xF2, 0xFE]),
+            ModCategory::QoL => ([0x16, 0x4E, 0x63], [0xCF, 0xFA, 0xFE]),
+            ModCategory::Race => ([0x58, 0x1C, 0x87], [0xE9, 0xD5, 0xFF]),
+            ModCategory::Faction => ([0x7C, 0x2D, 0x12], [0xFF, 0xED, 0xD5]),
+            ModCategory::Building => ([0x1E, 0x3A, 0x8A], [0xDB, 0xEA, 0xFE]),
+            ModCategory::Weapon => ([0x88, 0x13, 0x37], [0xFF, 0xE4, 0xE6]),
+            ModCategory::Apparel => ([0x31, 0x2E, 0x81], [0xE0, 0xE7, 0xFF]),
+            ModCategory::Animal => ([0x71, 0x3F, 0x12], [0xFE, 0xF0, 0x8A]),
+            ModCategory::Biome => ([0x14, 0x53, 0x2D], [0xDC, 0xFC, 0xE7]),
+            ModCategory::Storyteller => ([0x70, 0x1A, 0x75], [0xFA, 0xE8, 0xFF]),
+            ModCategory::Patch => ([0x13, 0x4E, 0x4A], [0xCC, 0xFB, 0xF1]),
+            ModCategory::Retexture => ([0x83, 0x18, 0x43], [0xFC, 0xE7, 0xF3]),
+            ModCategory::Translation => ([0x1E, 0x29, 0x3B], [0xBA, 0xE6, 0xFD]),
         }
     }
 }

@@ -57,11 +57,13 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
         card_container(ui, |ui| {
             ui.horizontal(|ui| {
                 let (icon, color) = if report.has_hard_crash {
-                    ("💥", THEME.accent_rose)
+                    (ICON_STATUS_CRASH, THEME.accent_rose)
                 } else if !report.culprits.is_empty() {
-                    ("⚠️", THEME.accent_amber)
+                    (ICON_STATUS_WARNING, THEME.accent_amber)
+                } else if report.total_errors > 0 {
+                    (ICON_STATUS_ERROR, THEME.accent_amber)
                 } else {
-                    ("✅", THEME.accent_emerald)
+                    (ICON_STATUS_OK, THEME.accent_emerald)
                 };
 
                 let summary_text = if report.has_hard_crash {
@@ -83,7 +85,7 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
                     ],
                 );
 
-                ui.label(egui::RichText::new(icon).size(20.0));
+                ui.add(svg_icon(icon, egui::Vec2::splat(22.0), color));
                 ui.vertical(|ui| {
                     ui.label(
                         egui::RichText::new(summary_text)
