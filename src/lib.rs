@@ -2,6 +2,7 @@ pub mod analyzer;
 pub mod app;
 pub mod cleaner;
 pub mod fonts;
+pub mod game_install;
 pub mod i18n;
 pub mod matcher;
 pub mod models;

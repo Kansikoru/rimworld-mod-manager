@@ -1,6 +1,12 @@
 use crate::models::{is_protected_package_id, ModInfo};
 use crate::steam::{remove_workshop_item_from_acf, unsubscribe_workshop_item_native, SteamPaths};
 
+/// Moves a mod folder to the Windows Recycle Bin so the user can restore it.
+/// Never falls back to permanent deletion.
+pub fn move_mod_dir_to_trash(dir: &std::path::Path) -> Result<(), String> {
+    trash::delete(dir).map_err(|e| format!("Не удалось переместить {:?} в Корзину: {}", dir, e))
+}
+
 #[derive(Debug, Default)]
 pub struct CleanResult {
     pub deleted_count: usize,
@@ -57,16 +63,14 @@ pub fn delete_translation_mods(
             }
         }
 
-        // 3. Delete directory from disk
+        // 3. Move directory to the Recycle Bin
         if m.dir_path.is_dir() {
-            match std::fs::remove_dir_all(&m.dir_path) {
+            match move_mod_dir_to_trash(&m.dir_path) {
                 Ok(_) => {
                     result.deleted_count += 1;
                 }
                 Err(e) => {
-                    result
-                        .errors
-                        .push(format!("Не удалось удалить папку {:?}: {}", m.dir_path, e));
+                    result.errors.push(e);
                     result.failed_count += 1;
                 }
             }
@@ -79,7 +83,7 @@ pub fn delete_translation_mods(
 /// Unsubscribes from a single mod in Steam Workshop and deletes its local folder.
 /// Protects system/DLC mods from deletion.
 pub fn unsubscribe_and_delete_single(m: &ModInfo, steam_paths: &SteamPaths) -> Result<(), String> {
-    if is_protected_package_id(&m.package_id) {
+    if is_protected_package_id(&m.package_id) || m.package_id.to_lowercase().starts_with("ludeon.rimworld") {
         return Err(format!("Защищённый мод '{}' нельзя удалить!", m.package_id));
     }
 
@@ -93,8 +97,7 @@ pub fn unsubscribe_and_delete_single(m: &ModInfo, steam_paths: &SteamPaths) -> R
     }
 
     if m.dir_path.is_dir() {
-        std::fs::remove_dir_all(&m.dir_path)
-            .map_err(|e| format!("Не удалось удалить папку {:?}: {}", m.dir_path, e))?;
+        move_mod_dir_to_trash(&m.dir_path)?;
     }
 
     Ok(())
@@ -131,12 +134,10 @@ pub fn unsubscribe_and_delete_batch(mods: &[&ModInfo], steam_paths: &SteamPaths)
         }
 
         if m.dir_path.is_dir() {
-            match std::fs::remove_dir_all(&m.dir_path) {
+            match move_mod_dir_to_trash(&m.dir_path) {
                 Ok(_) => result.deleted_count += 1,
                 Err(e) => {
-                    result
-                        .errors
-                        .push(format!("Ошибка удаления {:?}: {}", m.dir_path, e));
+                    result.errors.push(e);
                     result.failed_count += 1;
                 }
             }

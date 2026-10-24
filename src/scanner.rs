@@ -72,32 +72,7 @@ pub fn parse_mod_folder(dir: &Path, origin: ModOrigin) -> Option<ModInfo> {
         ModOrigin::Local => None,
     };
 
-    let mut has_defs = false;
-    let mut has_assemblies = false;
-
-    for entry in walkdir::WalkDir::new(dir)
-        .max_depth(4)
-        .into_iter()
-        .flatten()
-    {
-        let path = entry.path();
-        if path.is_file() {
-            if let Some(ext) = path.extension() {
-                if ext.to_string_lossy().eq_ignore_ascii_case("dll") {
-                    has_assemblies = true;
-                }
-            }
-        } else if path.is_dir() {
-            if let Some(name) = path.file_name() {
-                if name.to_string_lossy().eq_ignore_ascii_case("defs") {
-                    has_defs = true;
-                }
-            }
-        }
-        if has_defs && has_assemblies {
-            break;
-        }
-    }
+    let (has_defs, has_assemblies, has_other_content) = scan_content_kinds(dir);
 
     let name_lower = meta.name.to_lowercase();
     Some(ModInfo {
@@ -121,7 +96,61 @@ pub fn parse_mod_folder(dir: &Path, origin: ModOrigin) -> Option<ModInfo> {
         steam_item_id,
         has_defs,
         has_assemblies,
+        has_other_content,
     })
+}
+
+/// Folder names that mean "this mod has real content" (besides Defs and DLLs).
+const CONTENT_DIR_NAMES: &[&str] = &[
+    "patches",
+    "textures",
+    "sounds",
+    "assetbundles",
+    "shaders",
+    "meshes",
+    "materials",
+];
+
+/// Returns (has_defs, has_assemblies, has_other_content).
+/// Does not look inside About/ and Languages/ folders.
+pub fn scan_content_kinds(dir: &Path) -> (bool, bool, bool) {
+    let mut has_defs = false;
+    let mut has_assemblies = false;
+    let mut has_other = false;
+
+    let walker = walkdir::WalkDir::new(dir)
+        .max_depth(4)
+        .into_iter()
+        .filter_entry(|e| {
+            if e.depth() == 0 || !e.file_type().is_dir() {
+                return true;
+            }
+            let name = e.file_name().to_string_lossy().to_lowercase();
+            name != "languages" && name != "about" && name != ".git" && name != "source"
+        });
+
+    for entry in walker.flatten() {
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+        if entry.file_type().is_file() {
+            if name.ends_with(".dll") {
+                has_assemblies = true;
+            }
+        } else if entry.file_type().is_dir() && entry.depth() > 0 {
+            if name == "defs" {
+                has_defs = true;
+            } else if name == "assemblies" {
+                // An Assemblies folder counts even if the DLL sits deeper than the walk depth.
+                has_assemblies = true;
+            } else if CONTENT_DIR_NAMES.contains(&name.as_str()) {
+                has_other = true;
+            }
+        }
+        if has_defs && has_assemblies && has_other {
+            break;
+        }
+    }
+
+    (has_defs, has_assemblies, has_other)
 }
 
 #[derive(Default, Debug)]

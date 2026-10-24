@@ -1,9 +1,9 @@
 use eframe::egui::{self, Color32, Rounding, Stroke, Ui, Vec2};
 use std::collections::HashSet;
 
-use crate::app::App;
+use crate::app::{find_mod_in, App};
 use crate::dependencies::DependencyProblem;
-use crate::i18n::TranslationKey;
+use crate::i18n::{fmt, TranslationKey};
 use crate::models::{is_protected_package_id, ModInfo, ModOrigin};
 use crate::sorter::ModTier;
 use super::components::*;
@@ -260,9 +260,8 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     let mut toggle_ignore_id = None;
 
     // Collect visible indices for Shift-range selection
-    let visible_active_ids: Vec<String> = app.active_mods.iter().enumerate().filter_map(|(_, pkg_id)| {
-        let display_name = app.all_mods.iter()
-            .find(|m| m.package_id.eq_ignore_ascii_case(pkg_id))
+    let visible_active_ids: Vec<String> = app.active_mods.iter().filter_map(|pkg_id| {
+        let display_name = find_mod_in(&app.all_mods, pkg_id)
             .map(|m| m.name.as_str())
             .unwrap_or(pkg_id.as_str());
         if !query_lower.is_empty()
@@ -282,7 +281,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
         .auto_shrink([false, false])
         .show(ui, |ui| {
             for (idx, pkg_id) in app.active_mods.iter().enumerate() {
-                let mod_info_opt = app.all_mods.iter().find(|m| m.package_id.eq_ignore_ascii_case(pkg_id));
+                let mod_info_opt = find_mod_in(&app.all_mods, pkg_id);
                 let display_name = mod_info_opt
                     .map(|m| m.name.as_str())
                     .unwrap_or(pkg_id.as_str());
@@ -460,6 +459,10 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                         } else if is_trans {
                             badge(ui, "RU", Color32::from_rgb(30, 58, 138), Color32::from_rgb(96, 165, 250));
                         }
+                        // Listed in ModsConfig.xml but not found by the scanner: kept on save, not dropped.
+                        if mod_info_opt.is_none() {
+                            badge(ui, app.i18n.get(TranslationKey::ModsNotOnDisk), Color32::from_rgb(225, 29, 72).linear_multiply(0.3), Color32::from_rgb(251, 113, 133));
+                        }
 
                         // Missing or Disabled dependency pill
                         if let Some(prob) = dep_problem {
@@ -525,7 +528,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     }
 
     if let Some(req_id) = enable_dep_id {
-        if !app.active_mods.contains(&req_id) {
+        if !app.active_mods.iter().any(|id| id.eq_ignore_ascii_case(&req_id)) {
             app.active_mods.push(req_id);
         }
     }
@@ -541,8 +544,10 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     }
     // Deactivate all selected mods (from context menu)
     if deactivate_selected {
-        let to_remove: std::collections::HashSet<String> = app.selected_mod_ids.clone();
-        app.active_mods.retain(|id| !to_remove.contains(id));
+        // Protected mods (Core) stay active even when they are part of the selection.
+        let to_remove: HashSet<String> = app.selected_mod_ids.iter().map(|s| s.to_lowercase()).collect();
+        app.active_mods
+            .retain(|id| is_protected_package_id(id) || !to_remove.contains(&id.to_lowercase()));
         app.selected_mod_ids.clear();
     } else if let Some(idx) = deactivate_idx {
         app.active_mods.remove(idx);
@@ -552,7 +557,15 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
 /// Renders the Left Column: Inactive / Available Mods
 fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
-    let active_set: HashSet<String> = app.active_mods.iter().map(|s| s.to_lowercase()).collect();
+    // "x_steam" in ModsConfig refers to the Workshop copy of "x": it is active too.
+    let active_set: HashSet<String> = app
+        .active_mods
+        .iter()
+        .map(|s| {
+            let lower = s.to_lowercase();
+            lower.strip_suffix("_steam").map(str::to_string).unwrap_or(lower)
+        })
+        .collect();
 
     let inactive_mods: Vec<&ModInfo> = app
         .all_mods
@@ -964,7 +977,13 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
             // No mod selected: Summary
             ui.horizontal(|ui| {
                 ui.label(
-                    egui::RichText::new(app.i18n.get(TranslationKey::ModListSummary).replace("{}", &app.active_mods.len().to_string()).replacen("{}", &app.all_mods.len().saturating_sub(app.active_mods.len()).to_string(), 1))
+                    egui::RichText::new(fmt(
+                        app.i18n.get(TranslationKey::ModListSummary),
+                        &[
+                            &app.active_mods.len().to_string(),
+                            &app.all_mods.len().saturating_sub(app.active_mods.len()).to_string(),
+                        ],
+                    ))
                     .color(THEME.text_muted)
                     .size(11.0),
                 );

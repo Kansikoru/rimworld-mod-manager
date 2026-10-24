@@ -144,6 +144,39 @@ pub enum TranslationKey {
     CrashFileStats,
     CrashAnalyzing,
     CrashFileNotFound,
+
+    // Game version support (1.6 Unity / 1.7 Waylith)
+    SettingsGameDetected,
+    SettingsLaunchExtraArgs,
+    SettingsLaunchUnverified,
+    SettingsLaunchWaylithHint,
+    OptWaylithWarning,
+
+    // Safe deletion
+    ConfirmDeleteTitle,
+    ConfirmDeleteBody,
+    ConfirmDeleteBtn,
+    BtnCancel,
+    TransNoneForLang,
+    ModsNotOnDisk,
+}
+
+/// Fills `{}` placeholders one by one: `fmt("A: {} | B: {}", &["1", "2"])` -> "A: 1 | B: 2".
+/// (`str::replace("{}", ..)` would fill every placeholder with the first value.)
+pub fn fmt(template: &str, args: &[&str]) -> String {
+    let mut out = String::with_capacity(template.len() + 16);
+    let mut rest = template;
+    let mut args = args.iter();
+    while let Some(pos) = rest.find("{}") {
+        out.push_str(&rest[..pos]);
+        match args.next() {
+            Some(a) => out.push_str(a),
+            None => out.push_str("{}"),
+        }
+        rest = &rest[pos + 2..];
+    }
+    out.push_str(rest);
+    out
 }
 
 impl TranslationKey {
@@ -232,8 +265,8 @@ impl TranslationKey {
             (TranslationKey::OptScopeSelected, Language::English) => "Selected Only",
             (TranslationKey::OptForceReencode, Language::Russian) => "Перезаписывать существующие DDS",
             (TranslationKey::OptForceReencode, Language::English) => "Force re-encode existing DDS",
-            (TranslationKey::OptDeleteSource, Language::Russian) => "Удалять исходные PNG/JPG",
-            (TranslationKey::OptDeleteSource, Language::English) => "Delete source PNG/JPG",
+            (TranslationKey::OptDeleteSource, Language::Russian) => "Убирать исходные PNG/JPG в бэкап",
+            (TranslationKey::OptDeleteSource, Language::English) => "Move source PNG/JPG to backup",
             (TranslationKey::OptThreads, Language::Russian) => "Нагрузка CPU",
             (TranslationKey::OptThreads, Language::English) => "CPU Threads",
             (TranslationKey::OptBtnStart, Language::Russian) => "Начать оптимизацию",
@@ -378,6 +411,30 @@ impl TranslationKey {
             (TranslationKey::CrashAnalyzing, Language::English) => "Analyzing log {:?}...",
             (TranslationKey::CrashFileNotFound, Language::Russian) => "Файл Player.log не найден в стандартных папках",
             (TranslationKey::CrashFileNotFound, Language::English) => "Player.log file not found in standard directories",
+
+            (TranslationKey::SettingsGameDetected, Language::Russian) => "Обнаружено: RimWorld {} | движок {}",
+            (TranslationKey::SettingsGameDetected, Language::English) => "Detected: RimWorld {} | engine {}",
+            (TranslationKey::SettingsLaunchExtraArgs, Language::Russian) => "Дополнительные аргументы:",
+            (TranslationKey::SettingsLaunchExtraArgs, Language::English) => "Extra arguments:",
+            (TranslationKey::SettingsLaunchUnverified, Language::Russian) => "не проверено на этой версии игры",
+            (TranslationKey::SettingsLaunchUnverified, Language::English) => "not verified on this game version",
+            (TranslationKey::SettingsLaunchWaylithHint, Language::Russian) => "RimWorld 1.7: -mod=id1;id2 — запустить только с этими модами (ModsConfig не меняется), -NoFileLog — без лога, -Headless — без окна",
+            (TranslationKey::SettingsLaunchWaylithHint, Language::English) => "RimWorld 1.7: -mod=id1;id2 runs with only these mods (ModsConfig untouched), -NoFileLog disables the log, -Headless runs without a window",
+            (TranslationKey::OptWaylithWarning, Language::Russian) => "RimWorld 1.7 сам сжимает текстуры модов в BC7 и хранит их в кэше (TextureCache). Конвертация в DDS на 1.7 не нужна и может ломать моды.",
+            (TranslationKey::OptWaylithWarning, Language::English) => "RimWorld 1.7 compresses mod textures to BC7 by itself and caches them (TextureCache). DDS conversion is not needed on 1.7 and may break mods.",
+
+            (TranslationKey::ConfirmDeleteTitle, Language::Russian) => "Подтвердите удаление",
+            (TranslationKey::ConfirmDeleteTitle, Language::English) => "Confirm deletion",
+            (TranslationKey::ConfirmDeleteBody, Language::Russian) => "Эти моды будут отписаны в Steam и перемещены в Корзину ({} шт.). Их можно восстановить из Корзины.",
+            (TranslationKey::ConfirmDeleteBody, Language::English) => "These mods will be unsubscribed in Steam and moved to the Recycle Bin ({}). You can restore them from the Recycle Bin.",
+            (TranslationKey::ConfirmDeleteBtn, Language::Russian) => "Удалить в Корзину",
+            (TranslationKey::ConfirmDeleteBtn, Language::English) => "Move to Recycle Bin",
+            (TranslationKey::BtnCancel, Language::Russian) => "Отмена",
+            (TranslationKey::BtnCancel, Language::English) => "Cancel",
+            (TranslationKey::TransNoneForLang, Language::Russian) => "Нет установленных переводов для языка: {}",
+            (TranslationKey::TransNoneForLang, Language::English) => "No installed translations for language: {}",
+            (TranslationKey::ModsNotOnDisk, Language::Russian) => "Нет на диске",
+            (TranslationKey::ModsNotOnDisk, Language::English) => "Not on disk",
         }
     }
 }
@@ -402,5 +459,17 @@ impl I18n {
 
     pub fn get(&self, key: TranslationKey) -> &'static str {
         key.translate(self.lang)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fmt_fills_placeholders_in_order() {
+        assert_eq!(fmt("Всего: {} | Активно: {}", &["50", "7"]), "Всего: 50 | Активно: 7");
+        assert_eq!(fmt("{} {} {}", &["a", "b"]), "a b {}");
+        assert_eq!(fmt("no placeholders", &["x"]), "no placeholders");
     }
 }

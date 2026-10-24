@@ -20,13 +20,24 @@ fn load_app_icon() -> Option<egui::IconData> {
 }
 
 fn main() {
-    std::panic::set_hook(Box::new(|info| {
+    // Panics are logged to %LOCALAPPDATA%\RimWorldModManager\crash_log.txt (appended),
+    // not to whatever the current directory happens to be.
+    let crash_log = rimworld_mod_manager::game_install::manager_data_dir().join("crash_log.txt");
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
         let msg = format!(
-            "CRITICAL PANIC: {}\nLocation: {:?}\n",
-            info,
-            info.location()
+            "[unix {}] PANIC in thread '{}': {}\n",
+            secs,
+            thread.name().unwrap_or("?"),
+            info
         );
-        let _ = std::fs::write("crash_log.txt", &msg);
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&crash_log) {
+            let _ = std::io::Write::write_all(&mut f, msg.as_bytes());
+        }
         eprintln!("{}", msg);
     }));
 

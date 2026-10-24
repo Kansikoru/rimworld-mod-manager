@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 pub enum ErrorSeverity {
     Warning,
     MissingDependency,
+    /// ERROR entry whose stack trace points into a mod (RimWorld 1.7 log format).
+    ModError,
     DefException,
     PrepatcherHarmonyError,
     HardCrash,
@@ -45,6 +47,13 @@ impl ErrorSeverity {
                     "MISSING DEPENDENCY"
                 }
             }
+            ErrorSeverity::ModError => {
+                if is_ru {
+                    "ОШИБКА В МОДЕ"
+                } else {
+                    "MOD ERROR"
+                }
+            }
             ErrorSeverity::Warning => {
                 if is_ru {
                     "ПРЕДУПРЕЖДЕНИЕ"
@@ -65,6 +74,7 @@ impl ErrorSeverity {
             ErrorSeverity::PrepatcherHarmonyError => ([195, 95, 25], [255, 255, 255]),
             ErrorSeverity::DefException => ([180, 115, 25], [255, 255, 255]),
             ErrorSeverity::MissingDependency => ([155, 125, 20], [255, 255, 255]),
+            ErrorSeverity::ModError => ([170, 100, 30], [255, 255, 255]),
             ErrorSeverity::Warning => ([80, 85, 95], [230, 230, 235]),
         }
     }
@@ -92,6 +102,8 @@ pub struct LogReport {
     pub total_errors: usize,
     pub culprits: Vec<CrashCulprit>,
     pub summary_text: String,
+    /// Log written by RimWorld 1.7+ (Waylith engine) instead of Unity/Mono.
+    pub is_waylith: bool,
 }
 
 #[derive(Default)]
@@ -171,43 +183,174 @@ impl<'a> ModMatcher<'a> {
     }
 }
 
+/// Finds Player.log files, newest first.
+/// RimWorld 1.7+ writes them to `<user data>\Logs\`, 1.6 and older to `<user data>\`.
 pub fn detect_rimworld_log_paths() -> Vec<(String, PathBuf)> {
-    let mut results = Vec::new();
+    let Some(base) = crate::game_install::user_data_dir() else {
+        return Vec::new();
+    };
+    log_paths_in(&base)
+}
 
+fn log_paths_in(base: &Path) -> Vec<(String, PathBuf)> {
     let candidates = [
-        std::env::var("USERPROFILE").ok().map(|p| {
-            PathBuf::from(p)
-                .join("AppData")
-                .join("LocalLow")
-                .join("Ludeon Studios")
-                .join("RimWorld by Ludeon Studios")
-        }),
-        std::env::var("LOCALAPPDATA").ok().and_then(|p| {
-            PathBuf::from(p).parent().map(|parent| {
-                parent
-                    .join("LocalLow")
-                    .join("Ludeon Studios")
-                    .join("RimWorld by Ludeon Studios")
-            })
-        }),
+        ("Logs/Player.log (1.7+, последний запуск)", base.join("Logs").join("Player.log")),
+        ("Logs/Player-prev.log (1.7+, предыдущий запуск)", base.join("Logs").join("Player-prev.log")),
+        ("Player.log (1.6, последний запуск)", base.join("Player.log")),
+        ("Player-prev.log (1.6, предыдущий запуск)", base.join("Player-prev.log")),
     ];
 
-    for base_opt in candidates.iter().flatten() {
-        if base_opt.exists() {
-            let player_log = base_opt.join("Player.log");
-            if player_log.exists() {
-                results.push(("Player.log (Последний запуск)".to_string(), player_log));
-            }
+    let mut found: Vec<(String, PathBuf, std::time::SystemTime)> = candidates
+        .into_iter()
+        .filter(|(_, p)| p.is_file())
+        .map(|(label, p)| {
+            let modified = fs::metadata(&p)
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            (label.to_string(), p, modified)
+        })
+        .collect();
 
-            let prev_log = base_opt.join("Player-prev.log");
-            if prev_log.exists() {
-                results.push(("Player-prev.log (Предыдущий запуск)".to_string(), prev_log));
+    found.sort_by_key(|f| std::cmp::Reverse(f.2));
+    found.into_iter().map(|(label, p, _)| (label, p)).collect()
+}
+
+static WAYLITH_ENTRY_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+\s+([A-Z]+)\s+\[([^\]]*)\]\s?(.*)$").unwrap()
+});
+
+static WAYLITH_FRAME_RE: std::sync::LazyLock<Regex> =
+    std::sync::LazyLock::new(|| Regex::new(r"^\s+at\s+([^\s(]+)\(").unwrap());
+
+/// Namespaces that belong to the engine, the runtime or the game itself — never a mod.
+const ENGINE_FRAME_PREFIXES: &[&str] = &[
+    "Brutal.",
+    "Waylith.",
+    "RimWorldWaylith.",
+    "System.",
+    "Microsoft.",
+    "Verse.",
+    "RimWorld.",
+    "LudeonTK.",
+    "HarmonyLib.",
+    "UnityEngine.",
+    "UnityStubs.",
+    "MonoMod.",
+    "Mono.",
+];
+
+/// A RimWorld 1.7+ log starts with "=== Waylith log ===" and uses "date time LEVEL [Category] text" lines.
+pub fn is_waylith_log(lines: &[&str]) -> bool {
+    lines.iter().take(20).any(|l| l.contains("=== Waylith log ===") || l.starts_with("Runtime:   .NET"))
+        || lines.iter().take(200).filter(|l| WAYLITH_ENTRY_RE.is_match(l)).count() >= 3
+}
+
+/// One log entry of the 1.7 format: header line, message continuation lines and stack frames.
+struct WaylithEntry<'a> {
+    level: &'a str,
+    category: &'a str,
+    message: &'a str,
+    first_line: usize,
+    end_line: usize,
+    frames: Vec<&'a str>,
+}
+
+fn parse_waylith_entries<'a>(lines: &[&'a str]) -> Vec<WaylithEntry<'a>> {
+    let mut entries: Vec<WaylithEntry<'a>> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if let Some(caps) = WAYLITH_ENTRY_RE.captures(line) {
+            if let Some(last) = entries.last_mut() {
+                last.end_line = i;
             }
-            break;
+            entries.push(WaylithEntry {
+                level: caps.get(1).map(|m| m.as_str()).unwrap_or(""),
+                category: caps.get(2).map(|m| m.as_str()).unwrap_or(""),
+                message: caps.get(3).map(|m| m.as_str()).unwrap_or(""),
+                first_line: i,
+                end_line: i + 1,
+                frames: Vec::new(),
+            });
+        } else if let Some(last) = entries.last_mut() {
+            last.end_line = i + 1;
+            if let Some(caps) = WAYLITH_FRAME_RE.captures(line) {
+                if let Some(m) = caps.get(1) {
+                    last.frames.push(m.as_str());
+                }
+            }
         }
     }
+    entries
+}
 
-    results
+/// "AchtungMod.Controller.HandleDrafting" -> "AchtungMod.Controller"
+fn frame_class(frame: &str) -> &str {
+    match frame.rfind('.') {
+        Some(idx) if idx > 0 => &frame[..idx],
+        _ => frame,
+    }
+}
+
+fn is_engine_frame(frame: &str) -> bool {
+    ENGINE_FRAME_PREFIXES.iter().any(|p| frame.starts_with(p))
+}
+
+fn analyze_waylith_entries<'a>(
+    lines: &[&str],
+    matcher: &ModMatcher<'a>,
+    report: &mut LogReport,
+    culprits_map: &mut HashMap<String, CrashCulprit>,
+) {
+    for entry in parse_waylith_entries(lines) {
+        let is_fatal = matches!(entry.level, "FATAL" | "CRITICAL")
+            || entry.message.contains("Unhandled exception");
+        let is_error = is_fatal || entry.level == "ERROR";
+        if !is_error {
+            continue;
+        }
+
+        report.total_errors += 1;
+        if is_fatal {
+            report.has_hard_crash = true;
+        }
+
+        let culprit = entry
+            .frames
+            .iter()
+            .filter(|f| !is_engine_frame(f))
+            .find_map(|f| matcher.find_mod(frame_class(f)).map(|m| (*f, m)));
+
+        let Some((frame, matched_mod)) = culprit else {
+            continue;
+        };
+
+        let severity = if is_fatal {
+            ErrorSeverity::HardCrash
+        } else {
+            ErrorSeverity::ModError
+        };
+        let excerpt_end = entry.end_line.min(entry.first_line + 16).min(lines.len());
+        let excerpt = lines[entry.first_line..excerpt_end].join("\n");
+        let message: String = entry.message.chars().take(200).collect();
+
+        let key = matched_mod.package_id.to_lowercase();
+        let item = culprits_map.entry(key).or_insert_with(|| CrashCulprit {
+            mod_name: matched_mod.name.clone(),
+            package_id: Some(matched_mod.package_id.clone()),
+            mod_dir: Some(matched_mod.dir_path.clone()),
+            severity,
+            headline: format!("[{}] {}", entry.category, message),
+            explanation: format!(
+                "Ошибка возникла в коде мода: `{}` (уровень {}).",
+                frame, entry.level
+            ),
+            stack_trace_excerpt: excerpt,
+            occurrences: 0,
+        });
+        item.occurrences += 1;
+        if item.severity < severity {
+            item.severity = severity;
+        }
+    }
 }
 
 pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
@@ -244,6 +387,13 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
     let matcher = ModMatcher::build(mods);
     let mut culprits_map: HashMap<String, CrashCulprit> = HashMap::new();
 
+    report.is_waylith = is_waylith_log(&lines);
+    // In the 1.7 format errors are counted per log entry, not by keywords in lines.
+    let count_keyword_errors = !report.is_waylith;
+    if report.is_waylith {
+        analyze_waylith_entries(&lines, &matcher, &mut report, &mut culprits_map);
+    }
+
     let re_mono_call = Regex::new(r"\(Mono JIT Code\)\s+([A-Za-z0-9_\.]+):([A-Za-z0-9_]+)").ok();
     let re_mono_at = Regex::new(r"^\s*at\s+([A-Za-z0-9_\.]+)\.([A-Za-z0-9_<>]+)").ok();
     let re_prepatcher = Regex::new(r"Prepatcher Error:.*?static\s+.*?\s+([A-Za-z0-9_\.]+)::").ok();
@@ -251,7 +401,9 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
     let re_config_error = Regex::new(r"Exception in ConfigErrors\(\) of ([A-Za-z0-9_]+):").ok();
 
     let mut crash_marker_idx = None;
-    for (i, line) in lines.iter().enumerate().rev() {
+    // Unity/Mono crash markers only exist in 1.6 and older logs.
+    let skip_unity_markers = report.is_waylith;
+    for (i, line) in lines.iter().enumerate().rev().filter(|_| !skip_unity_markers) {
         if line.contains("END OF STACKTRACE")
             || line.contains("A crash has been intercepted by the crash handler")
             || line.contains("Crash report generated in:")
@@ -369,7 +521,9 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
         let line = lines[i];
 
         if line.contains("Prepatcher Error:") {
-            report.total_errors += 1;
+            if count_keyword_errors {
+                report.total_errors += 1;
+            }
             let mut excerpt_lines = vec![line];
             for k in 1..=6 {
                 if i + k < lines.len() {
@@ -409,7 +563,9 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
         }
 
         if line.contains("dependency (") && line.contains("needs to have") {
-            report.total_errors += 1;
+            if count_keyword_errors {
+                report.total_errors += 1;
+            }
             if let Some(ref re) = re_dependency {
                 if let Some(caps) = re.captures(line) {
                     let mod_name = caps.get(1).map(|m| m.as_str()).unwrap_or("");
@@ -442,7 +598,9 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
         }
 
         if line.contains("Exception in ConfigErrors()") {
-            report.total_errors += 1;
+            if count_keyword_errors {
+                report.total_errors += 1;
+            }
             let mut excerpt_lines = vec![line];
             for k in 1..=6 {
                 if i + k < lines.len() {
@@ -479,7 +637,7 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
             }
         }
 
-        if line.contains("Exception:") || line.contains("Error in ") {
+        if count_keyword_errors && (line.contains("Exception:") || line.contains("Error in ")) {
             report.total_errors += 1;
         }
 
@@ -525,8 +683,18 @@ pub fn generate_ai_diagnostic_prompt(report: &LogReport, is_ru: bool) -> String 
         out.push_str(&format!("📁 **Файл лога:** {}\n", report.log_file_name));
         out.push_str(&format!("📊 **Общий статус:** {}\n", report.summary_text));
 
+        out.push_str(if report.is_waylith {
+            "🎮 **Версия игры:** RimWorld 1.7+ (движок Waylith, .NET 10)\n"
+        } else {
+            "🎮 **Версия игры:** RimWorld 1.6 или старше (движок Unity, Mono)\n"
+        });
+
         if report.has_hard_crash {
-            out.push_str("⚠️ **Внимание: Зафиксирован фатальный вылет игрового процесса (Crash to Desktop / Unity engine fault).**\n");
+            out.push_str(if report.is_waylith {
+                "⚠️ **Внимание: Зафиксирован фатальный вылет игрового процесса (Crash to Desktop).**\n"
+            } else {
+                "⚠️ **Внимание: Зафиксирован фатальный вылет игрового процесса (Crash to Desktop / Unity engine fault).**\n"
+            });
         }
 
         if !report.culprits.is_empty() {
@@ -565,8 +733,18 @@ pub fn generate_ai_diagnostic_prompt(report: &LogReport, is_ru: bool) -> String 
         out.push_str(&format!("📁 **Log file:** {}\n", report.log_file_name));
         out.push_str(&format!("📊 **Status:** {}\n", report.summary_text));
 
+        out.push_str(if report.is_waylith {
+            "🎮 **Game version:** RimWorld 1.7+ (Waylith engine, .NET 10)\n"
+        } else {
+            "🎮 **Game version:** RimWorld 1.6 or older (Unity engine, Mono)\n"
+        });
+
         if report.has_hard_crash {
-            out.push_str("⚠️ **Warning: A fatal game crash occurred (Crash to Desktop / Unity engine fault).**\n");
+            out.push_str(if report.is_waylith {
+                "⚠️ **Warning: A fatal game crash occurred (Crash to Desktop).**\n"
+            } else {
+                "⚠️ **Warning: A fatal game crash occurred (Crash to Desktop / Unity engine fault).**\n"
+            });
         }
 
         if !report.culprits.is_empty() {
@@ -603,4 +781,102 @@ pub fn generate_ai_diagnostic_prompt(report: &LogReport, is_ru: bool) -> String 
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{ModInfo, ModOrigin};
+
+    fn test_mod(dir: &Path, id: &str, name: &str) -> ModInfo {
+        ModInfo {
+            package_id: id.to_string(),
+            name: name.to_string(),
+            name_lower: name.to_lowercase(),
+            author: String::new(),
+            description: String::new(),
+            dir_path: dir.to_path_buf(),
+            preview_path: None,
+            supported_versions: vec![],
+            load_after: vec![],
+            force_load_after: vec![],
+            load_before: vec![],
+            force_load_before: vec![],
+            dependencies: vec![],
+            origin: ModOrigin::Workshop,
+            languages: vec![],
+            is_translation_mod: false,
+            parent_package_id: None,
+            steam_item_id: None,
+            has_defs: true,
+            has_assemblies: true,
+            has_other_content: true,
+        }
+    }
+
+    const WAYLITH_LOG: &str = "=== Waylith log ===
+Started:   2026-10-24 12:17:36.522 +02:00
+Version:   1.7.4985.1269
+Runtime:   .NET 10.0.13-waylithclr.dev
+
+2026-10-24 12:17:41.695  INFO [Verse] Harmony Mod v3.0.1.0; Harmony library v3.0.0.0-rc.3
+    at Brutal.Logging.LogCategory.Info(LogString`1 message) [0x0]
+    at Verse.Log.Message(String text) [0x10]
+2026-10-24 12:18:20.001  ERROR [Verse] Exception ticking Pawn: System.NullReferenceException: Object reference not set
+    at Brutal.Logging.LogCategory.Error(LogString`1 message) [0x0]
+    at Verse.Log.Error(String text) [0x10]
+    at AchtungMod.Controller.HandleDrafting(Pawn pawn) [0x2A]
+    at Verse.Pawn.Tick() [0x55]
+2026-10-24 12:18:21.001  WARN [Verse] Something harmless
+    at Verse.Log.Warning(String text) [0x10]
+2026-10-24 12:18:22.001  ERROR [Verse] Engine-only error
+    at Waylith.Graphics.GraphicsDevice.Present() [0x10]
+";
+
+    #[test]
+    fn detects_waylith_format() {
+        let lines: Vec<&str> = WAYLITH_LOG.lines().collect();
+        assert!(is_waylith_log(&lines));
+        let unity = ["Mono path[0] = 'C:/Games/RimWorld/RimWorldWin64_Data/Managed'", "Initialize engine version: 2022.3.35f1"];
+        assert!(!is_waylith_log(&unity));
+    }
+
+    #[test]
+    fn finds_mod_culprit_in_waylith_log() {
+        let base = std::env::temp_dir().join(format!("rwmm_log_test_{}", std::process::id()));
+        let mod_dir = base.join("730936602");
+        std::fs::create_dir_all(mod_dir.join("Assemblies")).unwrap();
+        std::fs::write(mod_dir.join("Assemblies").join("AchtungMod.dll"), b"").unwrap();
+        let log_path = base.join("Player.log");
+        std::fs::write(&log_path, WAYLITH_LOG).unwrap();
+
+        let mods = vec![test_mod(&mod_dir, "brrainz.achtung", "Achtung!")];
+        let report = analyze_rimworld_log(&log_path, &mods);
+
+        assert!(report.is_waylith);
+        assert!(!report.has_hard_crash);
+        assert_eq!(report.total_errors, 2, "two ERROR entries, WARN/INFO ignored");
+        assert_eq!(report.culprits.len(), 1, "engine-only error has no mod culprit");
+        let c = &report.culprits[0];
+        assert_eq!(c.package_id.as_deref(), Some("brrainz.achtung"));
+        assert_eq!(c.severity, ErrorSeverity::ModError);
+        assert!(c.explanation.contains("AchtungMod.Controller.HandleDrafting"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn prefers_newest_log_location() {
+        let base = std::env::temp_dir().join(format!("rwmm_logpaths_{}", std::process::id()));
+        std::fs::create_dir_all(base.join("Logs")).unwrap();
+        std::fs::write(base.join("Player.log"), b"old").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(base.join("Logs").join("Player.log"), b"new").unwrap();
+
+        let found = log_paths_in(&base);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].1, base.join("Logs").join("Player.log"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

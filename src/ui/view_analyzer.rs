@@ -74,10 +74,14 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
                     t.get(TranslationKey::CrashSummaryClean).to_string()
                 };
 
-                let file_stats = t.get(TranslationKey::CrashFileStats)
-                    .replace("{}", &report.log_file_name)
-                    .replacen("{}", &report.total_lines.to_string(), 1)
-                    .replacen("{}", &report.total_errors.to_string(), 1);
+                let file_stats = crate::i18n::fmt(
+                    t.get(TranslationKey::CrashFileStats),
+                    &[
+                        &report.log_file_name,
+                        &report.total_lines.to_string(),
+                        &report.total_errors.to_string(),
+                    ],
+                );
 
                 ui.label(egui::RichText::new(icon).size(20.0));
                 ui.vertical(|ui| {

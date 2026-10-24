@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
 use winreg::RegKey;
 
+use crate::game_install::{self, GameEngine};
+
 pub const RIMWORLD_APP_ID: u32 = 294100;
 
 #[derive(Debug, Clone, Default)]
@@ -13,6 +15,44 @@ pub struct SteamPaths {
     pub game_path: Option<PathBuf>,
     pub steam_dll_path: Option<PathBuf>,
     pub acf_path: Option<PathBuf>,
+    /// Unity (1.6 and older) or Waylith (1.7+).
+    pub engine: GameEngine,
+    /// Contents of Version.txt, e.g. "1.7.4985 rev1269".
+    pub game_version: Option<String>,
+    pub exe_path: Option<PathBuf>,
+}
+
+impl SteamPaths {
+    /// Recomputes everything that depends on the game folder (Mods, Data, exe, Steam DLL, engine).
+    pub fn set_game_dir(&mut self, game: PathBuf) {
+        let local_mods = game.join("Mods");
+        self.local_mods_path = local_mods.is_dir().then_some(local_mods);
+        let game_data = game.join("Data");
+        self.game_data_path = game_data.is_dir().then_some(game_data);
+
+        self.engine = game_install::detect_engine(&game);
+        self.game_version = game_install::read_game_version(&game);
+        self.exe_path = game_install::game_exe_path(&game, self.engine);
+        self.steam_dll_path = game_install::game_steam_dll_path(&game).or_else(fallback_steam_dll);
+        self.game_path = Some(game);
+    }
+
+    /// "1.7", "1.6", ... from Version.txt.
+    pub fn game_major_minor(&self) -> Option<String> {
+        self.game_version.as_deref().and_then(game_install::major_minor)
+    }
+}
+
+/// steam_api64.dll next to Steam itself or next to this manager's exe.
+fn fallback_steam_dll() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(s_dir) = get_steam_install_dir() {
+        candidates.push(s_dir.join("steam_api64.dll"));
+    }
+    if let Some(exe_dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
+        candidates.push(exe_dir.join("steam_api64.dll"));
+    }
+    candidates.into_iter().find(|p| p.is_file())
 }
 
 pub fn detect_steam_paths() -> SteamPaths {
@@ -45,23 +85,7 @@ pub fn detect_steam_paths() -> SteamPaths {
             
         if game.is_dir() || acf.is_file() {
             if paths.game_path.is_none() && game.is_dir() {
-                paths.game_path = Some(game.clone());
-                let local_mods = game.join("Mods");
-                if local_mods.is_dir() {
-                    paths.local_mods_path = Some(local_mods);
-                }
-                let game_data = game.join("Data");
-                if game_data.is_dir() {
-                    paths.game_data_path = Some(game_data);
-                }
-                let dll = game
-                    .join("RimWorldWin64_Data")
-                    .join("Plugins")
-                    .join("x86_64")
-                    .join("steam_api64.dll");
-                if dll.is_file() {
-                    paths.steam_dll_path = Some(dll);
-                }
+                paths.set_game_dir(game.clone());
             }
 
             let workshop = lib
@@ -79,23 +103,7 @@ pub fn detect_steam_paths() -> SteamPaths {
     }
 
     if paths.steam_dll_path.is_none() {
-        if let Some(ref s_dir) = paths.steam_path {
-            let root_dll = s_dir.join("steam_api64.dll");
-            if root_dll.is_file() {
-                paths.steam_dll_path = Some(root_dll);
-            }
-        }
-    }
-
-    if paths.steam_dll_path.is_none() {
-        if let Ok(exe_path) = std::env::current_exe() {
-            if let Some(exe_dir) = exe_path.parent() {
-                let local_dll = exe_dir.join("steam_api64.dll");
-                if local_dll.is_file() {
-                    paths.steam_dll_path = Some(local_dll);
-                }
-            }
-        }
+        paths.steam_dll_path = fallback_steam_dll();
     }
 
     paths
@@ -313,34 +321,30 @@ pub fn subscribe_workshop_items_batch_native(
     }
 }
 
-pub fn launch_rimworld(
-    steam_paths: &SteamPaths,
-    quicktest: bool,
-    logfile: bool,
-    popupwindow: bool,
-) -> Result<(), String> {
+/// Starts the game executable that matches the installed engine
+/// (`RimWorldWin64.exe` for 1.6/Unity, `RimWorld.exe` for 1.7/Waylith).
+pub fn launch_rimworld(steam_paths: &SteamPaths, args: &[String]) -> Result<(), String> {
     let game_dir = steam_paths
         .game_path
         .as_ref()
         .ok_or("Путь к игре (RimWorld) не найден")?;
-    
-    let exe_path = game_dir.join("RimWorldWin64.exe");
-    if !exe_path.exists() {
-        return Err("Исполняемый файл RimWorldWin64.exe не найден".to_string());
-    }
+
+    let exe_path = steam_paths
+        .exe_path
+        .clone()
+        .or_else(|| game_install::game_exe_path(game_dir, steam_paths.engine))
+        .ok_or_else(|| {
+            format!(
+                "Не найден исполняемый файл игры ({} или {}) в {}",
+                game_install::WAYLITH_EXE,
+                game_install::UNITY_EXE,
+                game_dir.display()
+            )
+        })?;
 
     let mut cmd = std::process::Command::new(&exe_path);
     cmd.current_dir(game_dir);
-
-    if quicktest {
-        cmd.arg("-quicktest");
-    }
-    if logfile {
-        cmd.arg("-logfile");
-    }
-    if popupwindow {
-        cmd.arg("-popupwindow");
-    }
+    cmd.args(args.iter().filter(|a| !a.trim().is_empty()));
 
     match cmd.spawn() {
         Ok(_) => Ok(()),

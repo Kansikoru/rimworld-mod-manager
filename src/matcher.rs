@@ -34,41 +34,31 @@ pub fn classify_and_link_translations(mods: &mut [ModInfo]) {
     }
 }
 
-/// Determines whether a mod is a translation/localization mod using multi-tier heuristics:
-/// 1. Folder structure (Only Languages/ folder without Defs/ or Assemblies/)
-/// 2. Package ID prefixes, suffixes, and patterns
-/// 3. Name suffixes (_zh, _ru, CHS) and bracket tags ([RU], [ZH])
-/// 4. Localization keywords (translation, русификатор, 汉化, etc.)
+/// Determines whether a mod is a pure translation/localization mod.
+///
+/// The result is used to offer deleting the mod, so the rules are strict:
+/// a false "not a translation" is harmless, a false "translation" deletes a working mod.
+/// 1. A mod with Defs/, Patches/, Textures/, Sounds/, AssetBundles/... is never a translation.
+/// 2. A translation always ships a Languages/ folder.
+/// 3. Without DLLs (only About/ + Languages/) it is a translation.
+/// 4. With DLLs it is a translation only if the title says so explicitly
+///    (translation, русификатор, 汉化, zh-pack) or the package ID is translation-tagged and has a keyword.
 pub fn detect_is_translation(m: &ModInfo) -> bool {
+    if m.has_defs || m.has_other_content {
+        return false;
+    }
+    if m.languages.is_empty() {
+        return false;
+    }
+    if !m.has_assemblies {
+        return true;
+    }
+
     let name_lower = m.name.to_lowercase();
     let id_lower = m.package_id.to_lowercase();
-
-    // --- TIER 1: Structural Check (Pure Language Mod) ---
-    // If a mod has Languages/ and has NO Defs and NO Assemblies (DLLs),
-    // it contains zero gameplay content, items, or code—it is 100% a language pack / translation mod.
-    if !m.languages.is_empty() && !m.has_defs && !m.has_assemblies {
-        return true;
-    }
-
-    // --- TIER 2: Package ID Suffixes & Prefixes ---
-    if crate::models::is_package_id_translation(&id_lower) && !m.has_assemblies {
-        return true;
-    }
-
-    // --- TIER 3: Name Suffixes & Bracket Tags ---
-    if crate::models::is_mod_name_translation_tagged(&name_lower) && !m.has_assemblies {
-        return true;
-    }
-
-    // --- TIER 4: Keywords Check ---
-    if crate::models::has_translation_keyword(&name_lower) || crate::models::has_translation_keyword(&id_lower) {
-        if m.has_assemblies {
-            return crate::models::has_explicit_translation_title_marker(&name_lower);
-        }
-        return true;
-    }
-
-    false
+    crate::models::has_explicit_translation_title_marker(&name_lower)
+        || (crate::models::is_package_id_translation(&id_lower)
+            && crate::models::has_translation_keyword(&name_lower))
 }
 
 /// Finds the parent / mother mod that this translation mod translates.
@@ -414,13 +404,18 @@ mod tests {
             steam_item_id: None,
             has_defs: false,
             has_assemblies: false,
+            has_other_content: false,
         }
+    }
+
+    fn with_langs(mut m: ModInfo) -> ModInfo {
+        m.languages = vec!["Russian".to_string()];
+        m
     }
 
     #[test]
     fn test_detect_is_translation() {
-        let mut m = make_test_mod("foo.bar", "Foo Bar");
-        m.languages = vec!["Russian".to_string()];
+        let m = with_langs(make_test_mod("foo.bar", "Foo Bar"));
         assert!(detect_is_translation(&m), "Pure language mod");
 
         let mut m = make_test_mod("foo.bar", "Foo Bar");
@@ -428,22 +423,40 @@ mod tests {
         m.has_assemblies = true;
         assert!(!detect_is_translation(&m), "Normal content mod");
 
-        let m = make_test_mod("foo.bar.ru", "Foo Bar");
-        assert!(detect_is_translation(&m), "Package ID suffix .ru without assemblies");
+        let m = make_test_mod("foo.bar.ru", "Foo Bar 汉化");
+        assert!(!detect_is_translation(&m), "No Languages folder -> never a translation");
 
-        let mut m = make_test_mod("foo.bar.ru", "Foo Bar");
+        let m = with_langs(make_test_mod("foo.bar.ru", "Foo Bar"));
+        assert!(detect_is_translation(&m), "Package ID suffix .ru, only Languages");
+
+        let mut m = with_langs(make_test_mod("foo.bar.ru", "Foo Bar"));
         m.has_assemblies = true;
         assert!(!detect_is_translation(&m), "Package ID suffix .ru WITH assemblies (no kw)");
-        
+
         m.name = "Foo Bar русификатор".to_string();
         assert!(detect_is_translation(&m), "Package ID suffix .ru WITH assemblies (with kw)");
 
-        let m = make_test_mod("foo.bar", "Foo Bar 汉化");
+        let m = with_langs(make_test_mod("foo.bar", "Foo Bar 汉化"));
         assert!(detect_is_translation(&m), "Keyword in name 汉化");
 
-        let mut m = make_test_mod("foo.bar.trans", "Foo Bar translation");
+        let mut m = with_langs(make_test_mod("foo.bar.trans", "Foo Bar translation"));
         m.has_assemblies = true;
         assert!(detect_is_translation(&m), "Mod with DLL but translation in name");
+    }
+
+    #[test]
+    fn content_mods_are_never_translations() {
+        let mut patch_mod = with_langs(make_test_mod("someone.compatpatch", "Some Compatibility Patch"));
+        patch_mod.has_other_content = true; // Patches/
+        assert!(!detect_is_translation(&patch_mod), "Patches + Languages is a patch mod");
+
+        let mut retexture = with_langs(make_test_mod("someone.retexture.ru", "Retexture [RU]"));
+        retexture.has_other_content = true; // Textures/
+        assert!(!detect_is_translation(&retexture), "Textures + Languages is a retexture");
+
+        let mut defs_mod = with_langs(make_test_mod("someone.translation.tools", "Translation Tools"));
+        defs_mod.has_defs = true;
+        assert!(!detect_is_translation(&defs_mod), "Defs make it a content mod despite the name");
     }
 
     #[test]

@@ -21,6 +21,7 @@ ureq = "2.10"
 open = "5.3"
 rfd = "0.15"
 libloading = "0.8"
+trash = "5"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
@@ -32,5 +33,6 @@ winres = "0.1"
 opt-level = 3
 lto = "thin"
 codegen-units = 1
-panic = "abort"
+# No panic = "abort": the texture optimizer relies on catch_unwind so one broken
+# image cannot take the whole app down.
 strip = true

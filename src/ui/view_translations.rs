@@ -43,7 +43,7 @@ pub fn render_translations_view(app: &mut App, ui: &mut Ui) {
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if danger_button_icon(ui, ICON_TRASH, t.get(TranslationKey::TransBtnDeleteAll)).clicked() {
-                app.delete_detected_translations();
+                app.request_delete_translations();
             }
             if secondary_button_icon(ui, ICON_SEARCH, t.get(TranslationKey::TransBtnFindWorkshop)).clicked() {
                 app.search_workshop_translations_for_selected();
@@ -83,11 +83,8 @@ pub fn render_translations_view(app: &mut App, ui: &mut Ui) {
 fn render_installed_translations_column(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
 
-    let translation_mods: Vec<&ModInfo> = app
-        .all_mods
-        .iter()
-        .filter(|m| m.is_translation_mod)
-        .collect();
+    // Same list that "Delete all translations" would act on: selected language only.
+    let translation_mods: Vec<&ModInfo> = app.translations_for_target_lang();
 
     ui.horizontal(|ui| {
         ui.heading(
@@ -161,7 +158,7 @@ fn render_installed_translations_column(app: &mut App, ui: &mut Ui) {
         });
 
     if let Some(pkg_id) = to_delete_single {
-        app.delete_single_mod(&pkg_id);
+        app.request_delete_single(&pkg_id);
     }
 }
 

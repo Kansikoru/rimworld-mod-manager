@@ -9,7 +9,8 @@ use crate::analyzer::{analyze_rimworld_log, detect_rimworld_log_paths, LogReport
 use crate::cleaner::{delete_translation_mods, unsubscribe_and_delete_single};
 use crate::community_rules::get_default_community_db;
 use crate::dependencies::{validate_dependencies, DependencyProblem, DependencyReport};
-use crate::i18n::{I18n, Language, TranslationKey};
+use crate::game_install::known_launch_flags;
+use crate::i18n::{fmt, I18n, Language, TranslationKey};
 use crate::matcher::classify_and_link_translations;
 use crate::models::{is_protected_package_id, is_optimizer_blacklisted, ModInfo, TranslationTargetLang};
 use crate::mods_config::{get_default_mods_config_path, load_active_mods, save_active_mods};
@@ -25,6 +26,32 @@ use crate::steam::{
 use crate::ui::icons::*;
 use crate::ui::theme::{apply_dark_theme, THEME};
 use crate::workshop_search::{search_steam_workshop, WorkshopItemResult};
+
+/// Finds an installed mod by package ID: case-insensitive, and understands the `_steam`
+/// suffix RimWorld adds to a Workshop copy when a local copy with the same ID also exists.
+pub fn find_mod_in<'a>(all_mods: &'a [ModInfo], id: &str) -> Option<&'a ModInfo> {
+    let by_id = |needle: &str| all_mods.iter().find(|m| m.package_id.eq_ignore_ascii_case(needle));
+    by_id(id).or_else(|| {
+        let lower = id.to_lowercase();
+        lower.strip_suffix("_steam").and_then(by_id)
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteKind {
+    /// "Delete all translations" for the selected language
+    Translations,
+    /// A single mod (trash icon)
+    Single,
+}
+
+/// Deletion waiting for the user's confirmation in a modal window.
+#[derive(Debug, Clone)]
+pub struct PendingDelete {
+    pub kind: DeleteKind,
+    pub ids: Vec<String>,
+    pub names: Vec<String>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppTab {
@@ -85,10 +112,14 @@ pub struct App {
     // Settings & Paths State
     pub steam_paths: SteamPaths,
     pub mods_config_path: Option<PathBuf>,
-    pub launch_quicktest: bool,
-    pub launch_logfile: bool,
-    pub launch_popupwindow: bool,
+    /// Checked launch flags (from `known_launch_flags` of the detected engine).
+    pub launch_flags: std::collections::HashSet<String>,
+    /// Free-form extra launch arguments, split on whitespace.
+    pub launch_extra_args: String,
     pub community_db_rules_count: usize,
+
+    /// Deletion waiting for confirmation (modal window).
+    pub pending_delete: Option<PendingDelete>,
 
     // Status Message
     pub status_message: String,
@@ -175,10 +206,11 @@ impl Default for App {
 
             steam_paths,
             mods_config_path,
-            launch_quicktest: false,
-            launch_logfile: true,
-            launch_popupwindow: false,
+            launch_flags: ["-logfile".to_string()].into_iter().collect(),
+            launch_extra_args: String::new(),
             community_db_rules_count: db_rules_count,
+
+            pending_delete: None,
 
             status_message: "Готов к работе".to_string(),
         };
@@ -203,10 +235,51 @@ impl App {
                 self.i18n.get(TranslationKey::CrashSummaryClean).to_string()
             };
         } else {
-            self.status_message = self.i18n.get(TranslationKey::StatusModsCount)
-                .replace("{}", &self.all_mods.len().to_string())
-                .replacen("{}", &self.active_mods.len().to_string(), 1);
+            self.status_message = self.mods_count_status();
         }
+    }
+
+    fn mods_count_status(&self) -> String {
+        fmt(
+            self.i18n.get(TranslationKey::StatusModsCount),
+            &[&self.all_mods.len().to_string(), &self.active_mods.len().to_string()],
+        )
+    }
+
+    /// Finds an installed mod by package ID: case-insensitive, and understands the
+    /// `_steam` suffix RimWorld adds to a Workshop copy when a local copy also exists.
+    pub fn find_mod(&self, id: &str) -> Option<&ModInfo> {
+        find_mod_in(&self.all_mods, id)
+    }
+
+    /// Official content (Core/DLC in the game's Data folder) — never touched by the optimizer or deletion.
+    pub fn is_official_mod(&self, m: &ModInfo) -> bool {
+        let id = m.package_id.to_lowercase();
+        if is_protected_package_id(&id) || id.starts_with("ludeon.rimworld") {
+            return true;
+        }
+        self.steam_paths
+            .game_data_path
+            .as_ref()
+            .map(|data| m.dir_path.starts_with(data))
+            .unwrap_or(false)
+    }
+
+    /// Switches the game folder from Settings: recomputes engine, exe, Steam DLL, Mods/Data and rescans.
+    pub fn set_game_path(&mut self, folder: PathBuf) {
+        self.steam_paths.set_game_dir(folder);
+        self.rescan_mods();
+    }
+
+    /// Launch arguments: checked flags valid for the detected engine + extra arguments.
+    pub fn launch_args(&self) -> Vec<String> {
+        let mut args: Vec<String> = known_launch_flags(self.steam_paths.engine)
+            .iter()
+            .filter(|(flag, _)| self.launch_flags.contains(*flag))
+            .map(|(flag, _)| flag.to_string())
+            .collect();
+        args.extend(self.launch_extra_args.split_whitespace().map(str::to_string));
+        args
     }
 
     pub fn toggle_optimizer_ignore(&mut self, package_id: &str) {
@@ -240,13 +313,13 @@ impl App {
         self.all_mods = scanned;
 
         if let Some(ref config_p) = self.mods_config_path {
-            let loaded = load_active_mods(config_p);
-            let known_ids: std::collections::HashSet<String> = self.all_mods.iter().map(|m| m.package_id.to_lowercase()).collect();
-            self.active_mods = loaded.into_iter().filter(|id| known_ids.contains(&id.to_lowercase())).collect();
+            // Keep IDs that were not found on disk: they stay in ModsConfig.xml on save
+            // and are shown as "not on disk" instead of being silently dropped.
+            self.active_mods = load_active_mods(config_p);
         }
 
         self.validate_deps();
-        self.status_message = self.i18n.get(TranslationKey::StatusModsCount).replace("{}", &self.all_mods.len().to_string()).replacen("{}", &self.active_mods.len().to_string(), 1);
+        self.status_message = self.mods_count_status();
     }
 
     pub fn validate_deps(&mut self) {
@@ -303,33 +376,96 @@ impl App {
         self.sort_active_mods();
     }
 
-    pub fn delete_detected_translations(&mut self) {
-        let trans_refs: Vec<&ModInfo> = self
-            .all_mods
+    /// Translation mods installed for the language selected on the Translations tab.
+    pub fn translations_for_target_lang(&self) -> Vec<&ModInfo> {
+        self.all_mods
             .iter()
-            .filter(|m| m.is_translation_mod)
-            .collect();
-
-        let res = delete_translation_mods(&trans_refs, &self.steam_paths);
-        self.status_message = format!(
-            "Удалено переводов: {} | Отписано в Steam: {}",
-            res.deleted_count, res.unsubscribed_count
-        );
-        self.rescan_mods();
+            .filter(|m| m.is_translation_mod && !self.is_official_mod(m))
+            .filter(|m| self.trans_target_lang.matches_mod_info(m))
+            .collect()
     }
 
-    pub fn delete_single_mod(&mut self, pkg_id: &str) {
-        if let Some(m) = self.all_mods.iter().find(|m| m.package_id.eq_ignore_ascii_case(pkg_id)) {
-            match unsubscribe_and_delete_single(m, &self.steam_paths) {
-                Ok(_) => {
-                    self.status_message = format!("Мод {} успешно удалён", m.name);
-                    self.rescan_mods();
+    /// "Delete all translations": only for the selected language, and only after confirmation.
+    pub fn request_delete_translations(&mut self) {
+        let mods = self.translations_for_target_lang();
+        if mods.is_empty() {
+            self.status_message = fmt(
+                self.i18n.get(TranslationKey::TransNoneForLang),
+                &[self.trans_target_lang.label()],
+            );
+            return;
+        }
+        let pending = PendingDelete {
+            kind: DeleteKind::Translations,
+            ids: mods.iter().map(|m| m.package_id.clone()).collect(),
+            names: mods.iter().map(|m| m.name.clone()).collect(),
+        };
+        self.pending_delete = Some(pending);
+    }
+
+    pub fn request_delete_single(&mut self, pkg_id: &str) {
+        let Some(m) = self.find_mod(pkg_id) else {
+            return;
+        };
+        if self.is_official_mod(m) {
+            self.status_message = format!("Защищённый мод '{}' нельзя удалить!", m.package_id);
+            return;
+        }
+        let pending = PendingDelete {
+            kind: DeleteKind::Single,
+            ids: vec![m.package_id.clone()],
+            names: vec![m.name.clone()],
+        };
+        self.pending_delete = Some(pending);
+    }
+
+    /// Runs the deletion the user confirmed in the modal window.
+    pub fn confirm_pending_delete(&mut self) {
+        let Some(pending) = self.pending_delete.take() else {
+            return;
+        };
+        let targets: Vec<&ModInfo> = pending
+            .ids
+            .iter()
+            .filter_map(|id| self.find_mod(id))
+            .filter(|m| !self.is_official_mod(m))
+            .collect();
+
+        match pending.kind {
+            DeleteKind::Translations => {
+                let res = delete_translation_mods(&targets, &self.steam_paths);
+                let mut msg = format!(
+                    "Перемещено в Корзину: {} | Отписано в Steam: {}",
+                    res.deleted_count, res.unsubscribed_count
+                );
+                if let Some(err) = res.errors.first() {
+                    msg.push_str(&format!(" | Ошибок: {} ({})", res.errors.len(), err));
                 }
-                Err(e) => {
-                    self.status_message = format!("Ошибка удаления: {}", e);
+                self.status_message = msg;
+                self.rescan_mods_keep_status();
+            }
+            DeleteKind::Single => {
+                let Some(m) = targets.first() else {
+                    return;
+                };
+                let name = m.name.clone();
+                match unsubscribe_and_delete_single(m, &self.steam_paths) {
+                    Ok(_) => {
+                        self.status_message = format!("Мод {} перемещён в Корзину", name);
+                        self.rescan_mods_keep_status();
+                    }
+                    Err(e) => {
+                        self.status_message = format!("Ошибка удаления: {}", e);
+                    }
                 }
             }
         }
+    }
+
+    fn rescan_mods_keep_status(&mut self) {
+        let msg = self.status_message.clone();
+        self.rescan_mods();
+        self.status_message = msg;
     }
 
     pub fn search_workshop_translations_for_selected(&mut self) {
@@ -373,15 +509,7 @@ impl App {
 
     pub fn start_texture_optimization(&mut self) {
         let dirs = match self.opt_scope {
-            OptimizeScope::AllInstalled => {
-                let valid_mods: Vec<ModInfo> = self.all_mods.iter().filter(|m| {
-                    !is_protected_package_id(&m.package_id) 
-                        && !m.package_id.to_lowercase().starts_with("ludeon.rimworld")
-                        && !self.opt_ignore_list.contains(&m.package_id.to_lowercase())
-                        && !is_optimizer_blacklisted(&m.package_id)
-                }).cloned().collect();
-                dirs_from_mods(&valid_mods)
-            }
+            OptimizeScope::AllInstalled => dirs_from_mods(&self.optimizable_mods()),
             OptimizeScope::ActiveOnly => {
                 let active_set: std::collections::HashSet<String> =
                     self.active_mods.iter().map(|s| s.to_lowercase()).collect();
@@ -390,8 +518,7 @@ impl App {
                     .iter()
                     .filter(|m| {
                         active_set.contains(&m.package_id.to_lowercase())
-                            && !is_protected_package_id(&m.package_id)
-                            && !m.package_id.to_lowercase().starts_with("ludeon.rimworld")
+                            && !self.is_official_mod(m)
                             && !self.opt_ignore_list.contains(&m.package_id.to_lowercase())
                             && !is_optimizer_blacklisted(&m.package_id)
                     })
@@ -406,9 +533,8 @@ impl App {
                         .iter()
                         .find(|m| m.package_id.eq_ignore_ascii_case(sel_id));
                     if let Some(m) = sel_mod {
-                        if !is_protected_package_id(&m.package_id) 
-                            && !m.package_id.to_lowercase().starts_with("ludeon.rimworld")
-                            && !self.opt_ignore_list.contains(&m.package_id.to_lowercase()) 
+                        if !self.is_official_mod(m)
+                            && !self.opt_ignore_list.contains(&m.package_id.to_lowercase())
                             && !is_optimizer_blacklisted(&m.package_id) {
                             vec![m.dir_path.clone()]
                         } else {
@@ -453,8 +579,21 @@ impl App {
         self.status_message = "Отмена оптимизации...".to_string();
     }
 
+    /// Mods the optimizer may touch for "All mods": no Core/DLC, no blacklist, no user ignore list.
+    fn optimizable_mods(&self) -> Vec<ModInfo> {
+        self.all_mods
+            .iter()
+            .filter(|m| {
+                !self.is_official_mod(m)
+                    && !self.opt_ignore_list.contains(&m.package_id.to_lowercase())
+                    && !is_optimizer_blacklisted(&m.package_id)
+            })
+            .cloned()
+            .collect()
+    }
+
     pub fn scan_texture_counts(&mut self) {
-        let dirs = dirs_from_mods(&self.all_mods);
+        let dirs = dirs_from_mods(&self.optimizable_mods());
         let (needs, already) = count_textures_preview(&dirs);
         self.status_message = format!(
             "Текстур для конвертации: {} | Уже в DDS: {}",
@@ -462,10 +601,20 @@ impl App {
         );
     }
 
+    /// Rolls back every mod except Core/DLC — including ignored/blacklisted ones,
+    /// because older versions of the optimizer did not respect those lists.
     pub fn rollback_textures(&mut self) {
-        let dirs = dirs_from_mods(&self.all_mods);
-        let count = rollback_dds(&dirs);
-        self.status_message = format!("Удалено сконвертированных .dds файлов: {}", count);
+        let mods: Vec<ModInfo> = self
+            .all_mods
+            .iter()
+            .filter(|m| !self.is_official_mod(m))
+            .cloned()
+            .collect();
+        let res = rollback_dds(&dirs_from_mods(&mods));
+        self.status_message = format!(
+            "Откат: удалено .dds: {} | восстановлено исходников из бэкапа: {} | ошибок: {}",
+            res.removed, res.restored, res.errors
+        );
     }
 
     pub fn run_log_analysis(&mut self) {
@@ -497,12 +646,8 @@ impl App {
     }
 
     pub fn launch_game(&mut self) {
-        match launch_rimworld(
-            &self.steam_paths,
-            self.launch_quicktest,
-            self.launch_logfile,
-            self.launch_popupwindow,
-        ) {
+        let args = self.launch_args();
+        match launch_rimworld(&self.steam_paths, &args) {
             Ok(_) => {
                 self.status_message = "Процесс RimWorld запущен!".to_string();
             }
@@ -556,7 +701,7 @@ impl eframe::App for App {
                     } => {
                         self.opt_is_running = false;
                         self.status_message = format!(
-                            "Конвертация завершена! Обработано: {}, Ошибок: {}, Удалено исходников: {}",
+                            "Конвертация завершена! Обработано: {}, Ошибок: {}, Исходников перенесено в бэкап: {}",
                             processed, errors, deleted_sources
                         );
                     }
@@ -655,7 +800,10 @@ impl eframe::App for App {
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
-                        egui::RichText::new(self.i18n.get(TranslationKey::AppStatusBarStats).replace("{}", &self.all_mods.len().to_string()).replacen("{}", &self.active_mods.len().to_string(), 1))
+                        egui::RichText::new(fmt(
+                            self.i18n.get(TranslationKey::AppStatusBarStats),
+                            &[&self.all_mods.len().to_string(), &self.active_mods.len().to_string()],
+                        ))
                         .color(THEME.text_muted)
                         .size(11.0),
                     );
@@ -672,8 +820,57 @@ impl eframe::App for App {
             AppTab::Settings => crate::ui::view_settings::render_settings_view(self, ui),
         });
 
+        self.render_delete_confirmation(ctx);
+
         if self.opt_is_running {
             ctx.request_repaint();
+        }
+    }
+}
+
+impl App {
+    /// Modal window: lists the mods that will be unsubscribed and moved to the Recycle Bin.
+    fn render_delete_confirmation(&mut self, ctx: &egui::Context) {
+        let Some(pending) = self.pending_delete.as_ref() else {
+            return;
+        };
+        let t = self.i18n;
+        let mut confirm = false;
+        let mut cancel = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+
+        egui::Window::new(t.get(TranslationKey::ConfirmDeleteTitle))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(fmt(
+                    t.get(TranslationKey::ConfirmDeleteBody),
+                    &[&pending.names.len().to_string()],
+                ));
+                ui.add_space(6.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("confirm_delete_list")
+                    .max_height(260.0)
+                    .show(ui, |ui| {
+                        for (name, id) in pending.names.iter().zip(&pending.ids) {
+                            ui.label(format!("• {}  ({})", name, id));
+                        }
+                    });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if crate::ui::components::danger_button(ui, t.get(TranslationKey::ConfirmDeleteBtn)).clicked() {
+                        confirm = true;
+                    }
+                    if ui.button(t.get(TranslationKey::BtnCancel)).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+
+        if confirm {
+            self.confirm_pending_delete();
+        } else if cancel {
+            self.pending_delete = None;
         }
     }
 }

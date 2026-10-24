@@ -56,6 +56,10 @@ pub struct ModInfo {
     pub steam_item_id: Option<String>,
     pub has_defs: bool,
     pub has_assemblies: bool,
+    /// The mod ships something besides About/ and Languages/
+    /// (Patches, Textures, Sounds, AssetBundles, Shaders...). Such a mod is never a pure translation.
+    #[serde(default)]
+    pub has_other_content: bool,
 }
 
 impl ModInfo {

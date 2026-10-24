@@ -1,6 +1,7 @@
 use eframe::egui::{self, ProgressBar, Ui};
 
 use crate::app::App;
+use crate::game_install::GameEngine;
 use crate::i18n::TranslationKey;
 use crate::optimizer::OptimizeScope;
 use super::components::*;
@@ -18,6 +19,17 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
     );
 
     ui.add_space(8.0);
+
+    if app.steam_paths.engine == GameEngine::Waylith {
+        card_container(ui, |ui| {
+            ui.label(
+                egui::RichText::new(format!("⚠ {}", t.get(TranslationKey::OptWaylithWarning)))
+                    .color(THEME.accent_amber)
+                    .strong(),
+            );
+        });
+        ui.add_space(8.0);
+    }
 
     // Main Control Card
     card_container(ui, |ui| {
@@ -52,7 +64,7 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
             });
             if app.opt_delete_source {
                 ui.label(
-                    egui::RichText::new("Внимание: Удаление оригиналов может сломать интерфейс в нестандартных модах.\nОставьте выключенным, если у вас достаточно места на диске.")
+                    egui::RichText::new("Исходники переносятся в %LOCALAPPDATA%\\RimWorldModManager\\texture_backup и возвращаются кнопкой «Откатить».\nОставьте выключенным, если у вас достаточно места на диске: некоторые моды читают PNG напрямую.")
                         .color(THEME.accent_rose)
                         .size(12.0)
                 );
