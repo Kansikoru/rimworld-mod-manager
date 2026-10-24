@@ -63,6 +63,18 @@ pub struct PendingDelete {
     pub names: Vec<String>,
 }
 
+/// Question shown in a modal window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingQuestion {
+    /// "Play" pressed with an unsaved load order.
+    LaunchUnsaved,
+    /// Window closed with an unsaved load order.
+    CloseUnsaved,
+    /// Rollback found DDS files that are not in the manager's log (old optimizer, RimPy
+    /// or the mod author). Each has a PNG/JPG next to it.
+    LegacyDds(Vec<PathBuf>),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppTab {
     Mods,
@@ -150,6 +162,21 @@ pub struct App {
 
     /// Deletion waiting for confirmation (modal window).
     pub pending_delete: Option<PendingDelete>,
+    /// Active list as it is in ModsConfig.xml on disk (lower case): detects unsaved changes.
+    saved_active_mods: Vec<String>,
+    /// The next rescan reads the active list from disk even with unsaved changes
+    /// (another ModsConfig.xml was picked).
+    reload_active_from_disk: bool,
+    /// Question shown in a modal window.
+    pub pending_question: Option<PendingQuestion>,
+    /// Closing the window was confirmed: don't ask again.
+    allow_close: bool,
+    /// Background delete (Steam unsubscribe + Recycle Bin); yields the status message.
+    pub delete_rx: Option<Receiver<String>>,
+    /// Background reset of the 1.7 game cache.
+    pub cache_rx: Option<Receiver<String>>,
+    /// Background removal of DDS files that are not in the manager's log.
+    pub legacy_rx: Option<Receiver<String>>,
 
     /// Mods found more than once on disk (same packageId in several folders).
     pub duplicate_mods: Vec<crate::scanner::DuplicateModEntry>,
@@ -320,6 +347,13 @@ impl App {
             steam_rx: None,
 
             pending_delete: None,
+            saved_active_mods: Vec::new(),
+            reload_active_from_disk: true,
+            pending_question: None,
+            allow_close: false,
+            delete_rx: None,
+            cache_rx: None,
+            legacy_rx: None,
             duplicate_mods: Vec::new(),
 
             category_overrides: crate::categories::load_overrides(&crate::categories::overrides_path()),
@@ -402,6 +436,39 @@ impl App {
                 self.log_report = Some(report);
             }
         }
+        if let Some(rx) = &self.delete_rx {
+            if let Ok(msg) = rx.try_recv() {
+                self.delete_rx = None;
+                self.status_message = msg;
+                self.rescan_mods_keep_status();
+            }
+        }
+        if let Some(rx) = &self.cache_rx {
+            if let Ok(msg) = rx.try_recv() {
+                self.cache_rx = None;
+                self.status_message = msg;
+            }
+        }
+        if let Some(rx) = &self.legacy_rx {
+            if let Ok(msg) = rx.try_recv() {
+                self.legacy_rx = None;
+                self.status_message = msg;
+            }
+        }
+    }
+
+    /// The load order differs from ModsConfig.xml on disk.
+    pub fn has_unsaved_changes(&self) -> bool {
+        self.active_mods.len() != self.saved_active_mods.len()
+            || self
+                .active_mods
+                .iter()
+                .zip(&self.saved_active_mods)
+                .any(|(a, s)| !a.eq_ignore_ascii_case(s))
+    }
+
+    fn remember_saved_order(&mut self, on_disk: &[String]) {
+        self.saved_active_mods = on_disk.iter().map(|s| s.to_lowercase()).collect();
     }
 
     pub fn is_rescanning(&self) -> bool {
@@ -438,6 +505,13 @@ pub fn lookup_mod<'a>(
         .get(&lower)
         .or_else(|| lower.strip_suffix("_steam").and_then(|base| index.get(base)))
         .and_then(|&i| mods.get(i))
+}
+
+/// Active list after a rescan: an unsaved load order survives (rescan button, mod deleted, …);
+/// without unsaved changes, or when another ModsConfig.xml was picked, the file wins, so
+/// outside edits show up. `None` = keep the current list.
+pub fn active_after_rescan(unsaved: bool, force_reload: bool, on_disk: &[String]) -> Option<Vec<String>> {
+    (force_reload || !unsaved).then(|| on_disk.to_vec())
 }
 
 /// Adds `id` (lower case) unless the list already has it in any letter case.
@@ -571,6 +645,7 @@ impl App {
     pub fn set_mods_config_path(&mut self, file: PathBuf) {
         self.custom_config_path = Some(file.clone());
         self.mods_config_path = Some(file);
+        self.reload_active_from_disk = true;
         self.rescan_mods();
     }
 
@@ -581,6 +656,7 @@ impl App {
         self.custom_config_path = None;
         self.steam_paths = detect_steam_paths();
         self.mods_config_path = get_default_mods_config_path();
+        self.reload_active_from_disk = true;
         self.rescan_mods();
     }
 
@@ -687,10 +763,15 @@ impl App {
                 .cleanup_unreferenced(&previews);
         });
 
-        if let Some(ref config_p) = self.mods_config_path {
+        if let Some(config_p) = self.mods_config_path.clone() {
             // Keep IDs that were not found on disk: they stay in ModsConfig.xml on save
             // and are shown as "not on disk" instead of being silently dropped.
-            self.active_mods = load_active_mods(config_p);
+            let on_disk = load_active_mods(&config_p);
+            if let Some(list) = active_after_rescan(self.has_unsaved_changes(), self.reload_active_from_disk, &on_disk) {
+                self.active_mods = list;
+            }
+            self.reload_active_from_disk = false;
+            self.remember_saved_order(&on_disk);
         }
 
         self.validate_deps();
@@ -716,15 +797,33 @@ impl App {
         self.status_message = self.i18n.get(TranslationKey::AppSortedMsg).to_string();
     }
 
-    pub fn save_config(&mut self) {
-        if let Some(ref config_p) = self.mods_config_path {
-            match save_active_mods(config_p, &self.active_mods) {
-                Ok(_) => {
-                    self.status_message = tr!("ModsConfig.xml сохранён", "ModsConfig.xml saved").to_string();
-                }
-                Err(e) => {
-                    self.status_message = tr!("Ошибка сохранения ModsConfig.xml: {}", "Could not save ModsConfig.xml: {}", e);
-                }
+    /// Writes the load order to ModsConfig.xml. Returns whether it was saved.
+    pub fn save_config(&mut self) -> bool {
+        let Some(config_p) = self.mods_config_path.clone() else {
+            self.status_message =
+                tr!("ModsConfig.xml не найден — укажите его в Настройках", "ModsConfig.xml not found — set it in Settings")
+                    .to_string();
+            return false;
+        };
+        match save_active_mods(&config_p, &self.active_mods) {
+            Ok(_) => {
+                let saved = self.active_mods.clone();
+                self.remember_saved_order(&saved);
+                self.status_message = if crate::game_install::is_game_running() {
+                    tr!(
+                        "ModsConfig.xml сохранён, но RimWorld запущен: порядок применится после перезапуска игры, а изменения модов в самой игре перезапишут этот файл",
+                        "ModsConfig.xml saved, but RimWorld is running: the order applies after a game restart, and changing mods inside the game will overwrite this file"
+                    )
+                    .to_string()
+                } else {
+                    tr!("ModsConfig.xml сохранён", "ModsConfig.xml saved").to_string()
+                };
+                true
+            }
+            Err(e) => {
+                self.status_message =
+                    tr!("Ошибка сохранения ModsConfig.xml: {}", "Could not save ModsConfig.xml: {}", e);
+                false
             }
         }
     }
@@ -814,20 +913,32 @@ impl App {
     }
 
     /// Runs the deletion the user confirmed in the modal window.
+    /// Runs the deletion the user confirmed in the modal window — in the background: the
+    /// Steam request and moving big folders to the Recycle Bin take seconds (R4).
     pub fn confirm_pending_delete(&mut self) {
         let Some(pending) = self.pending_delete.take() else {
             return;
         };
-        let targets: Vec<&ModInfo> = pending
+        if self.delete_rx.is_some() {
+            return;
+        }
+        let targets: Vec<ModInfo> = pending
             .ids
             .iter()
             .filter_map(|id| self.find_mod(id))
             .filter(|m| !self.is_official_mod(m))
+            .cloned()
             .collect();
+        if targets.is_empty() {
+            return;
+        }
+        let steam_paths = self.steam_paths.clone();
+        self.status_message = tr!("Удаление...", "Deleting...").to_string();
 
-        match pending.kind {
+        self.delete_rx = Some(self.spawn_task(move || match pending.kind {
             DeleteKind::Translations => {
-                let res = delete_translation_mods(&targets, &self.steam_paths);
+                let refs: Vec<&ModInfo> = targets.iter().collect();
+                let res = delete_translation_mods(&refs, &steam_paths);
                 let mut msg = tr!(
                     "Перемещено в Корзину: {} | Отписано в Steam: {}",
                     "Moved to Recycle Bin: {} | Unsubscribed in Steam: {}",
@@ -837,26 +948,20 @@ impl App {
                 if let Some(err) = res.errors.first() {
                     msg.push_str(&tr!(" | Ошибок: {} ({})", " | Errors: {} ({})", res.errors.len(), err));
                 }
-                self.status_message = msg;
-                self.rescan_mods_keep_status();
+                msg
             }
             DeleteKind::Single => {
-                let Some(m) = targets.first() else {
-                    return;
-                };
-                let name = m.name.clone();
-                match unsubscribe_and_delete_single(m, &self.steam_paths) {
-                    Ok(_) => {
-                        self.status_message =
-                            tr!("Мод {} перемещён в Корзину", "Mod {} moved to the Recycle Bin", name);
-                        self.rescan_mods_keep_status();
-                    }
-                    Err(e) => {
-                        self.status_message = tr!("Ошибка удаления: {}", "Delete failed: {}", e);
-                    }
+                let m = &targets[0];
+                match unsubscribe_and_delete_single(m, &steam_paths) {
+                    Ok(()) => tr!("Мод {} перемещён в Корзину", "Mod {} moved to the Recycle Bin", m.name),
+                    Err(e) => tr!("Мод {} не удалён: {}", "Mod {} not deleted: {}", m.name, e),
                 }
             }
-        }
+        }));
+    }
+
+    pub fn is_deleting(&self) -> bool {
+        self.delete_rx.is_some()
     }
 
     /// Rescan without replacing the current status message (e.g. "moved to Recycle Bin").
@@ -968,47 +1073,29 @@ impl App {
         }
     }
 
-    pub fn start_texture_optimization(&mut self) {
-        let dirs = match self.opt_scope {
-            OptimizeScope::AllInstalled => dirs_from_mods(&self.optimizable_mods()),
-            OptimizeScope::ActiveOnly => {
-                let active_set: std::collections::HashSet<String> =
-                    self.active_mods.iter().map(|s| s.to_lowercase()).collect();
-                let active_mods: Vec<ModInfo> = self
-                    .all_mods
-                    .iter()
-                    .filter(|m| {
-                        active_set.contains(&m.package_id.to_lowercase())
-                            && !self.is_official_mod(m)
-                            && !self.opt_ignore_list.contains(&m.package_id.to_lowercase())
-                            && !is_optimizer_blacklisted(&m.package_id)
-                    })
-                    .cloned()
-                    .collect();
-                dirs_from_mods(&active_mods)
-            }
-            OptimizeScope::SelectedOnly => {
-                if let Some(ref sel_id) = self.selected_mod_id {
-                    let sel_mod = self
-                        .all_mods
-                        .iter()
-                        .find(|m| m.package_id.eq_ignore_ascii_case(sel_id));
-                    if let Some(m) = sel_mod {
-                        if !self.is_official_mod(m)
-                            && !self.opt_ignore_list.contains(&m.package_id.to_lowercase())
-                            && !is_optimizer_blacklisted(&m.package_id) {
-                            vec![m.dir_path.clone()]
-                        } else {
-                            Vec::new()
-                        }
-                    } else {
-                        Vec::new()
-                    }
-                } else {
-                    Vec::new()
+    /// Mod folders for the chosen scope (All / Active / Selected), without Core/DLC,
+    /// the blacklist and the user's ignore list. Used by both "Start" and "Scan" (R7).
+    fn optimizer_target_dirs(&self) -> Vec<PathBuf> {
+        let active: std::collections::HashSet<String> =
+            self.active_mods.iter().map(|s| s.to_lowercase()).collect();
+        let selected = self.selected_mod_id.as_deref().map(str::to_lowercase);
+        let mods: Vec<ModInfo> = self
+            .optimizable_mods()
+            .into_iter()
+            .filter(|m| {
+                let id = m.package_id.to_lowercase();
+                match self.opt_scope {
+                    OptimizeScope::AllInstalled => true,
+                    OptimizeScope::ActiveOnly => active.contains(&id),
+                    OptimizeScope::SelectedOnly => selected.as_deref() == Some(id.as_str()),
                 }
-            }
-        };
+            })
+            .collect();
+        dirs_from_mods(&mods)
+    }
+
+    pub fn start_texture_optimization(&mut self) {
+        let dirs = self.optimizer_target_dirs();
 
         if dirs.is_empty() {
             self.status_message =
@@ -1056,18 +1143,27 @@ impl App {
     }
 
     /// RimWorld 1.7: moves TextureCache and ShaderCache to the Recycle Bin (game rebuilds them).
+    /// In the background: the cache can be gigabytes, moving it to the Recycle Bin takes a while (R4).
     pub fn clear_game_caches(&mut self) {
-        let size_mb = crate::game_install::game_cache_size() as f64 / (1024.0 * 1024.0);
-        self.status_message = match crate::game_install::clear_game_caches() {
-            Ok(cleared) if cleared.is_empty() => tr!("Кэш игры уже пуст", "The game cache is already empty").to_string(),
-            Ok(cleared) => tr!(
-                "Кэш игры перемещён в Корзину ({}, {:.0} МБ). Игра пересоберёт его при следующем запуске.",
-                "Game cache moved to the Recycle Bin ({}, {:.0} MB). The game rebuilds it on the next start.",
-                cleared.join(", "),
-                size_mb
-            ),
-            Err(e) => tr!("Не удалось очистить кэш: {}", "Could not clear the cache: {}", e),
-        };
+        if self.cache_rx.is_some() {
+            return;
+        }
+        self.status_message = tr!("Очистка кэша игры...", "Clearing the game cache...").to_string();
+        self.cache_rx = Some(self.spawn_task(|| {
+            let size_mb = crate::game_install::game_cache_size() as f64 / (1024.0 * 1024.0);
+            match crate::game_install::clear_game_caches() {
+                Ok(cleared) if cleared.is_empty() => {
+                    tr!("Кэш игры уже пуст", "The game cache is already empty").to_string()
+                }
+                Ok(cleared) => tr!(
+                    "Кэш игры перемещён в Корзину ({}, {:.0} МБ). Игра пересоберёт его при следующем запуске.",
+                    "Game cache moved to the Recycle Bin ({}, {:.0} MB). The game rebuilds it on the next start.",
+                    cleared.join(", "),
+                    size_mb
+                ),
+                Err(e) => tr!("Не удалось очистить кэш: {}", "Could not clear the cache: {}", e),
+            }
+        }));
     }
 
     pub fn cancel_texture_optimization(&mut self) {
@@ -1090,7 +1186,7 @@ impl App {
 
     /// "Scan": counts in a background thread (no UI freeze on big mod folders).
     pub fn scan_texture_counts(&mut self) {
-        let dirs = dirs_from_mods(&self.optimizable_mods());
+        let dirs = self.optimizer_target_dirs();
         let (tx, rx) = channel();
         texture_summary_async(dirs, self.opt_force, tx);
         self.opt_scan_rx = Some(rx);
@@ -1114,7 +1210,11 @@ impl App {
 
     /// Whether a background optimizer task (scan, rollback, conversion) is running.
     pub fn optimizer_busy(&self) -> bool {
-        self.opt_is_running || self.opt_scan_rx.is_some() || self.opt_rollback_rx.is_some()
+        self.opt_is_running
+            || self.opt_scan_rx.is_some()
+            || self.opt_rollback_rx.is_some()
+            || self.legacy_rx.is_some()
+            || matches!(self.pending_question, Some(PendingQuestion::LegacyDds(_)))
     }
 
     fn poll_optimizer_tasks(&mut self) {
@@ -1140,8 +1240,25 @@ impl App {
                     res.errors
                 );
                 self.opt_rollback_rx = None;
+                if !res.unlogged.is_empty() {
+                    self.pending_question = Some(PendingQuestion::LegacyDds(res.unlogged));
+                }
             }
         }
+    }
+
+    /// Deletes the DDS files the user agreed to remove after a rollback (background).
+    fn delete_unlogged_dds(&mut self, paths: Vec<PathBuf>) {
+        self.status_message = tr!("Удаление DDS...", "Deleting DDS...").to_string();
+        self.legacy_rx = Some(self.spawn_task(move || {
+            let (removed, errors) = crate::optimizer::delete_files(&paths);
+            tr!(
+                "Удалено DDS не из журнала: {} | ошибок: {}",
+                "Unlogged DDS deleted: {} | errors: {}",
+                removed,
+                errors
+            )
+        }));
     }
 
     pub fn run_log_analysis(&mut self) {
@@ -1179,7 +1296,16 @@ impl App {
         }
     }
 
+    /// "Play": with an unsaved load order, asks first (save and play / play as is / cancel).
     pub fn launch_game(&mut self) {
+        if self.has_unsaved_changes() {
+            self.pending_question = Some(PendingQuestion::LaunchUnsaved);
+        } else {
+            self.launch_game_now();
+        }
+    }
+
+    fn launch_game_now(&mut self) {
         let args = self.launch_args();
         match launch_rimworld(&self.steam_paths, &args) {
             Ok(_) => {
@@ -1402,7 +1528,14 @@ impl eframe::App for App {
             AppTab::Settings => crate::ui::view_settings::render_settings_view(self, ui),
         });
 
+        // Closing the window with an unsaved load order: ask first.
+        if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close && self.has_unsaved_changes() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.pending_question = Some(PendingQuestion::CloseUnsaved);
+        }
+
         self.render_delete_confirmation(ctx);
+        self.render_question(ctx);
         self.save_settings_if_changed();
 
         if self.opt_is_running {
@@ -1456,6 +1589,114 @@ impl App {
             self.pending_delete = None;
         }
     }
+
+    /// Modal window for `pending_question`: unsaved load order (Play / close) and DDS files
+    /// that are not in the manager's log after a rollback.
+    fn render_question(&mut self, ctx: &egui::Context) {
+        let Some(question) = self.pending_question.clone() else {
+            return;
+        };
+        #[derive(PartialEq)]
+        enum Answer {
+            None,
+            Primary,
+            Secondary,
+            Cancel,
+        }
+        let mut answer = if ctx.input(|i| i.key_pressed(egui::Key::Escape)) { Answer::Cancel } else { Answer::None };
+
+        let (title, body, primary, secondary): (&str, String, &str, &str) = match &question {
+            PendingQuestion::LaunchUnsaved => (
+                tr!("Порядок модов не сохранён", "Load order not saved"),
+                tr!(
+                    "Игра загрузит порядок из ModsConfig.xml, а ваши изменения ещё не сохранены.",
+                    "The game loads the order from ModsConfig.xml, and your changes are not saved yet."
+                )
+                .to_string(),
+                tr!("Сохранить и играть", "Save and play"),
+                tr!("Играть без сохранения", "Play without saving"),
+            ),
+            PendingQuestion::CloseUnsaved => (
+                tr!("Порядок модов не сохранён", "Load order not saved"),
+                tr!(
+                    "Если закрыть программу сейчас, изменения порядка модов пропадут.",
+                    "If you close the app now, your load order changes are lost."
+                )
+                .to_string(),
+                tr!("Сохранить и выйти", "Save and exit"),
+                tr!("Выйти без сохранения", "Exit without saving"),
+            ),
+            PendingQuestion::LegacyDds(paths) => (
+                tr!("DDS не из журнала программы", "DDS files not in the manager's log"),
+                tr!(
+                    "Откат удалил все DDS, которые создала эта программа. Найдено ещё {}: их сделала старая версия оптимизатора, RimPy или автор мода. У каждого рядом лежит PNG/JPG, поэтому моды будут работать и без них. Авторские DDS лучше оставить.",
+                    "Rollback removed every DDS this manager created. {} more were found: made by an older optimizer version, RimPy or the mod author. Each has a PNG/JPG next to it, so mods work without them. Better keep the author's DDS.",
+                    paths.len()
+                ),
+                tr!("Оставить", "Keep them"),
+                tr!("Удалить их тоже", "Delete them too"),
+            ),
+        };
+
+        egui::Window::new(title)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_max_width(560.0);
+                ui.label(body);
+                if let PendingQuestion::LegacyDds(paths) = &question {
+                    ui.add_space(6.0);
+                    egui::ScrollArea::vertical()
+                        .id_salt("unlogged_dds_list")
+                        .max_height(220.0)
+                        .show(ui, |ui| {
+                            for p in paths {
+                                ui.label(egui::RichText::new(p.display().to_string()).size(11.0).color(THEME.text_muted));
+                            }
+                        });
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if crate::ui::components::primary_button(ui, primary).clicked() {
+                        answer = Answer::Primary;
+                    }
+                    if ui.button(secondary).clicked() {
+                        answer = Answer::Secondary;
+                    }
+                    if !matches!(question, PendingQuestion::LegacyDds(_))
+                        && ui.button(self.i18n.get(TranslationKey::BtnCancel)).clicked()
+                    {
+                        answer = Answer::Cancel;
+                    }
+                });
+            });
+
+        if answer == Answer::None {
+            return;
+        }
+        self.pending_question = None;
+        match (question, answer) {
+            (PendingQuestion::LaunchUnsaved, Answer::Primary) => {
+                if self.save_config() {
+                    self.launch_game_now();
+                }
+            }
+            (PendingQuestion::LaunchUnsaved, Answer::Secondary) => self.launch_game_now(),
+            (PendingQuestion::CloseUnsaved, Answer::Primary) => {
+                if self.save_config() {
+                    self.allow_close = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+            (PendingQuestion::CloseUnsaved, Answer::Secondary) => {
+                self.allow_close = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            (PendingQuestion::LegacyDds(paths), Answer::Secondary) => self.delete_unlogged_dds(paths),
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1482,6 +1723,14 @@ mod tests {
             dependencies: deps.iter().map(|d| d.to_string()).collect(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn unsaved_order_survives_rescan() {
+        let disk = vec!["brrainz.harmony".to_string(), "ludeon.rimworld".to_string()];
+        assert_eq!(active_after_rescan(true, false, &disk), None, "unsaved changes are kept");
+        assert_eq!(active_after_rescan(false, false, &disk), Some(disk.clone()), "no changes: follow the file");
+        assert_eq!(active_after_rescan(true, true, &disk), Some(disk), "other config picked: file wins");
     }
 
     #[test]

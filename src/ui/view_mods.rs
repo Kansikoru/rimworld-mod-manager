@@ -34,6 +34,18 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
         if success_button_icon(ui, ICON_SAVE, t.get(TranslationKey::BtnSaveConfig)).clicked() {
             app.save_config();
         }
+        if app.has_unsaved_changes() {
+            ui.label(
+                egui::RichText::new(crate::i18n::tr!("● не сохранено", "● unsaved"))
+                    .color(THEME.accent_amber)
+                    .size(12.0)
+                    .strong(),
+            )
+            .on_hover_text(crate::i18n::tr!(
+                "Порядок модов отличается от ModsConfig.xml. Нажмите «Сохранить порядок», чтобы игра его увидела.",
+                "The load order differs from ModsConfig.xml. Press \"Save Order\" so the game sees it."
+            ));
+        }
 
         let scanning = app.is_rescanning();
         ui.add_enabled_ui(!scanning, |ui| {

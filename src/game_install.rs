@@ -136,13 +136,23 @@ pub fn manager_data_dir() -> PathBuf {
 
 /// Whether RimWorld is running right now (1.6: RimWorldWin64.exe, 1.7: RimWorld.exe).
 pub fn is_game_running() -> bool {
-    [UNITY_EXE, WAYLITH_EXE].iter().any(|exe| {
-        std::process::Command::new("tasklist")
-            .args(["/NH", "/FO", "CSV", "/FI", &format!("IMAGENAME eq {exe}")])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase().contains(&exe.to_lowercase()))
-            .unwrap_or(false)
-    })
+    let mut cmd = std::process::Command::new("tasklist");
+    cmd.args(["/NH", "/FO", "CSV"]);
+    #[cfg(windows)]
+    {
+        // No console window flashing: this app has no console of its own.
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let Ok(out) = cmd.output() else {
+        return false;
+    };
+    let list = String::from_utf8_lossy(&out.stdout).to_lowercase();
+    // CSV rows start with the quoted image name: "rimworld.exe","1234",...
+    [UNITY_EXE, WAYLITH_EXE]
+        .iter()
+        .any(|exe| list.contains(&format!("\"{}\"", exe.to_lowercase())))
 }
 
 /// Folders where RimWorld 1.7 keeps its own compressed textures and compiled shaders.

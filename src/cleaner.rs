@@ -1,9 +1,6 @@
 use crate::i18n::tr;
 use crate::models::{is_protected_package_id, ModInfo};
-use crate::steam::{
-    remove_workshop_item_from_acf, unsubscribe_workshop_item_native,
-    unsubscribe_workshop_items_batch_native, SteamPaths,
-};
+use crate::steam::{unsubscribe_workshop_items_batch_native, SteamPaths};
 
 /// Moves a mod folder to the Windows Recycle Bin so the user can restore it.
 /// Never falls back to permanent deletion.
@@ -26,15 +23,40 @@ pub struct CleanResult {
     pub errors: Vec<String>,
 }
 
-pub fn delete_translation_mods(
-    mods_to_delete: &[&ModInfo],
-    steam_paths: &SteamPaths,
-) -> CleanResult {
+fn is_protected(m: &ModInfo) -> bool {
+    is_protected_package_id(&m.package_id) || m.package_id.to_lowercase().starts_with("ludeon.rimworld")
+}
+
+/// Unsubscribes Workshop items in one Steam API session. A Workshop mod is only deleted
+/// after this succeeds: otherwise Steam would simply download it again.
+fn unsubscribe(item_ids: &[&str], steam_paths: &SteamPaths) -> Result<usize, String> {
+    if item_ids.is_empty() {
+        return Ok(0);
+    }
+    let dll = steam_paths.steam_dll_path.as_ref().ok_or_else(|| {
+        tr!(
+            "steam_api64.dll не найден, отписаться нельзя",
+            "steam_api64.dll not found, can't unsubscribe"
+        )
+        .to_string()
+    })?;
+    unsubscribe_workshop_items_batch_native(dll, item_ids)
+}
+
+fn not_deleted_because(err: &str) -> String {
+    tr!(
+        "Отписка в Steam не удалась ({}). Моды из Workshop не удалены: иначе Steam скачает их обратно. Запустите Steam и повторите.",
+        "Steam unsubscribe failed ({}). Workshop mods were not deleted: Steam would download them again. Start Steam and try again.",
+        err
+    )
+}
+
+pub fn delete_translation_mods(mods_to_delete: &[&ModInfo], steam_paths: &SteamPaths) -> CleanResult {
     let mut result = CleanResult::default();
 
     let mut allowed: Vec<&ModInfo> = Vec::new();
     for m in mods_to_delete {
-        if is_protected_package_id(&m.package_id) || m.package_id.to_lowercase().starts_with("ludeon.rimworld") {
+        if is_protected(m) {
             result.errors.push(tr!(
                 "Защищённый мод '{}' нельзя удалить",
                 "Protected mod '{}' can't be deleted",
@@ -53,27 +75,26 @@ pub fn delete_translation_mods(
         }
     }
 
-    // 1. Unsubscribe all of them in ONE Steam API session (S9), not one session per mod.
     let steam_ids: Vec<&str> = allowed.iter().filter_map(|m| m.steam_item_id.as_deref()).collect();
-    if let Some(ref dll_path) = steam_paths.steam_dll_path {
-        match unsubscribe_workshop_items_batch_native(dll_path, &steam_ids) {
-            Ok(n) => result.unsubscribed_count = n,
-            Err(e) => result.errors.push(tr!("Ошибка отписки в Steam: {}", "Steam unsubscribe failed: {}", e)),
+    let workshop_ok = match unsubscribe(&steam_ids, steam_paths) {
+        Ok(n) => {
+            result.unsubscribed_count = n;
+            true
         }
-    }
+        Err(e) => {
+            result.errors.push(not_deleted_because(&e));
+            false
+        }
+    };
 
     for m in allowed {
-        // 2. Remove from ACF manifest
-        if let (Some(item_id), Some(acf_path)) = (&m.steam_item_id, &steam_paths.acf_path) {
-            let _ = remove_workshop_item_from_acf(acf_path, item_id);
+        if m.steam_item_id.is_some() && !workshop_ok {
+            result.failed_count += 1;
+            continue;
         }
-
-        // 3. Move directory to the Recycle Bin
         if m.dir_path.is_dir() {
             match move_mod_dir_to_trash(&m.dir_path) {
-                Ok(_) => {
-                    result.deleted_count += 1;
-                }
+                Ok(()) => result.deleted_count += 1,
                 Err(e) => {
                     result.errors.push(e);
                     result.failed_count += 1;
@@ -85,10 +106,10 @@ pub fn delete_translation_mods(
     result
 }
 
-/// Unsubscribes from a single mod in Steam Workshop and deletes its local folder.
-/// Protects system/DLC mods from deletion.
+/// Unsubscribes from one mod (if it comes from the Workshop) and moves its folder to the
+/// Recycle Bin. Official content is never deleted.
 pub fn unsubscribe_and_delete_single(m: &ModInfo, steam_paths: &SteamPaths) -> Result<(), String> {
-    if is_protected_package_id(&m.package_id) || m.package_id.to_lowercase().starts_with("ludeon.rimworld") {
+    if is_protected(m) {
         return Err(tr!(
             "Защищённый мод '{}' нельзя удалить",
             "Protected mod '{}' can't be deleted",
@@ -97,17 +118,38 @@ pub fn unsubscribe_and_delete_single(m: &ModInfo, steam_paths: &SteamPaths) -> R
     }
 
     if let Some(ref item_id) = m.steam_item_id {
-        if let Some(ref dll_path) = steam_paths.steam_dll_path {
-            let _ = unsubscribe_workshop_item_native(dll_path, item_id);
-        }
-        if let Some(ref acf_path) = steam_paths.acf_path {
-            let _ = remove_workshop_item_from_acf(acf_path, item_id);
-        }
+        unsubscribe(&[item_id.as_str()], steam_paths).map_err(|e| not_deleted_because(&e))?;
     }
 
     if m.dir_path.is_dir() {
         move_mod_dir_to_trash(&m.dir_path)?;
     }
-
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workshop_mod_is_kept_when_unsubscribe_is_impossible() {
+        let dir = std::env::temp_dir().join(format!("rwmm_clean_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let m = ModInfo {
+            package_id: "someone.translation".into(),
+            name: "Some Translation".into(),
+            dir_path: dir.clone(),
+            steam_item_id: Some("1234567890".into()),
+            is_translation_mod: true,
+            ..Default::default()
+        };
+        let no_steam = SteamPaths::default();
+
+        assert!(unsubscribe_and_delete_single(&m, &no_steam).is_err());
+        let res = delete_translation_mods(&[&m], &no_steam);
+        assert_eq!((res.deleted_count, res.failed_count), (0, 1));
+        assert!(dir.is_dir(), "folder must stay when Steam can't unsubscribe");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

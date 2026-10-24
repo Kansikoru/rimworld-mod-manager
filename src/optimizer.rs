@@ -483,6 +483,8 @@ pub fn run_optimization(
         let skipped_count = Arc::new(AtomicUsize::new(0));
         let created: Arc<std::sync::Mutex<Vec<ManifestEntry>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
         let backup_root = texture_backup_root();
+        let log_path = manifest_path();
+        let log_lock = std::sync::Mutex::new(());
         let tx_clone = tx.clone();
         let stop = stop_flag.clone();
 
@@ -531,10 +533,30 @@ pub fn run_optimization(
                             bc1_count.fetch_add(1, Ordering::Relaxed);
                         }
                         let dds_path = path.with_extension("dds");
+                        let backup_target =
+                            (delete_source && dds_path.exists()).then(|| backup_path_for(&backup_root, path));
+                        // Log the DDS right away, before the source is moved: if the app is closed or
+                        // crashes mid-run, rollback still knows this DDS and where its source went (R3).
+                        {
+                            let _guard = log_lock.lock().unwrap_or_else(|e| e.into_inner());
+                            let entry = ManifestEntry {
+                                dds: dds_path.clone(),
+                                source: path.clone(),
+                                backup: backup_target.clone(),
+                                source_fp: source_fp.clone(),
+                            };
+                            if let Err(e) = append_manifest(&log_path, &[entry]) {
+                                let _ = tx_clone.send(OptimizationMsg::FileError(tr!(
+                                    "Не удалось записать журнал DDS {}: {}",
+                                    "Could not write the DDS log {}: {}",
+                                    log_path.display(),
+                                    e
+                                )));
+                            }
+                        }
                         let mut backup = None;
                         // Sources are never deleted: they are moved to a backup folder so rollback can restore them.
-                        if delete_source && dds_path.exists() {
-                            let target = backup_path_for(&backup_root, path);
+                        if let Some(target) = backup_target {
                             match move_file(path, &target) {
                                 Ok(()) => {
                                     deleted_count.fetch_add(1, Ordering::Relaxed);
@@ -592,7 +614,8 @@ pub fn run_optimization(
             process_textures();
         }
 
-        // Record every created DDS (also after cancel) so rollback can find all of them.
+        // Rewrite the log without duplicates, with the final backup paths (a failed move
+        // leaves the source in place, so its entry gets no backup).
         if let Ok(list) = created.lock() {
             if let Err(e) = merge_manifest(&manifest_path(), &list) {
                 let _ = tx.send(OptimizationMsg::FileError(tr!(
@@ -645,20 +668,23 @@ pub fn texture_summary_async(mod_dirs: Vec<PathBuf>, force: bool, tx: mpsc::Send
         let _ = tx.send(texture_summary(&mod_dirs, force));
     });
 }
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RollbackResult {
     /// .dds files removed
     pub removed: usize,
     /// source PNG/JPG files restored from backup
     pub restored: usize,
     pub errors: usize,
+    /// DDS files with a PNG/JPG twin that are NOT in the manager's log: made by an older
+    /// version of this optimizer, by RimPy, or shipped by the mod author. Not deleted here —
+    /// the user decides after seeing the list (R2).
+    pub unlogged: Vec<PathBuf>,
 }
 
 /// Undoes texture optimization:
 /// 1. every DDS listed in the manifest is removed and its backed-up source restored;
-/// 2. legacy cleanup for DDS made by older versions (before the manifest existed):
-///    any `.dds` inside a Textures folder that has a PNG/JPG twin — regardless of the
-///    UI/Pawn/Apparel exclusions, which older versions did not have.
+/// 2. DDS files that are not in the manifest but have a PNG/JPG twin inside a Textures
+///    folder are only listed (`unlogged`); `delete_files` removes them if the user agrees.
 pub fn rollback_dds(mod_dirs: &[PathBuf]) -> RollbackResult {
     rollback_with_manifest(mod_dirs, &manifest_path())
 }
@@ -711,15 +737,20 @@ pub fn rollback_with_manifest(mod_dirs: &[PathBuf], manifest: &Path) -> Rollback
                 .iter()
                 .any(|ext| path.with_extension(ext).is_file());
             if has_source {
-                match std::fs::remove_file(path) {
-                    Ok(()) => res.removed += 1,
-                    Err(_) => res.errors += 1,
-                }
+                res.unlogged.push(path.to_path_buf());
             }
         }
     }
 
     res
+}
+
+/// Deletes the given files; returns (removed, errors).
+pub fn delete_files(paths: &[PathBuf]) -> (usize, usize) {
+    paths.iter().fold((0, 0), |(ok, err), p| match std::fs::remove_file(p) {
+        Ok(()) => (ok + 1, err),
+        Err(_) => (ok, err + 1),
+    })
 }
 
 pub fn rollback_dds_async(mod_dirs: Vec<PathBuf>, tx: mpsc::Sender<RollbackResult>) {
@@ -851,11 +882,16 @@ mod tests {
 
         let res = rollback_with_manifest(&[dir.join("Mod")], &manifest);
         assert_eq!(res.restored, 1);
-        assert_eq!(res.removed, 2);
+        assert_eq!(res.removed, 1, "only the logged DDS is removed");
         assert_eq!(res.errors, 0);
         assert!(source.is_file(), "source restored");
-        assert!(!dds.exists() && !legacy_dds.exists(), "dds removed");
+        assert!(!dds.exists(), "logged dds removed");
+        assert!(legacy_dds.exists(), "unlogged dds is kept until the user agrees");
+        assert_eq!(res.unlogged, vec![legacy_dds.clone()]);
         assert!(!manifest.exists(), "manifest cleared");
+
+        assert_eq!(delete_files(&res.unlogged), (1, 0));
+        assert!(!legacy_dds.exists());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

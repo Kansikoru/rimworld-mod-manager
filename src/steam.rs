@@ -15,7 +15,6 @@ pub struct SteamPaths {
     pub game_data_path: Option<PathBuf>,
     pub game_path: Option<PathBuf>,
     pub steam_dll_path: Option<PathBuf>,
-    pub acf_path: Option<PathBuf>,
     /// Unity (1.6 and older) or Waylith (1.7+).
     pub engine: GameEngine,
     /// Contents of Version.txt, e.g. "1.7.4985 rev1269".
@@ -97,9 +96,6 @@ pub fn detect_steam_paths() -> SteamPaths {
             if workshop.is_dir() && paths.workshop_path.is_none() {
                 paths.workshop_path = Some(workshop);
             }
-            if acf.is_file() && paths.acf_path.is_none() {
-                paths.acf_path = Some(acf);
-            }
         }
     }
 
@@ -151,37 +147,9 @@ pub fn parse_libraryfolders_vdf(content: &str) -> Vec<PathBuf> {
     libs
 }
 
-pub fn remove_workshop_item_from_acf(acf_path: &Path, item_id: &str) -> Result<(), String> {
-    if !acf_path.exists() {
-        return Ok(());
-    }
-
-    let content = std::fs::read_to_string(acf_path).map_err(|e| e.to_string())?;
-    let pattern = format!(r#""{}"\s*\{{[^}}]*\}}"#, regex::escape(item_id));
-    let re = regex::Regex::new(&pattern).map_err(|e| e.to_string())?;
-
-    let new_content = re.replace_all(&content, "").to_string();
-    if new_content != content {
-        std::fs::write(acf_path, new_content).map_err(|e| e.to_string())?;
-    }
-
-    Ok(())
-}
-
-static ACF_SUB_ITEM_RE: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r#""(\d{7,12})"\s*\{"#).unwrap());
-
-pub fn parse_subscribed_items_from_acf(acf_path: &Path) -> std::collections::HashSet<String> {
-    let mut ids = std::collections::HashSet::new();
-    if let Ok(content) = std::fs::read_to_string(acf_path) {
-        for cap in ACF_SUB_ITEM_RE.captures_iter(&content) {
-            if let Some(m) = cap.get(1) {
-                ids.insert(m.as_str().to_string());
-            }
-        }
-    }
-    ids
-}
+/// One Steam API session at a time: two threads starting and shutting down the API
+/// in the same process at once (e.g. a delete and a subscribe) is not safe.
+static STEAM_API_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 struct SteamShutdownGuard<'a> {
     lib: &'a libloading::Library,
@@ -218,6 +186,7 @@ unsafe fn with_steam_ugc<F, R>(dll_path: &Path, action: F) -> Result<R, String>
 where
     F: FnOnce(*mut std::ffi::c_void, &libloading::Library) -> Result<R, String>,
 {
+    let _session = STEAM_API_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let lib = libloading::Library::new(dll_path).map_err(|e| e.to_string())?;
 
     unsafe {
