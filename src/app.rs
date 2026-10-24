@@ -150,6 +150,23 @@ pub struct App {
     /// Interface font and text size (Settings), saved to ui_prefs.json.
     pub ui_prefs: crate::ui_prefs::UiPrefs,
 
+    // Background tasks (S5): the UI never waits for disk or network.
+    /// Lets background threads wake the UI when they finish.
+    pub repaint_ctx: Option<egui::Context>,
+    pub rescan_rx: Option<Receiver<RescanResult>>,
+    /// Keep the current status message when the running rescan finishes.
+    rescan_keep_status: bool,
+    /// A rescan was requested while one was running: run again when it finishes.
+    rescan_again: bool,
+    pub workshop_rx: Option<Receiver<WorkshopSearchOutcome>>,
+    pub log_rx: Option<Receiver<LogReport>>,
+
+    /// Lowercase packageId -> index in `all_mods` (M1: no linear search per row).
+    pub mod_index: std::collections::HashMap<String, usize>,
+    /// Measured row heights of the two mod lists (for drawing only the visible rows).
+    pub active_row_height: f32,
+    pub inactive_row_height: f32,
+
     // Status Message
     pub status_message: String,
 }
@@ -195,13 +212,14 @@ impl App {
         let icon_cache = crate::icon_cache::IconDiskCache::new(crate::icon_cache::IconDiskCache::default_cache_dir());
 
         let cache_clone = crate::icon_cache::IconDiskCache::new(crate::icon_cache::IconDiskCache::default_cache_dir());
+        let icon_repaint = repaint_ctx.clone();
         std::thread::spawn(move || {
             while let Ok((pkg_id, path)) = icon_thread_rx.recv() {
                 if let Some(img) = crate::icon_cache::load_or_cache_image(&cache_clone, &path, 64) {
                     if icon_thread_tx.send((pkg_id, img)).is_err() {
                         break;
                     }
-                    if let Some(ref ctx) = repaint_ctx {
+                    if let Some(ref ctx) = icon_repaint {
                         ctx.request_repaint();
                     }
                 }
@@ -267,12 +285,104 @@ impl App {
             category_filter: std::collections::HashSet::new(),
             ui_prefs: crate::ui_prefs::UiPrefs::load(),
 
+            repaint_ctx: repaint_ctx.clone(),
+            rescan_rx: None,
+            rescan_keep_status: false,
+            rescan_again: false,
+            workshop_rx: None,
+            log_rx: None,
+            mod_index: std::collections::HashMap::new(),
+            active_row_height: 34.0,
+            inactive_row_height: 34.0,
+
             status_message: "Готов к работе".to_string(),
         };
 
+        // Scans in the background: the window opens at once and fills in when the scan is done.
         app.rescan_mods();
         app
     }
+
+    /// Runs `job` on a background thread; the result arrives on the returned channel
+    /// and the UI is woken up to show it.
+    fn spawn_task<T: Send + 'static>(
+        &self,
+        job: impl FnOnce() -> T + Send + 'static,
+    ) -> Receiver<T> {
+        let (tx, rx) = channel();
+        let ctx = self.repaint_ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(job());
+            if let Some(ctx) = ctx {
+                ctx.request_repaint();
+            }
+        });
+        rx
+    }
+
+    /// Picks up finished background tasks (called every frame).
+    fn poll_background_tasks(&mut self) {
+        if let Some(rx) = &self.rescan_rx {
+            if let Ok(res) = rx.try_recv() {
+                self.rescan_rx = None;
+                self.apply_rescan(res);
+            }
+        }
+        if let Some(rx) = &self.workshop_rx {
+            if let Ok(res) = rx.try_recv() {
+                self.workshop_rx = None;
+                match res {
+                    Ok((items, status)) => {
+                        self.workshop_search_results = items;
+                        self.status_message = status;
+                    }
+                    Err(e) => self.status_message = format!("Ошибка поиска в Workshop: {}", e),
+                }
+            }
+        }
+        if let Some(rx) = &self.log_rx {
+            if let Ok(report) = rx.try_recv() {
+                self.log_rx = None;
+                self.status_message = self.crash_summary_text(&report);
+                self.log_report = Some(report);
+            }
+        }
+    }
+
+    pub fn is_rescanning(&self) -> bool {
+        self.rescan_rx.is_some()
+    }
+
+    fn rebuild_mod_index(&mut self) {
+        self.mod_index = self
+            .all_mods
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (m.package_id.to_lowercase(), i))
+            .collect();
+    }
+}
+
+/// Result of a background Workshop search: (items, status text) or an error message.
+pub type WorkshopSearchOutcome = Result<(Vec<WorkshopItemResult>, String), String>;
+
+/// Result of a background mod scan.
+pub struct RescanResult {
+    pub mods: Vec<ModInfo>,
+    pub duplicates: Vec<crate::scanner::DuplicateModEntry>,
+}
+
+/// Index-based lookup (M1); understands the `_steam` suffix like `find_mod_in`.
+pub fn lookup_mod<'a>(
+    index: &std::collections::HashMap<String, usize>,
+    mods: &'a [ModInfo],
+    id: &str,
+) -> Option<&'a ModInfo> {
+    let lower = id.to_lowercase();
+    index
+        .get(&lower)
+        .or_else(|| lower.strip_suffix("_steam").and_then(|base| index.get(base)))
+        .and_then(|&i| mods.get(i))
 }
 
 impl App {
@@ -304,7 +414,7 @@ impl App {
     /// Finds an installed mod by package ID: case-insensitive, and understands the
     /// `_steam` suffix RimWorld adds to a Workshop copy when a local copy also exists.
     pub fn find_mod(&self, id: &str) -> Option<&ModInfo> {
-        find_mod_in(&self.all_mods, id)
+        lookup_mod(&self.mod_index, &self.all_mods, id)
     }
 
     /// Official content (Core/DLC in the game's Data folder) — never touched by the optimizer or deletion.
@@ -393,21 +503,38 @@ impl App {
         }
     }
 
+    /// Starts a background scan of the mod folders (S5). If one is already running,
+    /// another scan follows right after it, so the newest disk state always wins.
     pub fn rescan_mods(&mut self) {
-        self.status_message = "Сканирование модов на диске...".to_string();
+        if self.rescan_rx.is_some() {
+            self.rescan_again = true;
+            return;
+        }
+        if !self.rescan_keep_status {
+            self.status_message = "Сканирование модов на диске...".to_string();
+        }
 
-        let scanned = scan_mods(
-            self.steam_paths.workshop_path.as_deref(),
-            self.steam_paths.local_mods_path.as_deref(),
-            self.steam_paths.game_data_path.as_deref(),
-        );
+        let workshop = self.steam_paths.workshop_path.clone();
+        let local = self.steam_paths.local_mods_path.clone();
+        let data = self.steam_paths.game_data_path.clone();
+        let overrides = self.category_overrides.clone();
+        self.rescan_rx = Some(self.spawn_task(move || {
+            let scanned = scan_mods(workshop.as_deref(), local.as_deref(), data.as_deref());
+            // Two copies with the same packageId show up twice in the game's mod list: keep one, warn about it.
+            let (mut unique, duplicates) = crate::scanner::dedupe_mods(scanned);
+            classify_and_link_translations(&mut unique);
+            crate::categories::assign_categories(&mut unique, &overrides);
+            RescanResult { mods: unique, duplicates }
+        }));
+    }
 
-        // Two copies with the same packageId show up twice in the game's mod list: keep one, warn about it.
-        let (mut unique, duplicates) = crate::scanner::dedupe_mods(scanned);
-        classify_and_link_translations(&mut unique);
-        crate::categories::assign_categories(&mut unique, &self.category_overrides);
-        self.all_mods = unique;
-        self.duplicate_mods = duplicates;
+    fn apply_rescan(&mut self, res: RescanResult) {
+        // Overrides may have changed while scanning: apply the current ones.
+        let mut mods = res.mods;
+        crate::categories::assign_categories(&mut mods, &self.category_overrides);
+        self.all_mods = mods;
+        self.duplicate_mods = res.duplicates;
+        self.rebuild_mod_index();
 
         if let Some(ref config_p) = self.mods_config_path {
             // Keep IDs that were not found on disk: they stay in ModsConfig.xml on save
@@ -416,7 +543,16 @@ impl App {
         }
 
         self.validate_deps();
-        self.status_message = self.mods_count_status();
+        if self.rescan_keep_status {
+            self.rescan_keep_status = false;
+        } else {
+            self.status_message = self.mods_count_status();
+        }
+
+        if self.rescan_again {
+            self.rescan_again = false;
+            self.rescan_mods();
+        }
     }
 
     pub fn validate_deps(&mut self) {
@@ -559,60 +695,56 @@ impl App {
         }
     }
 
+    /// Rescan without replacing the current status message (e.g. "moved to Recycle Bin").
     fn rescan_mods_keep_status(&mut self) {
-        let msg = self.status_message.clone();
+        self.rescan_keep_status = true;
         self.rescan_mods();
-        self.status_message = msg;
     }
 
+    /// Searches the Workshop for translations of the selected mod — in the background (S5).
     pub fn search_workshop_translations_for_selected(&mut self) {
-        if let Some(ref sel_id) = self.selected_mod_id {
-            if let Some(m) = self.all_mods.iter().find(|m| m.package_id.eq_ignore_ascii_case(sel_id)) {
-                let query = format!("{} {}", m.name, self.trans_target_lang.search_suffix());
-                self.workshop_search_query = query.clone();
-                match search_steam_workshop(&query) {
-                    Ok(raw) => {
-                        let found = raw.len();
-                        // Keep only translations of this mod in the selected language,
-                        // drop the mod itself and unrelated items, best matches first.
-                        let filtered = filter_and_rank_workshop_translations(
-                            raw,
-                            &m.name,
-                            m.steam_item_id.as_deref(),
-                            self.trans_target_lang,
-                        );
-                        self.status_message = format!(
-                            "Workshop: найдено {}, подходящих переводов «{}»: {}",
-                            found,
-                            m.name,
-                            filtered.len()
-                        );
-                        self.workshop_search_results = filtered;
-                    }
-                    Err(e) => {
-                        self.status_message = format!("Ошибка поиска в Workshop: {}", e);
-                    }
-                }
-            }
+        if self.workshop_rx.is_some() {
+            return;
         }
+        let Some(m) = self.selected_mod_id.as_deref().and_then(|id| self.find_mod(id)) else {
+            self.status_message = "Выберите мод в списке, чтобы найти для него перевод".to_string();
+            return;
+        };
+        let name = m.name.clone();
+        let steam_id = m.steam_item_id.clone();
+        let lang = self.trans_target_lang;
+        let query = format!("{} {}", name, lang.search_suffix());
+        self.workshop_search_query = query.clone();
+        self.status_message = format!("Поиск в Workshop: {}...", query);
+
+        self.workshop_rx = Some(self.spawn_task(move || {
+            let raw = search_steam_workshop(&query)?;
+            let found = raw.len();
+            // Keep only translations of this mod in the selected language,
+            // drop the mod itself and unrelated items, best matches first.
+            let filtered = filter_and_rank_workshop_translations(raw, &name, steam_id.as_deref(), lang);
+            let status = format!(
+                "Workshop: найдено {}, подходящих переводов «{}»: {}",
+                found,
+                name,
+                filtered.len()
+            );
+            Ok((filtered, status))
+        }));
     }
 
+    /// Free-text Workshop search — in the background (S5).
     pub fn search_workshop_custom(&mut self) {
-        if !self.workshop_search_query.trim().is_empty() {
-            match search_steam_workshop(&self.workshop_search_query) {
-                Ok(res) => {
-                    self.status_message = format!(
-                        "Поиск в Workshop «{}»: результатов {}",
-                        self.workshop_search_query,
-                        res.len()
-                    );
-                    self.workshop_search_results = res;
-                }
-                Err(e) => {
-                    self.status_message = format!("Ошибка поиска в Workshop: {}", e);
-                }
-            }
+        if self.workshop_rx.is_some() || self.workshop_search_query.trim().is_empty() {
+            return;
         }
+        let query = self.workshop_search_query.clone();
+        self.status_message = format!("Поиск в Workshop: {}...", query);
+        self.workshop_rx = Some(self.spawn_task(move || {
+            let res = search_steam_workshop(&query)?;
+            let status = format!("Поиск в Workshop «{}»: результатов {}", query, res.len());
+            Ok((res, status))
+        }));
     }
 
     pub fn subscribe_steam_mod(&mut self, item_id: &str) {
@@ -802,21 +934,28 @@ impl App {
                 .map(|(_, p)| p)
         };
 
+        if self.log_rx.is_some() {
+            return;
+        }
         if let Some(path) = log_target {
-            let report = analyze_rimworld_log(&path, &self.all_mods);
-            let summary_text = if report.has_hard_crash {
-                self.i18n.get(TranslationKey::CrashSummaryHardCrash).replace("{}", &report.culprits.len().to_string())
-            } else if !report.culprits.is_empty() {
-                self.i18n.get(TranslationKey::CrashSummaryCulprits).replace("{}", &report.culprits.len().to_string())
-            } else if report.total_errors > 0 {
-                self.i18n.get(TranslationKey::CrashSummaryErrorsOnly).replace("{}", &report.total_errors.to_string())
-            } else {
-                self.i18n.get(TranslationKey::CrashSummaryClean).to_string()
-            };
-            self.status_message = summary_text;
-            self.log_report = Some(report);
+            // Matching stack frames to mods walks every mod folder: done in the background (S5).
+            let mods = self.all_mods.clone();
+            self.status_message = format!("Анализ лога {}...", path.display());
+            self.log_rx = Some(self.spawn_task(move || analyze_rimworld_log(&path, &mods)));
         } else {
             self.status_message = self.i18n.get(TranslationKey::CrashFileNotFound).to_string();
+        }
+    }
+
+    fn crash_summary_text(&self, report: &LogReport) -> String {
+        if report.has_hard_crash {
+            fmt(self.i18n.get(TranslationKey::CrashSummaryHardCrash), &[&report.culprits.len().to_string()])
+        } else if !report.culprits.is_empty() {
+            fmt(self.i18n.get(TranslationKey::CrashSummaryCulprits), &[&report.culprits.len().to_string()])
+        } else if report.total_errors > 0 {
+            fmt(self.i18n.get(TranslationKey::CrashSummaryErrorsOnly), &[&report.total_errors.to_string()])
+        } else {
+            self.i18n.get(TranslationKey::CrashSummaryClean).to_string()
         }
     }
 
@@ -851,6 +990,7 @@ impl eframe::App for App {
             self.mod_textures.insert(pkg_id, Some(handle));
         }
 
+        self.poll_background_tasks();
         self.poll_optimizer_tasks();
         if self.opt_scan_rx.is_some() || self.opt_rollback_rx.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
@@ -1055,5 +1195,23 @@ impl App {
         } else if cancel {
             self.pending_delete = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lookup_by_index_understands_case_and_steam_suffix() {
+        let mods = vec![
+            ModInfo { package_id: "Brrainz.Harmony".into(), ..Default::default() },
+            ModInfo { package_id: "UnlimitedHugs.HugsLib".into(), ..Default::default() },
+        ];
+        let index: std::collections::HashMap<String, usize> =
+            mods.iter().enumerate().map(|(i, m)| (m.package_id.to_lowercase(), i)).collect();
+        assert_eq!(lookup_mod(&index, &mods, "brrainz.harmony").map(|m| m.package_id.as_str()), Some("Brrainz.Harmony"));
+        assert_eq!(lookup_mod(&index, &mods, "unlimitedhugs.hugslib_steam").map(|m| m.package_id.as_str()), Some("UnlimitedHugs.HugsLib"));
+        assert!(lookup_mod(&index, &mods, "someone.missing").is_none());
     }
 }

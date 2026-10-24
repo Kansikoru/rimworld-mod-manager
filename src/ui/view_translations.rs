@@ -45,8 +45,14 @@ pub fn render_translations_view(app: &mut App, ui: &mut Ui) {
             if danger_button_icon(ui, ICON_TRASH, t.get(TranslationKey::TransBtnDeleteAll)).clicked() {
                 app.request_delete_translations();
             }
-            if secondary_button_icon(ui, ICON_SEARCH, t.get(TranslationKey::TransBtnFindWorkshop)).clicked() {
-                app.search_workshop_translations_for_selected();
+            let searching = app.workshop_rx.is_some();
+            ui.add_enabled_ui(!searching, |ui| {
+                if secondary_button_icon(ui, ICON_SEARCH, t.get(TranslationKey::TransBtnFindWorkshop)).clicked() {
+                    app.search_workshop_translations_for_selected();
+                }
+            });
+            if searching {
+                ui.spinner();
             }
         });
     });
@@ -186,9 +192,12 @@ fn render_workshop_search_column(app: &mut App, ui: &mut Ui) {
                 .hint_text(t.get(TranslationKey::TransSearchPlaceholder))
                 .desired_width(ui.available_width() - 80.0),
         );
-        if primary_button_icon(ui, ICON_SEARCH, t.get(TranslationKey::TransBtnSearch)).clicked() {
-            app.search_workshop_custom();
-        }
+        let searching = app.workshop_rx.is_some();
+        ui.add_enabled_ui(!searching, |ui| {
+            if primary_button_icon(ui, ICON_SEARCH, t.get(TranslationKey::TransBtnSearch)).clicked() {
+                app.search_workshop_custom();
+            }
+        });
     });
 
     ui.add_space(6.0);

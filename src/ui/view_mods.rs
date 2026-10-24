@@ -1,7 +1,7 @@
 use eframe::egui::{self, Color32, Rounding, Stroke, Ui, Vec2};
 use std::collections::HashSet;
 
-use crate::app::{find_mod_in, passes_category_filter, App};
+use crate::app::{lookup_mod, passes_category_filter, App};
 use crate::categories::ModCategory;
 use crate::dependencies::DependencyProblem;
 use crate::i18n::{fmt, TranslationKey};
@@ -34,8 +34,14 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
             app.save_config();
         }
 
-        if secondary_button_icon(ui, ICON_REFRESH, t.get(TranslationKey::BtnRescanMods)).clicked() {
-            app.rescan_mods();
+        let scanning = app.is_rescanning();
+        ui.add_enabled_ui(!scanning, |ui| {
+            if secondary_button_icon(ui, ICON_REFRESH, t.get(TranslationKey::BtnRescanMods)).clicked() {
+                app.rescan_mods();
+            }
+        });
+        if scanning {
+            ui.spinner();
         }
 
         ui.separator();
@@ -192,6 +198,17 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
     });
 }
 
+/// Average height of the rows just drawn (without item spacing), for `ScrollArea::show_rows`.
+/// Rows get taller with a bigger font, so the height is measured instead of hard-coded.
+fn measure_row_height(ui: &Ui, rows_top: f32, rows_count: usize) -> Option<f32> {
+    if rows_count == 0 {
+        return None;
+    }
+    let total = ui.cursor().top() - rows_top;
+    let per_row = total / rows_count as f32 - ui.spacing().item_spacing.y;
+    (per_row > 8.0).then_some(per_row)
+}
+
 /// Hard problems of the active list for the installed game (Prepatcher / old Harmony on 1.7)
 /// plus a calm one-line summary of mods that don't declare the current version.
 fn render_version_issues(app: &App, ui: &mut Ui) {
@@ -206,7 +223,7 @@ fn render_version_issues(app: &App, ui: &mut Ui) {
     let unsupported = app
         .active_mods
         .iter()
-        .filter_map(|id| find_mod_in(&app.all_mods, id))
+        .filter_map(|id| lookup_mod(&app.mod_index, &app.all_mods, id))
         .filter(|m| crate::version_check::supports_version(m, game_mm.as_deref()) == Some(false))
         .count();
 
@@ -514,54 +531,58 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     let mut cat_toggle: Option<(String, ModCategory)> = None;
     let mut cat_reset: Option<String> = None;
 
-    // Collect visible indices for Shift-range selection
-    let visible_active_ids: Vec<String> = app.active_mods.iter().filter_map(|pkg_id| {
-        let mod_opt = find_mod_in(&app.all_mods, pkg_id);
-        let display_name = mod_opt
-            .map(|m| m.name.as_str())
-            .unwrap_or(pkg_id.as_str());
-        if (!query_lower.is_empty()
-            && !display_name.to_lowercase().contains(&query_lower)
-            && !pkg_id.to_lowercase().contains(&query_lower))
-            || !passes_category_filter(&app.category_filter, mod_opt)
-        {
-            None
-        } else {
-            Some(pkg_id.clone())
-        }
-    }).collect();
+    // Rows that pass the search and category filter (indices into active_mods), computed once.
+    let visible_rows: Vec<usize> = app
+        .active_mods
+        .iter()
+        .enumerate()
+        .filter(|(_, pkg_id)| {
+            let mod_opt = lookup_mod(&app.mod_index, &app.all_mods, pkg_id);
+            let display_name = mod_opt.map(|m| m.name.as_str()).unwrap_or(pkg_id.as_str());
+            (query_lower.is_empty()
+                || display_name.to_lowercase().contains(&query_lower)
+                || pkg_id.to_lowercase().contains(&query_lower))
+                && passes_category_filter(&app.category_filter, mod_opt)
+        })
+        .map(|(i, _)| i)
+        .collect();
+    // Visible IDs for Shift-range selection
+    let visible_active_ids: Vec<String> = visible_rows.iter().map(|&i| app.active_mods[i].clone()).collect();
+
+    // First dependency problem of each mod, by lowercase id: one lookup per row (M1).
+    let mut dep_by_mod: std::collections::HashMap<String, DependencyProblem> = std::collections::HashMap::new();
+    for p in &app.dependency_report.problems {
+        let dependent = match p {
+            DependencyProblem::Disabled { dependent_id, .. }
+            | DependencyProblem::Missing { dependent_id, .. }
+            | DependencyProblem::WrongOrder { dependent_id, .. } => dependent_id.to_lowercase(),
+        };
+        dep_by_mod.entry(dependent).or_insert_with(|| p.clone());
+    }
 
     let mut missing_icons = Vec::new();
+    let row_height = app.active_row_height;
+    let mut measured_row_height: Option<f32> = None;
 
+    // Only rows inside the visible area are built (M1): big modpacks stay smooth.
     egui::ScrollArea::vertical()
         .id_salt("active_mods_scroll_right")
         .auto_shrink([false, false])
-        .show(ui, |ui| {
-            for (idx, pkg_id) in app.active_mods.iter().enumerate() {
-                let mod_info_opt = find_mod_in(&app.all_mods, pkg_id);
+        .show_rows(ui, row_height, visible_rows.len(), |ui, row_range| {
+            let rows_top = ui.cursor().top();
+            let rows_count = row_range.len();
+            for &idx in &visible_rows[row_range] {
+                let pkg_id = &app.active_mods[idx];
+                let mod_info_opt = lookup_mod(&app.mod_index, &app.all_mods, pkg_id);
                 let display_name = mod_info_opt
                     .map(|m| m.name.as_str())
                     .unwrap_or(pkg_id.as_str());
 
-                if !query_lower.is_empty()
-                    && !display_name.to_lowercase().contains(&query_lower)
-                    && !pkg_id.to_lowercase().contains(&query_lower)
-                {
-                    continue;
-                }
-                if !passes_category_filter(&app.category_filter, mod_info_opt) {
-                    continue;
-                }
-
                 let is_selected = app.selected_mod_ids.contains(pkg_id) || app.selected_mod_id.as_deref() == Some(pkg_id);
                 let is_protected = is_protected_package_id(pkg_id);
 
-                // Look for dependency warnings for this mod
-                let dep_problem = app.dependency_report.problems.iter().find(|p| match p {
-                    DependencyProblem::Disabled { dependent_id, .. } => dependent_id.eq_ignore_ascii_case(pkg_id),
-                    DependencyProblem::Missing { dependent_id, .. } => dependent_id.eq_ignore_ascii_case(pkg_id),
-                    DependencyProblem::WrongOrder { dependent_id, .. } => dependent_id.eq_ignore_ascii_case(pkg_id),
-                });
+                // Dependency warning for this mod
+                let dep_problem = dep_by_mod.get(&pkg_id.to_lowercase());
 
                 let bg_color = if is_selected {
                     Color32::from_rgb(22, 35, 59)
@@ -796,7 +817,11 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                     });
                 });
             }
+            measured_row_height = measure_row_height(ui, rows_top, rows_count);
         });
+    if let Some(h) = measured_row_height {
+        app.active_row_height = h;
+    }
 
     // Request missing icons
     for (pkg_id, preview_opt) in missing_icons {
@@ -901,37 +926,33 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     let mut cat_toggle: Option<(String, ModCategory)> = None;
     let mut cat_reset: Option<String> = None;
 
-    // Collect visible inactive mod IDs for Shift-range selection
-    let visible_inactive_ids: Vec<String> = inactive_mods.iter().filter_map(|m| {
-        if (!query_lower.is_empty()
-            && !m.name.to_lowercase().contains(&query_lower)
-            && !m.package_id.to_lowercase().contains(&query_lower)
-            && !m.author.to_lowercase().contains(&query_lower))
-            || !passes_category_filter(&app.category_filter, Some(m))
-        {
-            None
-        } else {
-            Some(m.package_id.clone())
-        }
-    }).collect();
+    // Rows that pass the search and category filter, computed once.
+    let visible_mods: Vec<&ModInfo> = inactive_mods
+        .iter()
+        .copied()
+        .filter(|m| {
+            (query_lower.is_empty()
+                || m.name_lower.contains(&query_lower)
+                || m.package_id.to_lowercase().contains(&query_lower)
+                || m.author.to_lowercase().contains(&query_lower))
+                && passes_category_filter(&app.category_filter, Some(m))
+        })
+        .collect();
+    // Visible IDs for Shift-range selection
+    let visible_inactive_ids: Vec<String> = visible_mods.iter().map(|m| m.package_id.clone()).collect();
 
     let mut missing_icons = Vec::new();
+    let row_height = app.inactive_row_height;
+    let mut measured_row_height: Option<f32> = None;
 
+    // Only rows inside the visible area are built (M1).
     egui::ScrollArea::vertical()
         .id_salt("inactive_mods_scroll_left")
         .auto_shrink([false, false])
-        .show(ui, |ui| {
-            for (idx, m) in inactive_mods.iter().enumerate() {
-                if !query_lower.is_empty()
-                    && !m.name.to_lowercase().contains(&query_lower)
-                    && !m.package_id.to_lowercase().contains(&query_lower)
-                    && !m.author.to_lowercase().contains(&query_lower)
-                {
-                    continue;
-                }
-                if !passes_category_filter(&app.category_filter, Some(m)) {
-                    continue;
-                }
+        .show_rows(ui, row_height, visible_mods.len(), |ui, row_range| {
+            let rows_top = ui.cursor().top();
+            let rows_count = row_range.len();
+            for (idx, m) in visible_mods.iter().enumerate().skip(row_range.start).take(rows_count) {
 
                 let is_selected = app.selected_mod_ids.contains(&m.package_id) || app.selected_mod_id.as_deref() == Some(&m.package_id);
 
@@ -1075,7 +1096,11 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                     });
                 });
             }
+            measured_row_height = measure_row_height(ui, rows_top, rows_count);
         });
+    if let Some(h) = measured_row_height {
+        app.inactive_row_height = h;
+    }
 
     for (pkg_id, preview_opt) in missing_icons {
         app.mod_textures.insert(pkg_id.clone(), None);

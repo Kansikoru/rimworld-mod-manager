@@ -433,15 +433,15 @@ pub fn compute_categories(m: &ModInfo, dependents: usize) -> Vec<ModCategory> {
         (ModCategory::Storyteller, s.storytellers),
     ];
     content.retain(|(_, n)| *n > 0);
-    // Races, factions, storytellers and biomes are the "headline" of a mod even with few defs
+    // Races, factions and biomes are the "headline" of a mod even with few defs
     // (a race mod also adds lots of apparel): they come first in this fixed order,
-    // everything else follows by number of defs.
+    // everything else follows by number of defs. A storyteller is usually a small extra
+    // inside a faction/content mod (VFE Pirates, VPE), so it is ranked by count like the rest.
     let headline_rank = |cat: &ModCategory| match cat {
         ModCategory::Race => 0,
         ModCategory::Faction => 1,
-        ModCategory::Storyteller => 2,
-        ModCategory::Biome => 3,
-        _ => 4,
+        ModCategory::Biome => 2,
+        _ => 3,
     };
     content.sort_by_key(|(cat, n)| (headline_rank(cat), std::cmp::Reverse(*n)));
 

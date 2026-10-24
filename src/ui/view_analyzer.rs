@@ -22,8 +22,14 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
     // Action Header Card
     card_container(ui, |ui| {
         ui.horizontal(|ui| {
-            if primary_button_icon(ui, ICON_SEARCH, t.get(TranslationKey::CrashBtnAnalyze)).clicked() {
-                app.run_log_analysis();
+            let analyzing = app.log_rx.is_some();
+            ui.add_enabled_ui(!analyzing, |ui| {
+                if primary_button_icon(ui, ICON_SEARCH, t.get(TranslationKey::CrashBtnAnalyze)).clicked() {
+                    app.run_log_analysis();
+                }
+            });
+            if analyzing {
+                ui.spinner();
             }
 
             if let Some(ref report) = app.log_report {
