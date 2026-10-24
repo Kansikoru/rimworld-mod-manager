@@ -10,6 +10,7 @@ pub mod models;
 pub mod mods_config;
 pub mod optimizer;
 pub mod scanner;
+pub mod settings;
 pub mod sorter;
 pub mod steam;
 pub mod workshop_search;

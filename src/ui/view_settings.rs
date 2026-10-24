@@ -146,8 +146,7 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
                 );
                 if secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::SettingsBrowse)).clicked() {
                     if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                        app.steam_paths.workshop_path = Some(folder);
-                        app.rescan_mods();
+                        app.set_workshop_path(folder);
                     }
                 }
             });
@@ -172,10 +171,21 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
                         .add_filter("ModsConfig.xml", &["xml"])
                         .pick_file()
                     {
-                        app.mods_config_path = Some(file);
-                        app.rescan_mods();
+                        app.set_mods_config_path(file);
                     }
                 }
+            });
+
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if secondary_button_icon(ui, ICON_REFRESH, t.get(TranslationKey::SettingsAutoDetect)).clicked() {
+                    app.reset_paths_to_auto();
+                }
+                ui.label(
+                    egui::RichText::new(t.get(TranslationKey::SettingsSavedHint))
+                        .color(THEME.text_muted)
+                        .size(12.0),
+                );
             });
         });
     });

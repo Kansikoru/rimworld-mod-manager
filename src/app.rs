@@ -134,6 +134,12 @@ pub struct App {
     pub launch_flags: std::collections::HashSet<String>,
     /// Free-form extra launch arguments, split on whitespace.
     pub launch_extra_args: String,
+    /// Paths picked by hand in Settings (None = auto-detected). Saved between runs.
+    pub custom_game_path: Option<PathBuf>,
+    pub custom_workshop_path: Option<PathBuf>,
+    pub custom_config_path: Option<PathBuf>,
+    /// Last settings written to disk; saved again whenever something differs.
+    last_saved_settings: crate::settings::AppSettings,
     pub community_db_rules_count: usize,
 
     /// Deletion waiting for confirmation (modal window).
@@ -185,11 +191,32 @@ impl App {
     }
 
     fn build(repaint_ctx: Option<egui::Context>) -> Self {
-        let i18n = I18n::new(Language::Russian);
-        let steam_paths = detect_steam_paths();
-        let mods_config_path = get_default_mods_config_path();
+        // Settings from the previous run (S13). Hand-picked paths win over auto-detection.
+        let saved = crate::settings::AppSettings::load_from(&crate::settings::AppSettings::path());
+        let s = saved.clone().unwrap_or_default();
+
+        let i18n = I18n::new(s.language);
+        let mut steam_paths = detect_steam_paths();
+        let custom_game_path = s.game_path.clone().filter(|p| p.is_dir());
+        if let Some(ref game) = custom_game_path {
+            steam_paths.set_game_dir(game.clone());
+        }
+        let custom_workshop_path = s.workshop_path.clone().filter(|p| p.is_dir());
+        if let Some(ref ws) = custom_workshop_path {
+            steam_paths.workshop_path = Some(ws.clone());
+        }
+        let custom_config_path = s.mods_config_path.clone().filter(|p| p.is_file());
+        let mods_config_path = custom_config_path.clone().or_else(get_default_mods_config_path);
         let max_system_threads = total_system_threads();
-        let default_threads = default_cpu_threads();
+        let default_threads = s
+            .opt_threads
+            .map(|n| n.clamp(1, max_system_threads))
+            .unwrap_or_else(default_cpu_threads);
+        let launch_flags: std::collections::HashSet<String> = if saved.is_some() {
+            s.launch_flags.iter().cloned().collect()
+        } else {
+            ["-logfile".to_string()].into_iter().collect()
+        };
         let db_rules_count = get_default_community_db().rules.len();
 
         let mut opt_ignore_list = std::collections::HashSet::new();
@@ -229,7 +256,7 @@ impl App {
         let mut app = Self {
             current_tab: AppTab::Mods,
             i18n,
-            is_russian: true,
+            is_russian: s.language == Language::Russian,
 
             all_mods: Vec::new(),
             active_mods: Vec::new(),
@@ -274,8 +301,12 @@ impl App {
 
             steam_paths,
             mods_config_path,
-            launch_flags: ["-logfile".to_string()].into_iter().collect(),
-            launch_extra_args: String::new(),
+            launch_flags,
+            launch_extra_args: s.launch_extra_args.clone(),
+            custom_game_path,
+            custom_workshop_path,
+            custom_config_path,
+            last_saved_settings: s,
             community_db_rules_count: db_rules_count,
 
             pending_delete: None,
@@ -470,8 +501,61 @@ impl App {
 
     /// Switches the game folder from Settings: recomputes engine, exe, Steam DLL, Mods/Data and rescans.
     pub fn set_game_path(&mut self, folder: PathBuf) {
+        self.custom_game_path = Some(folder.clone());
         self.steam_paths.set_game_dir(folder);
         self.rescan_mods();
+    }
+
+    pub fn set_workshop_path(&mut self, folder: PathBuf) {
+        self.custom_workshop_path = Some(folder.clone());
+        self.steam_paths.workshop_path = Some(folder);
+        self.rescan_mods();
+    }
+
+    pub fn set_mods_config_path(&mut self, file: PathBuf) {
+        self.custom_config_path = Some(file.clone());
+        self.mods_config_path = Some(file);
+        self.rescan_mods();
+    }
+
+    /// Forgets hand-picked paths and detects everything again via Steam.
+    pub fn reset_paths_to_auto(&mut self) {
+        self.custom_game_path = None;
+        self.custom_workshop_path = None;
+        self.custom_config_path = None;
+        self.steam_paths = detect_steam_paths();
+        self.mods_config_path = get_default_mods_config_path();
+        self.rescan_mods();
+    }
+
+    fn settings_snapshot(&self) -> crate::settings::AppSettings {
+        let mut flags: Vec<String> = self.launch_flags.iter().cloned().collect();
+        flags.sort();
+        crate::settings::AppSettings {
+            game_path: self.custom_game_path.clone(),
+            workshop_path: self.custom_workshop_path.clone(),
+            mods_config_path: self.custom_config_path.clone(),
+            language: self.i18n.lang,
+            launch_flags: flags,
+            launch_extra_args: self.launch_extra_args.clone(),
+            opt_threads: Some(self.opt_threads),
+        }
+    }
+
+    /// Saves settings when anything changed (called every frame; writes only on change).
+    fn save_settings_if_changed(&mut self) {
+        let snap = self.settings_snapshot();
+        let mut last = self.last_saved_settings.clone();
+        last.launch_flags.sort();
+        if snap != last {
+            match snap.save_to(&crate::settings::AppSettings::path()) {
+                Ok(()) => self.last_saved_settings = snap,
+                Err(e) => {
+                    self.status_message = format!("Не удалось сохранить настройки: {}", e);
+                    self.last_saved_settings = snap; // don't retry every frame
+                }
+            }
+        }
     }
 
     /// Launch arguments: checked flags valid for the detected engine + extra arguments.
@@ -1144,6 +1228,7 @@ impl eframe::App for App {
         });
 
         self.render_delete_confirmation(ctx);
+        self.save_settings_if_changed();
 
         if self.opt_is_running {
             ctx.request_repaint();

@@ -182,6 +182,10 @@ pub enum TranslationKey {
     OptClearGameCache,
     OptClearGameCacheHint,
 
+    // Saved settings
+    SettingsAutoDetect,
+    SettingsSavedHint,
+
     // Interface font
     SettingsFont,
     SettingsTextSize,
@@ -494,6 +498,10 @@ impl TranslationKey {
             (TranslationKey::OptClearGameCache, Language::English) => "Reset game texture cache",
             (TranslationKey::OptClearGameCacheHint, Language::Russian) => "TextureCache и ShaderCache уйдут в Корзину; игра пересоберёт их при запуске. Помогает при битых или старых текстурах.",
             (TranslationKey::OptClearGameCacheHint, Language::English) => "TextureCache and ShaderCache go to the Recycle Bin; the game rebuilds them on start. Helps with broken or stale textures.",
+            (TranslationKey::SettingsAutoDetect, Language::Russian) => "Определить пути автоматически",
+            (TranslationKey::SettingsAutoDetect, Language::English) => "Detect paths automatically",
+            (TranslationKey::SettingsSavedHint, Language::Russian) => "Выбранные вручную пути, язык и параметры запуска сохраняются между запусками.",
+            (TranslationKey::SettingsSavedHint, Language::English) => "Hand-picked paths, language and launch options are kept between runs.",
             (TranslationKey::SettingsFont, Language::Russian) => "Шрифт интерфейса",
             (TranslationKey::SettingsFont, Language::English) => "Interface font",
             (TranslationKey::SettingsTextSize, Language::Russian) => "Размер текста:",
