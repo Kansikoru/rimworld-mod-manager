@@ -108,7 +108,9 @@ pub struct LogReport {
 
 #[derive(Default)]
 struct ModMatcher<'a> {
-    dll_map: HashMap<String, &'a ModInfo>,
+    /// DLL file stem -> mods that ship it. A DLL found in several mods (0Harmony.dll,
+    /// shared libraries) is ambiguous and never used to blame a mod.
+    dll_map: HashMap<String, Vec<&'a ModInfo>>,
     package_id_map: HashMap<String, &'a ModInfo>,
     name_map: HashMap<String, &'a ModInfo>,
 }
@@ -130,12 +132,15 @@ impl<'a> ModMatcher<'a> {
                     .flatten()
                 {
                     let path = entry.path();
-                    if path.is_file() {
-                        if let Some(ext) = path.extension() {
-                            if ext.eq_ignore_ascii_case("dll") {
-                                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                                    matcher.dll_map.insert(stem.to_lowercase(), m);
-                                }
+                    let is_dll = path
+                        .extension()
+                        .map(|e| e.eq_ignore_ascii_case("dll"))
+                        .unwrap_or(false);
+                    if is_dll && entry.file_type().is_file() {
+                        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                            let owners = matcher.dll_map.entry(stem.to_lowercase()).or_default();
+                            if !owners.iter().any(|o| std::ptr::eq(*o, m)) {
+                                owners.push(m);
                             }
                         }
                     }
@@ -146,13 +151,21 @@ impl<'a> ModMatcher<'a> {
         matcher
     }
 
+    /// The single mod that ships this DLL, if exactly one does.
+    fn unique_dll_owner(&self, stem: &str) -> Option<&'a ModInfo> {
+        match self.dll_map.get(stem).map(Vec::as_slice) {
+            Some([only]) => Some(*only),
+            _ => None,
+        }
+    }
+
     fn find_mod(&self, token: &str) -> Option<&'a ModInfo> {
         let clean = token.trim().to_lowercase();
         if clean.is_empty() {
             return None;
         }
 
-        if let Some(m) = self.dll_map.get(&clean) {
+        if let Some(m) = self.unique_dll_owner(&clean) {
             return Some(m);
         }
 
@@ -164,22 +177,37 @@ impl<'a> ModMatcher<'a> {
             return Some(m);
         }
 
-        let parts: Vec<&str> = clean.split('.').collect();
-        for part in &parts {
+        for part in clean.split('.') {
             if part.len() >= 4 {
-                if let Some(m) = self.dll_map.get(*part) {
+                if let Some(m) = self.unique_dll_owner(part) {
                     return Some(m);
                 }
             }
         }
 
-        for (pkg_id, m) in &self.package_id_map {
-            if clean.contains(pkg_id) {
-                return Some(m);
-            }
-        }
+        // Last resort: a packageId contained in the token. Deterministic: the longest
+        // (most specific) match wins, short IDs are ignored to avoid accidental hits.
+        self.package_id_map
+            .iter()
+            .filter(|(pkg_id, _)| pkg_id.len() >= 8 && clean.contains(pkg_id.as_str()))
+            .max_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| b.0.cmp(a.0)))
+            .map(|(_, m)| *m)
+    }
+}
 
-        None
+/// Summary line in the requested language (the report's own summary_text is Russian).
+pub fn summary_for(report: &LogReport, is_ru: bool) -> String {
+    let n = report.culprits.len();
+    let e = report.total_errors;
+    match (is_ru, report.has_hard_crash, n > 0, e > 0) {
+        (true, true, _, _) => format!("В логе зафиксирован фатальный краш процесса (CTD). Найдено виновников: {n}."),
+        (false, true, _, _) => format!("Fatal process crash (CTD) detected in log. Found culprits: {n}."),
+        (true, false, true, _) => format!("Обнаружены критические ошибки. Найдено проблемных модов: {n}."),
+        (false, false, true, _) => format!("Critical errors detected. Found problematic mods: {n}."),
+        (true, false, false, true) => format!("В логе найдено {e} ошибок, но прямых виновников не выявлено."),
+        (false, false, false, true) => format!("Found {e} errors in the log, but no direct culprits identified."),
+        (true, ..) => "Лог чист. Критических ошибок и вылетов не обнаружено.".to_string(),
+        (false, ..) => "Log is clean. No critical errors or crashes detected.".to_string(),
     }
 }
 
@@ -681,7 +709,7 @@ pub fn generate_ai_diagnostic_prompt(report: &LogReport, is_ru: bool) -> String 
     if is_ru {
         out.push_str("Привет! Пожалуйста, помоги разобраться с ошибкой/вылетом игры RimWorld на основе системного лога.\n\n");
         out.push_str(&format!("📁 **Файл лога:** {}\n", report.log_file_name));
-        out.push_str(&format!("📊 **Общий статус:** {}\n", report.summary_text));
+        out.push_str(&format!("📊 **Общий статус:** {}\n", summary_for(report, true)));
 
         out.push_str(if report.is_waylith {
             "🎮 **Версия игры:** RimWorld 1.7+ (движок Waylith, .NET 10)\n"
@@ -731,7 +759,7 @@ pub fn generate_ai_diagnostic_prompt(report: &LogReport, is_ru: bool) -> String 
     } else {
         out.push_str("Hello! Please help diagnose a RimWorld crash/startup error based on this system log.\n\n");
         out.push_str(&format!("📁 **Log file:** {}\n", report.log_file_name));
-        out.push_str(&format!("📊 **Status:** {}\n", report.summary_text));
+        out.push_str(&format!("📊 **Status:** {}\n", summary_for(report, false)));
 
         out.push_str(if report.is_waylith {
             "🎮 **Game version:** RimWorld 1.7+ (Waylith engine, .NET 10)\n"
@@ -864,6 +892,33 @@ Runtime:   .NET 10.0.13-waylithclr.dev
         assert!(c.explanation.contains("AchtungMod.Controller.HandleDrafting"));
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn shared_dll_does_not_blame_a_random_mod() {
+        let base = std::env::temp_dir().join(format!("rwmm_dll_test_{}", std::process::id()));
+        let a = base.join("a");
+        let b = base.join("b");
+        for d in [&a, &b] {
+            std::fs::create_dir_all(d.join("Assemblies")).unwrap();
+            std::fs::write(d.join("Assemblies").join("0Harmony.dll"), b"").unwrap();
+        }
+        std::fs::write(a.join("Assemblies").join("ModA.dll"), b"").unwrap();
+        let mods = vec![test_mod(&a, "author.moda", "Mod A"), test_mod(&b, "author.modb", "Mod B")];
+        let m = ModMatcher::build(&mods);
+        assert!(m.find_mod("0Harmony").is_none(), "0Harmony.dll ships in both mods");
+        assert_eq!(m.find_mod("ModA.SomeClass").map(|x| x.package_id.as_str()), Some("author.moda"));
+        // Longest contained packageId wins, deterministically
+        assert_eq!(m.find_mod("x.author.modb.y").map(|x| x.package_id.as_str()), Some("author.modb"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn prompt_summary_follows_language() {
+        let report = LogReport { total_errors: 3, summary_text: "русский текст".into(), ..Default::default() };
+        let en = generate_ai_diagnostic_prompt(&report, false);
+        assert!(en.contains("Found 3 errors") && !en.contains("русский"));
+        assert!(generate_ai_diagnostic_prompt(&report, true).contains("найдено 3 ошибок"));
     }
 
     #[test]

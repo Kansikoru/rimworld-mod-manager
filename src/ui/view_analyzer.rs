@@ -33,7 +33,8 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
             }
 
             if let Some(ref report) = app.log_report {
-                if !report.culprits.is_empty() {
+                // Also useful when there are errors but no identified culprit.
+                if !report.culprits.is_empty() || report.total_errors > 0 || report.has_hard_crash {
                     if success_button_icon(ui, ICON_COPY, t.get(TranslationKey::CrashBtnCopyPrompt)).clicked() {
                         let prompt = generate_ai_diagnostic_prompt(report, app.is_russian);
                         ui.output_mut(|o| o.copied_text = prompt);
