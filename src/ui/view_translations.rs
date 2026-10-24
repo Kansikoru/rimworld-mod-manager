@@ -129,7 +129,7 @@ fn render_installed_translations_column(app: &mut App, ui: &mut Ui) {
                     outer_margin: egui::Margin::symmetric(0.0, 2.0),
                     rounding: Rounding::same(6.0),
                     fill: if idx % 2 == 0 { THEME.bg_card } else { THEME.bg_surface },
-                    stroke: Stroke::new(1.0, THEME.border_subtle),
+                    stroke: Stroke::new(1.0_f32, THEME.border_subtle),
                     shadow: egui::epaint::Shadow::NONE,
                 };
 

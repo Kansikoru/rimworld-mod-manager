@@ -370,7 +370,7 @@ fn render_category_filter(app: &mut App, ui: &mut Ui) {
                 THEME.bg_card
             })
             .stroke(Stroke::new(
-                1.0,
+                1.0_f32,
                 if selected { fg } else { THEME.border_subtle },
             ))
             .rounding(Rounding::same(10.0));
@@ -511,7 +511,7 @@ fn render_mod_icon_pill(
         outer_margin: egui::Margin::ZERO,
         rounding: Rounding::same(4.0),
         fill: bg_col,
-        stroke: Stroke::new(1.0, fg_col.linear_multiply(0.4)),
+        stroke: Stroke::new(1.0_f32, fg_col.linear_multiply(0.4)),
         shadow: egui::epaint::Shadow::NONE,
     };
     frame.show(ui, |ui| {
@@ -538,7 +538,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
             outer_margin: egui::Margin::ZERO,
             rounding: Rounding::same(4.0),
             fill: THEME.bg_dark,
-            stroke: Stroke::new(1.0, THEME.border_subtle),
+            stroke: Stroke::new(1.0_f32, THEME.border_subtle),
             shadow: egui::epaint::Shadow::NONE,
         };
         count_frame.show(ui, |ui| {
@@ -656,9 +656,9 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                     rounding: Rounding::same(5.0),
                     fill: bg_color,
                     stroke: if is_selected {
-                        Stroke::new(1.0, THEME.accent_cyan)
+                        Stroke::new(1.0_f32, THEME.accent_cyan)
                     } else {
-                        Stroke::new(1.0, THEME.border_subtle)
+                        Stroke::new(1.0_f32, THEME.border_subtle)
                     },
                     shadow: egui::epaint::Shadow::NONE,
                 };
@@ -840,7 +840,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                             .strong(),
                                     )
                                     .fill(Color32::from_rgb(20, 60, 35))
-                                    .stroke(Stroke::new(1.0, Color32::from_rgb(34, 197, 94).linear_multiply(0.5)))
+                                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(34, 197, 94).linear_multiply(0.5)))
                                     .rounding(Rounding::same(3.0));
 
                                     if ui.add(btn).clicked() {
@@ -968,7 +968,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
             outer_margin: egui::Margin::ZERO,
             rounding: Rounding::same(4.0),
             fill: THEME.bg_dark,
-            stroke: Stroke::new(1.0, THEME.border_subtle),
+            stroke: Stroke::new(1.0_f32, THEME.border_subtle),
             shadow: egui::epaint::Shadow::NONE,
         };
         count_frame.show(ui, |ui| {
@@ -1042,9 +1042,9 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                     rounding: Rounding::same(5.0),
                     fill: bg_color,
                     stroke: if is_selected {
-                        Stroke::new(1.0, THEME.accent_cyan)
+                        Stroke::new(1.0_f32, THEME.accent_cyan)
                     } else {
-                        Stroke::new(1.0, THEME.border_subtle)
+                        Stroke::new(1.0_f32, THEME.border_subtle)
                     },
                     shadow: egui::epaint::Shadow::NONE,
                 };
@@ -1220,7 +1220,7 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
         outer_margin: egui::Margin::symmetric(0.0, 2.0),
         rounding: Rounding::same(6.0),
         fill: THEME.bg_surface,
-        stroke: Stroke::new(1.0, THEME.border_strong),
+        stroke: Stroke::new(1.0_f32, THEME.border_strong),
         shadow: egui::epaint::Shadow::NONE,
     };
 
@@ -1287,7 +1287,7 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
                         outer_margin: egui::Margin::ZERO,
                         rounding: Rounding::same(6.0),
                         fill: bg_col,
-                        stroke: Stroke::new(1.0, fg_col.linear_multiply(0.4)),
+                        stroke: Stroke::new(1.0_f32, fg_col.linear_multiply(0.4)),
                         shadow: egui::epaint::Shadow::NONE,
                     };
                     frame.show(ui, |ui| {

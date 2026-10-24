@@ -54,30 +54,30 @@ pub fn apply_dark_theme(ctx: &egui::Context) {
 
     // Normal widgets
     visuals.widgets.noninteractive.bg_fill = THEME.bg_surface;
-    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, THEME.border_subtle);
-    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, THEME.text_secondary);
+    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, THEME.border_subtle);
+    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, THEME.text_secondary);
     visuals.widgets.noninteractive.rounding = Rounding::same(6.0);
 
     // Inactive button/inputs
     visuals.widgets.inactive.bg_fill = THEME.bg_card;
-    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, THEME.border_subtle);
-    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, THEME.text_primary);
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, THEME.border_subtle);
+    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, THEME.text_primary);
     visuals.widgets.inactive.rounding = Rounding::same(6.0);
 
     // Hovered widgets
     visuals.widgets.hovered.bg_fill = THEME.bg_surface_hover;
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, THEME.accent_cyan_hover);
-    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, Color32::WHITE);
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, THEME.accent_cyan_hover);
+    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, Color32::WHITE);
     visuals.widgets.hovered.rounding = Rounding::same(6.0);
 
     // Active (pressed) widgets
     visuals.widgets.active.bg_fill = THEME.accent_cyan;
-    visuals.widgets.active.bg_stroke = Stroke::new(1.0, THEME.accent_cyan_hover);
-    visuals.widgets.active.fg_stroke = Stroke::new(1.0, Color32::WHITE);
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, THEME.accent_cyan_hover);
+    visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, Color32::WHITE);
     visuals.widgets.active.rounding = Rounding::same(6.0);
 
     visuals.selection.bg_fill = THEME.accent_cyan.linear_multiply(0.35);
-    visuals.selection.stroke = Stroke::new(1.0, THEME.accent_cyan);
+    visuals.selection.stroke = Stroke::new(1.0_f32, THEME.accent_cyan);
 
     ctx.set_visuals(visuals);
 }

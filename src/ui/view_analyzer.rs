@@ -172,7 +172,7 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
                                     inner_margin: egui::Margin::same(8.0),
                                     rounding: Rounding::same(4.0),
                                     fill: Color32::from_rgb(15, 17, 23),
-                                    stroke: Stroke::new(1.0, THEME.border_subtle),
+                                    stroke: Stroke::new(1.0_f32, THEME.border_subtle),
                                     shadow: egui::epaint::Shadow::NONE,
                                     outer_margin: egui::Margin::ZERO,
                                 };

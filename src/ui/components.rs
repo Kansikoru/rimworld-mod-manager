@@ -128,7 +128,7 @@ pub fn primary_button(ui: &mut Ui, text: &str) -> Response {
             rect,
             Rounding::same(6.0),
             bg,
-            Stroke::new(1.0, border),
+            Stroke::new(1.0_f32, border),
         );
         let text_pos = Pos2::new(
             rect.center().x - galley.size().x / 2.0,
@@ -160,7 +160,7 @@ pub fn danger_button(ui: &mut Ui, text: &str) -> Response {
             rect,
             Rounding::same(6.0),
             bg,
-            Stroke::new(1.0, Color32::from_rgb(244, 63, 94)),
+            Stroke::new(1.0_f32, Color32::from_rgb(244, 63, 94)),
         );
         let text_pos = Pos2::new(
             rect.center().x - galley.size().x / 2.0,
@@ -190,7 +190,7 @@ pub fn success_button(ui: &mut Ui, text: &str) -> Response {
             rect,
             Rounding::same(6.0),
             bg,
-            Stroke::new(1.0, Color32::from_rgb(34, 197, 94)),
+            Stroke::new(1.0_f32, Color32::from_rgb(34, 197, 94)),
         );
         let text_pos = Pos2::new(
             rect.center().x - galley.size().x / 2.0,
@@ -220,7 +220,7 @@ pub fn secondary_button(ui: &mut Ui, text: &str) -> Response {
             rect,
             Rounding::same(6.0),
             bg,
-            Stroke::new(1.0, border),
+            Stroke::new(1.0_f32, border),
         );
         let text_pos = Pos2::new(
             rect.center().x - galley.size().x / 2.0,
@@ -254,7 +254,7 @@ pub fn card_container<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -
         rounding: Rounding::same(10.0),
         shadow: egui::epaint::Shadow::NONE,
         fill: THEME.bg_card,
-        stroke: Stroke::new(1.0, THEME.border_subtle),
+        stroke: Stroke::new(1.0_f32, THEME.border_subtle),
     };
     frame.show(ui, add_contents).inner
 }
@@ -294,7 +294,7 @@ pub fn primary_button_icon(ui: &mut Ui, icon: ImageSource<'static>, text: &str) 
         egui::RichText::new(text).color(Color32::WHITE).size(13.0).strong(),
     )
     .fill(THEME.accent_cyan)
-    .stroke(Stroke::new(1.0, Color32::TRANSPARENT))
+    .stroke(Stroke::new(1.0_f32, Color32::TRANSPARENT))
     .rounding(Rounding::same(6.0));
     ui.add(btn)
 }
@@ -306,7 +306,7 @@ pub fn secondary_button_icon(ui: &mut Ui, icon: ImageSource<'static>, text: &str
         egui::RichText::new(text).color(THEME.text_primary).size(13.0),
     )
     .fill(THEME.bg_card)
-    .stroke(Stroke::new(1.0, THEME.border_subtle))
+    .stroke(Stroke::new(1.0_f32, THEME.border_subtle))
     .rounding(Rounding::same(6.0));
     ui.add(btn)
 }
@@ -318,7 +318,7 @@ pub fn danger_button_icon(ui: &mut Ui, icon: ImageSource<'static>, text: &str) -
         egui::RichText::new(text).color(Color32::WHITE).size(13.0),
     )
     .fill(Color32::from_rgb(159, 18, 57))
-    .stroke(Stroke::new(1.0, Color32::from_rgb(244, 63, 94)))
+    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(244, 63, 94)))
     .rounding(Rounding::same(6.0));
     ui.add(btn)
 }
@@ -330,7 +330,7 @@ pub fn success_button_icon(ui: &mut Ui, icon: ImageSource<'static>, text: &str) 
         egui::RichText::new(text).color(Color32::WHITE).size(13.0),
     )
     .fill(Color32::from_rgb(21, 128, 61))
-    .stroke(Stroke::new(1.0, Color32::from_rgb(34, 197, 94)))
+    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(34, 197, 94)))
     .rounding(Rounding::same(6.0));
     ui.add(btn)
 }

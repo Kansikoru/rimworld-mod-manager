@@ -1238,7 +1238,7 @@ impl eframe::App for App {
                                 .strong(),
                         )
                         .fill(bg)
-                        .stroke(Stroke::new(1.0, border))
+                        .stroke(Stroke::new(1.0_f32, border))
                         .rounding(Rounding::same(6.0)),
                     );
 
