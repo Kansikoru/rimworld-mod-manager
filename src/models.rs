@@ -73,6 +73,28 @@ pub struct ModInfo {
     /// Categories computed from the content (or set by the user), strongest first.
     #[serde(default)]
     pub categories: Vec<crate::categories::ModCategory>,
+    /// `incompatibleWith` (+ the block for the installed game version).
+    #[serde(default)]
+    pub incompatible_with: Vec<String>,
+    /// `alternativePackageIds`: lowercase dependency id -> IDs that satisfy it as well.
+    #[serde(default)]
+    pub dependency_alternatives: std::collections::HashMap<String, Vec<String>>,
+    /// Raw `*ByVersion` blocks from About.xml (resolved into the lists above after scanning).
+    #[serde(default)]
+    pub by_version: VersionedLists,
+}
+
+/// `modDependenciesByVersion`, `loadAfterByVersion`, ... keyed by game version ("1.6").
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct VersionedLists {
+    #[serde(default)]
+    pub dependencies: std::collections::HashMap<String, Vec<String>>,
+    #[serde(default)]
+    pub load_after: std::collections::HashMap<String, Vec<String>>,
+    #[serde(default)]
+    pub load_before: std::collections::HashMap<String, Vec<String>>,
+    #[serde(default)]
+    pub incompatible_with: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl ModInfo {

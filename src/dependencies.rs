@@ -23,6 +23,25 @@ pub enum DependencyProblem {
         required_name: String,
         required_id: String,
     },
+    /// Мод объявил `incompatibleWith`, и этот мод тоже включён
+    Incompatible {
+        dependent_name: String,
+        dependent_id: String,
+        other_name: String,
+        other_id: String,
+    },
+}
+
+impl DependencyProblem {
+    /// The mod the problem is shown on.
+    pub fn dependent_id(&self) -> &str {
+        match self {
+            DependencyProblem::Missing { dependent_id, .. }
+            | DependencyProblem::Disabled { dependent_id, .. }
+            | DependencyProblem::WrongOrder { dependent_id, .. }
+            | DependencyProblem::Incompatible { dependent_id, .. } => dependent_id,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -53,6 +72,13 @@ impl DependencyReport {
         self.problems
             .iter()
             .filter(|p| matches!(p, DependencyProblem::WrongOrder { .. }))
+            .count()
+    }
+
+    pub fn incompatible_count(&self) -> usize {
+        self.problems
+            .iter()
+            .filter(|p| matches!(p, DependencyProblem::Incompatible { .. }))
             .count()
     }
 }
@@ -103,13 +129,20 @@ pub fn validate_dependencies(
                 continue;
             }
 
-            // Another active mod can stand in for the dependency
-            // (Prepatcher "can be used in place of the Harmony mod").
-            if dependency_substitutes(&dep_lower)
+            // Another active mod can stand in for the dependency: Prepatcher "can be used in
+            // place of the Harmony mod", and About.xml may list alternativePackageIds.
+            let declared_alternatives = mod_info
+                .dependency_alternatives
+                .get(&dep_lower)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let substitute_active = dependency_substitutes(&dep_lower)
                 .iter()
                 .any(|alt| active_indices.contains_key(*alt))
-                && !active_indices.contains_key(&dep_lower)
-            {
+                || declared_alternatives
+                    .iter()
+                    .any(|alt| active_indices.contains_key(&alt.to_lowercase()));
+            if substitute_active && !active_indices.contains_key(&dep_lower) {
                 continue;
             }
 
@@ -162,6 +195,27 @@ pub fn validate_dependencies(
                 });
             }
         }
+
+        // incompatibleWith: both mods are active at the same time
+        for other_raw in &mod_info.incompatible_with {
+            let other_lower = other_raw.trim().to_lowercase();
+            if other_lower.is_empty() || other_lower == active_lower || !active_indices.contains_key(&other_lower) {
+                continue;
+            }
+            if !seen_problems.insert((active_lower.clone(), format!("!{other_lower}"))) {
+                continue;
+            }
+            let other_name = installed_map
+                .get(&other_lower)
+                .map(|m| m.name.clone())
+                .unwrap_or_else(|| other_raw.clone());
+            report.problems.push(DependencyProblem::Incompatible {
+                dependent_name: mod_info.name.clone(),
+                dependent_id: mod_info.package_id.clone(),
+                other_name,
+                other_id: other_raw.clone(),
+            });
+        }
     }
 
     report
@@ -197,6 +251,22 @@ mod tests {
             has_other_content: true,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn alternatives_and_incompatibilities() {
+        let mut needs_lib = m("someone.mod", &["original.lib"]);
+        needs_lib.dependency_alternatives.insert("original.lib".into(), vec!["fork.lib".into()]);
+        needs_lib.incompatible_with = vec!["bad.mod".into()];
+        let mods = vec![m("fork.lib", &[]), m("bad.mod", &[]), needs_lib];
+
+        let active: Vec<String> = ["fork.lib", "someone.mod"].iter().map(|s| s.to_string()).collect();
+        assert!(validate_dependencies(&active, &mods).is_empty(), "fork satisfies the dependency");
+
+        let with_bad: Vec<String> = ["fork.lib", "someone.mod", "bad.mod"].iter().map(|s| s.to_string()).collect();
+        let rep = validate_dependencies(&with_bad, &mods);
+        assert_eq!(rep.incompatible_count(), 1);
+        assert_eq!(rep.problems[0].dependent_id(), "someone.mod");
     }
 
     #[test]

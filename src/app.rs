@@ -624,10 +624,13 @@ impl App {
         let local = self.steam_paths.local_mods_path.clone();
         let data = self.steam_paths.game_data_path.clone();
         let overrides = self.category_overrides.clone();
+        let game_mm = self.steam_paths.game_major_minor();
         self.rescan_rx = Some(self.spawn_task(move || {
             let scanned = scan_mods(workshop.as_deref(), local.as_deref(), data.as_deref());
             // Two copies with the same packageId show up twice in the game's mod list: keep one, warn about it.
             let (mut unique, duplicates) = crate::scanner::dedupe_mods(scanned);
+            // `*ByVersion` blocks of About.xml for the installed game version (S16).
+            crate::scanner::resolve_versioned_fields(&mut unique, game_mm.as_deref());
             classify_and_link_translations(&mut unique);
             crate::categories::assign_categories(&mut unique, &overrides);
             RescanResult { mods: unique, duplicates }

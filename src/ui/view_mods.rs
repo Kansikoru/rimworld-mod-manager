@@ -74,22 +74,27 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
         let missing = app.dependency_report.missing_count();
         let disabled = app.dependency_report.disabled_count();
         let order = app.dependency_report.order_count();
+        let incompatible = app.dependency_report.incompatible_count();
 
         card_container(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.add(svg_icon(ICON_STATUS_WARNING, Vec2::splat(18.0), THEME.accent_amber));
                 ui.vertical(|ui| {
+                    let mut summary = format!(
+                        "{}: {} {}, {} {}, {} {}",
+                        t.get(TranslationKey::TabDependencies),
+                        missing,
+                        t.get(TranslationKey::DepMissing),
+                        disabled,
+                        t.get(TranslationKey::DepDisabled),
+                        order,
+                        t.get(TranslationKey::DepWrongOrder)
+                    );
+                    if incompatible > 0 {
+                        summary.push_str(&format!(", {} {}", incompatible, t.get(TranslationKey::DepIncompatible)));
+                    }
                     ui.label(
-                        egui::RichText::new(format!(
-                            "{}: {} {}, {} {}, {} {}",
-                            t.get(TranslationKey::TabDependencies),
-                            missing,
-                            t.get(TranslationKey::DepMissing),
-                            disabled,
-                            t.get(TranslationKey::DepDisabled),
-                            order,
-                            t.get(TranslationKey::DepWrongOrder)
-                        ))
+                        egui::RichText::new(summary)
                         .color(THEME.accent_amber)
                         .strong(),
                     );
@@ -552,12 +557,9 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     // First dependency problem of each mod, by lowercase id: one lookup per row (M1).
     let mut dep_by_mod: std::collections::HashMap<String, DependencyProblem> = std::collections::HashMap::new();
     for p in &app.dependency_report.problems {
-        let dependent = match p {
-            DependencyProblem::Disabled { dependent_id, .. }
-            | DependencyProblem::Missing { dependent_id, .. }
-            | DependencyProblem::WrongOrder { dependent_id, .. } => dependent_id.to_lowercase(),
-        };
-        dep_by_mod.entry(dependent).or_insert_with(|| p.clone());
+        dep_by_mod
+            .entry(p.dependent_id().to_lowercase())
+            .or_insert_with(|| p.clone());
     }
 
     let mut missing_icons = Vec::new();
@@ -792,6 +794,10 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                 }
                                 DependencyProblem::WrongOrder { .. } => {
                                     icon_badge(ui, ICON_SORT, app.i18n.get(TranslationKey::ModsDepOrder), Color32::from_rgb(0x78, 0x35, 0x0F), Color32::from_rgb(0xFE, 0xF3, 0xC7));
+                                }
+                                DependencyProblem::Incompatible { other_name, .. } => {
+                                    icon_badge(ui, ICON_STATUS_ERROR, app.i18n.get(TranslationKey::ModsDepIncompatible), Color32::from_rgb(0x7F, 0x1D, 0x1D), Color32::from_rgb(0xFE, 0xE2, 0xE2))
+                                        .on_hover_text(other_name.as_str());
                                 }
                             }
                         }

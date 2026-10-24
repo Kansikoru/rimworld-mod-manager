@@ -182,6 +182,10 @@ pub enum TranslationKey {
     OptClearGameCache,
     OptClearGameCacheHint,
 
+    // Incompatibilities
+    ModsDepIncompatible,
+    DepIncompatible,
+
     // Community rules
     SettingsBtnImportDb,
     SettingsDbHint,
@@ -503,6 +507,10 @@ impl TranslationKey {
             (TranslationKey::OptClearGameCache, Language::English) => "Reset game texture cache",
             (TranslationKey::OptClearGameCacheHint, Language::Russian) => "TextureCache и ShaderCache уйдут в Корзину; игра пересоберёт их при запуске. Помогает при битых или старых текстурах.",
             (TranslationKey::OptClearGameCacheHint, Language::English) => "TextureCache and ShaderCache go to the Recycle Bin; the game rebuilds them on start. Helps with broken or stale textures.",
+            (TranslationKey::ModsDepIncompatible, Language::Russian) => "Несовместим",
+            (TranslationKey::ModsDepIncompatible, Language::English) => "Incompatible",
+            (TranslationKey::DepIncompatible, Language::Russian) => "несовместимых",
+            (TranslationKey::DepIncompatible, Language::English) => "incompatible",
             (TranslationKey::SettingsBtnImportDb, Language::Russian) => "Импорт из файла (RimPy / RimSort)",
             (TranslationKey::SettingsBtnImportDb, Language::English) => "Import from file (RimPy / RimSort)",
             (TranslationKey::SettingsDbHint, Language::Russian) => "«Обновить» скачивает базу правил сообщества RimSort с GitHub (лицензия CC0). Можно также взять communityRules.json из папки RimPy.",
