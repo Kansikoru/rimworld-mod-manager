@@ -196,6 +196,23 @@ impl Drop for SteamShutdownGuard<'_> {
     }
 }
 
+/// Steam API return code meaning "OK" for `SteamAPI_InitFlat` (ESteamAPIInitResult).
+const STEAM_INIT_OK: i32 = 0;
+
+/// How long to pump `SteamAPI_RunCallbacks` after sending requests, so they reach the
+/// Steam client before `SteamAPI_Shutdown` (the calls are asynchronous).
+const CALLBACK_PUMP: std::time::Duration = std::time::Duration::from_millis(1500);
+
+type UgcFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64) -> u64;
+
+/// Starts the Steam API with the game's app id, gets the UGC (Workshop) interface,
+/// runs `action`, lets Steam process the requests and shuts the API down.
+///
+/// Handles both DLL generations:
+/// - new SDKs export `SteamAPI_InitFlat`, which returns an error code (0 = OK, not a bool);
+/// - older ones (RimWorld 1.6 and 1.7 ship 6.91.21.57) export `SteamAPI_InitSafe` / `SteamAPI_Init`.
+///
+/// The UGC accessor is versioned (`SteamAPI_SteamUGC_v016` today); several versions are tried.
 unsafe fn with_steam_ugc<F, R>(dll_path: &Path, action: F) -> Result<R, String>
 where
     F: FnOnce(*mut std::ffi::c_void, &libloading::Library) -> Result<R, String>,
@@ -206,121 +223,111 @@ where
         std::env::set_var("SteamAppId", RIMWORLD_APP_ID.to_string());
     }
 
-    let init_flat: Result<libloading::Symbol<unsafe extern "C" fn(*mut u8) -> bool>, _> =
-        lib.get(b"SteamAPI_InitFlat");
-    let init_ok = if let Ok(f) = init_flat {
+    if let Ok(init_flat) = lib.get::<unsafe extern "C" fn(*mut u8) -> i32>(b"SteamAPI_InitFlat") {
         let mut err_buf = [0u8; 1024];
-        f(err_buf.as_mut_ptr())
+        let code = init_flat(err_buf.as_mut_ptr());
+        if code != STEAM_INIT_OK {
+            let len = err_buf.iter().position(|&b| b == 0).unwrap_or(err_buf.len());
+            let msg = String::from_utf8_lossy(&err_buf[..len]).to_string();
+            return Err(format!("Steam API не запустился (код {code}): {msg}"));
+        }
     } else {
-        let init_std: libloading::Symbol<unsafe extern "C" fn() -> bool> =
-            lib.get(b"SteamAPI_Init").map_err(|e| e.to_string())?;
-        init_std()
-    };
-
-    if !init_ok {
-        return Err(
-            "Не удалось инициализировать Steam API (возможно клиент Steam закрыт)".to_string(),
-        );
+        let init: libloading::Symbol<unsafe extern "C" fn() -> bool> = lib
+            .get(b"SteamAPI_InitSafe")
+            .or_else(|_| lib.get(b"SteamAPI_Init"))
+            .map_err(|e| e.to_string())?;
+        if !init() {
+            return Err(
+                "Не удалось запустить Steam API (возможно, клиент Steam закрыт)".to_string(),
+            );
+        }
     }
 
     let _guard = SteamShutdownGuard { lib: &lib };
 
-    let get_ugc: Result<libloading::Symbol<unsafe extern "C" fn() -> *mut std::ffi::c_void>, _> =
-        lib.get(b"SteamAPI_SteamUGC_v016");
-    let ugc_ptr = if let Ok(f) = get_ugc {
-        f()
-    } else if let Ok(get_ugc_def) =
-        lib.get::<unsafe extern "C" fn() -> *mut std::ffi::c_void>(b"SteamAPI_SteamUGC")
-    {
-        get_ugc_def()
-    } else {
-        std::ptr::null_mut()
-    };
-
+    let mut ugc_ptr = std::ptr::null_mut();
+    for version in (12..=30).rev() {
+        let name = format!("SteamAPI_SteamUGC_v{version:03}\0");
+        if let Ok(f) = lib.get::<unsafe extern "C" fn() -> *mut std::ffi::c_void>(name.as_bytes()) {
+            ugc_ptr = f();
+            break;
+        }
+    }
     if ugc_ptr.is_null() {
-        Err("Интерфейс Steam UGC недоступен".to_string())
-    } else {
-        action(ugc_ptr, &lib)
+        if let Ok(f) = lib.get::<unsafe extern "C" fn() -> *mut std::ffi::c_void>(b"SteamAPI_SteamUGC") {
+            ugc_ptr = f();
+        }
     }
+    if ugc_ptr.is_null() {
+        return Err("Интерфейс Steam Workshop (UGC) недоступен в этой версии steam_api64.dll".to_string());
+    }
+
+    let result = action(ugc_ptr, &lib);
+
+    // Requests are asynchronous: give Steam a moment to receive them before shutting down.
+    if let Ok(run_callbacks) = lib.get::<unsafe extern "C" fn()>(b"SteamAPI_RunCallbacks") {
+        let started = std::time::Instant::now();
+        while started.elapsed() < CALLBACK_PUMP {
+            run_callbacks();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+
+    result
 }
 
-pub fn unsubscribe_workshop_item_native(
-    dll_path: &Path,
-    item_id_str: &str,
-) -> Result<bool, String> {
-    let item_id: u64 = item_id_str
-        .parse()
-        .map_err(|_| format!("Неверный Steam Item ID: {item_id_str}"))?;
-
-    unsafe {
-        with_steam_ugc(dll_path, |ugc_ptr, lib| {
-            let unsub_fn: Result<
-                libloading::Symbol<unsafe extern "C" fn(*mut std::ffi::c_void, u64) -> u64>,
-                _,
-            > = lib.get(b"SteamAPI_ISteamUGC_UnsubscribeItem");
-            match unsub_fn {
-                Ok(unsub) => {
-                    let _call_handle = unsub(ugc_ptr, item_id);
-                    Ok(true)
-                }
-                Err(_) => Ok(false),
-            }
-        })
-    }
-}
-
-pub fn subscribe_workshop_item_native(dll_path: &Path, item_id_str: &str) -> Result<bool, String> {
-    let item_id: u64 = item_id_str
-        .parse()
-        .map_err(|_| format!("Неверный Steam Item ID: {item_id_str}"))?;
-
-    unsafe {
-        with_steam_ugc(dll_path, |ugc_ptr, lib| {
-            let sub_fn: Result<
-                libloading::Symbol<unsafe extern "C" fn(*mut std::ffi::c_void, u64) -> u64>,
-                _,
-            > = lib.get(b"SteamAPI_ISteamUGC_SubscribeItem");
-            match sub_fn {
-                Ok(sub) => {
-                    let _call_handle = sub(ugc_ptr, item_id);
-                    Ok(true)
-                }
-                Err(_) => Ok(false),
-            }
-        })
-    }
-}
-
-pub fn subscribe_workshop_items_batch_native(
-    dll_path: &Path,
-    item_ids: &[&str],
-) -> Result<usize, String> {
-    if item_ids.is_empty() {
+/// Sends one Subscribe/Unsubscribe request per item in a single Steam API session.
+/// Returns how many requests were sent.
+fn ugc_batch(dll_path: &Path, symbol: &[u8], item_ids: &[&str]) -> Result<usize, String> {
+    let ids: Vec<u64> = item_ids.iter().filter_map(|s| s.trim().parse().ok()).collect();
+    if ids.is_empty() {
         return Ok(0);
     }
     unsafe {
         with_steam_ugc(dll_path, |ugc_ptr, lib| {
-            let sub_fn: Result<
-                libloading::Symbol<unsafe extern "C" fn(*mut std::ffi::c_void, u64) -> u64>,
-                _,
-            > = lib.get(b"SteamAPI_ISteamUGC_SubscribeItem");
-            match sub_fn {
-                Ok(sub) => {
-                    let mut count = 0;
-                    for id_str in item_ids {
-                        if let Ok(item_id) = id_str.parse::<u64>() {
-                            let _call_handle = sub(ugc_ptr, item_id);
-                            count += 1;
-                        }
-                    }
-                    Ok(count)
-                }
-                Err(_) => Ok(0),
+            let call: libloading::Symbol<UgcFn> = lib.get(symbol).map_err(|e| e.to_string())?;
+            for id in &ids {
+                let _call_handle = call(ugc_ptr, *id);
             }
+            Ok(ids.len())
         })
     }
 }
 
+/// Read-only check that the Steam API works: starts it and asks how many Workshop items
+/// the user is subscribed to for RimWorld. Changes nothing.
+pub fn steam_api_check(dll_path: &Path) -> Result<u32, String> {
+    unsafe {
+        with_steam_ugc(dll_path, |ugc_ptr, lib| {
+            let count: libloading::Symbol<unsafe extern "C" fn(*mut std::ffi::c_void) -> u32> = lib
+                .get(b"SteamAPI_ISteamUGC_GetNumSubscribedItems\0")
+                .map_err(|e| e.to_string())?;
+            Ok(count(ugc_ptr))
+        })
+    }
+}
+
+pub fn unsubscribe_workshop_items_batch_native(dll_path: &Path, item_ids: &[&str]) -> Result<usize, String> {
+    ugc_batch(dll_path, b"SteamAPI_ISteamUGC_UnsubscribeItem\0", item_ids)
+}
+
+pub fn subscribe_workshop_items_batch_native(dll_path: &Path, item_ids: &[&str]) -> Result<usize, String> {
+    ugc_batch(dll_path, b"SteamAPI_ISteamUGC_SubscribeItem\0", item_ids)
+}
+
+pub fn unsubscribe_workshop_item_native(dll_path: &Path, item_id_str: &str) -> Result<bool, String> {
+    item_id_str
+        .parse::<u64>()
+        .map_err(|_| format!("Неверный Steam Item ID: {item_id_str}"))?;
+    Ok(unsubscribe_workshop_items_batch_native(dll_path, &[item_id_str])? > 0)
+}
+
+pub fn subscribe_workshop_item_native(dll_path: &Path, item_id_str: &str) -> Result<bool, String> {
+    item_id_str
+        .parse::<u64>()
+        .map_err(|_| format!("Неверный Steam Item ID: {item_id_str}"))?;
+    Ok(subscribe_workshop_items_batch_native(dll_path, &[item_id_str])? > 0)
+}
 /// Starts the game executable that matches the installed engine
 /// (`RimWorldWin64.exe` for 1.6/Unity, `RimWorld.exe` for 1.7/Waylith).
 pub fn launch_rimworld(steam_paths: &SteamPaths, args: &[String]) -> Result<(), String> {
@@ -349,5 +356,20 @@ pub fn launch_rimworld(steam_paths: &SteamPaths, args: &[String]) -> Result<(), 
     match cmd.spawn() {
         Ok(_) => Ok(()),
         Err(e) => Err(format!("Не удалось запустить процесс: {}", e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Live, read-only: `cargo test real_steam_api_check -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn real_steam_api_check() {
+        let paths = detect_steam_paths();
+        let dll = paths.steam_dll_path.expect("steam_api64.dll not found");
+        println!("dll: {}", dll.display());
+        println!("subscribed items: {:?}", steam_api_check(&dll));
     }
 }

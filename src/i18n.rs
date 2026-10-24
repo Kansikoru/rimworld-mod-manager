@@ -187,6 +187,7 @@ pub enum TranslationKey {
     SettingsDbHint,
 
     // Saved settings
+    SettingsCheckSteam,
     SettingsAutoDetect,
     SettingsSavedHint,
 
@@ -506,6 +507,8 @@ impl TranslationKey {
             (TranslationKey::SettingsBtnImportDb, Language::English) => "Import from file (RimPy / RimSort)",
             (TranslationKey::SettingsDbHint, Language::Russian) => "«Обновить» скачивает базу правил сообщества RimSort с GitHub (лицензия CC0). Можно также взять communityRules.json из папки RimPy.",
             (TranslationKey::SettingsDbHint, Language::English) => "\"Update\" downloads the RimSort community rules from GitHub (CC0 license). You can also import communityRules.json from a RimPy folder.",
+            (TranslationKey::SettingsCheckSteam, Language::Russian) => "Проверить Steam API",
+            (TranslationKey::SettingsCheckSteam, Language::English) => "Check Steam API",
             (TranslationKey::SettingsAutoDetect, Language::Russian) => "Определить пути автоматически",
             (TranslationKey::SettingsAutoDetect, Language::English) => "Detect paths automatically",
             (TranslationKey::SettingsSavedHint, Language::Russian) => "Выбранные вручную пути, язык и параметры запуска сохраняются между запусками.",

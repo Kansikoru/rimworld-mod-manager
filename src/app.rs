@@ -145,6 +145,8 @@ pub struct App {
     pub community_db: CommunityDatabase,
     /// Background download of the community rules.
     pub rules_rx: Option<Receiver<Result<usize, String>>>,
+    /// Background Steam subscribe request; yields the status message.
+    pub steam_rx: Option<Receiver<String>>,
 
     /// Deletion waiting for confirmation (modal window).
     pub pending_delete: Option<PendingDelete>,
@@ -315,6 +317,7 @@ impl App {
             community_db_rules_count: db_rules_count,
             community_db,
             rules_rx: None,
+            steam_rx: None,
 
             pending_delete: None,
             duplicate_mods: Vec::new(),
@@ -376,6 +379,12 @@ impl App {
                     }
                     Err(e) => self.status_message = format!("Ошибка поиска в Workshop: {}", e),
                 }
+            }
+        }
+        if let Some(rx) = &self.steam_rx {
+            if let Ok(msg) = rx.try_recv() {
+                self.steam_rx = None;
+                self.status_message = msg;
             }
         }
         if let Some(rx) = &self.rules_rx {
@@ -844,16 +853,37 @@ impl App {
         }));
     }
 
+    /// Read-only Steam API diagnostics (Settings): starts the API, counts subscriptions.
+    pub fn check_steam_api(&mut self) {
+        if self.steam_rx.is_some() {
+            return;
+        }
+        let Some(dll) = self.steam_paths.steam_dll_path.clone() else {
+            self.status_message = "steam_api64.dll не найден — проверьте папку игры".to_string();
+            return;
+        };
+        self.status_message = "Проверка Steam API...".to_string();
+        self.steam_rx = Some(self.spawn_task(move || match crate::steam::steam_api_check(&dll) {
+            Ok(n) => format!("Steam API работает: подписок на моды RimWorld — {}", n),
+            Err(e) => format!("Steam API не работает: {}", e),
+        }));
+    }
+
+    /// Subscribes via the Steam API in the background (the request needs ~1.5 s to reach Steam).
     pub fn subscribe_steam_mod(&mut self, item_id: &str) {
-        if let Some(ref dll) = self.steam_paths.steam_dll_path {
-            match subscribe_workshop_item_native(dll, item_id) {
-                Ok(_) => {
-                    self.status_message = format!("Успешная подписка на Steam Item #{}", item_id);
-                }
-                Err(e) => {
-                    self.status_message = format!("Ошибка подписки: {}", e);
-                }
-            }
+        if self.steam_rx.is_some() {
+            return;
+        }
+        if let Some(dll) = self.steam_paths.steam_dll_path.clone() {
+            let id = item_id.to_string();
+            self.status_message = format!("Отправка запроса на подписку #{}...", id);
+            self.steam_rx = Some(self.spawn_task(move || match subscribe_workshop_item_native(&dll, &id) {
+                Ok(_) => format!(
+                    "Запрос на подписку #{} отправлен в Steam — мод скачается в клиенте Steam",
+                    id
+                ),
+                Err(e) => format!("Ошибка подписки: {}", e),
+            }));
         } else {
             let url = format!("https://steamcommunity.com/sharedfiles/filedetails/?id={}", item_id);
             let _ = open::that(url);

@@ -181,6 +181,11 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
                 if secondary_button_icon(ui, ICON_REFRESH, t.get(TranslationKey::SettingsAutoDetect)).clicked() {
                     app.reset_paths_to_auto();
                 }
+                ui.add_enabled_ui(app.steam_rx.is_none(), |ui| {
+                    if secondary_button_icon(ui, ICON_STEAM, t.get(TranslationKey::SettingsCheckSteam)).clicked() {
+                        app.check_steam_api();
+                    }
+                });
                 ui.label(
                     egui::RichText::new(t.get(TranslationKey::SettingsSavedHint))
                         .color(THEME.text_muted)

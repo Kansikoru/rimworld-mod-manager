@@ -1,5 +1,8 @@
 use crate::models::{is_protected_package_id, ModInfo};
-use crate::steam::{remove_workshop_item_from_acf, unsubscribe_workshop_item_native, SteamPaths};
+use crate::steam::{
+    remove_workshop_item_from_acf, unsubscribe_workshop_item_native,
+    unsubscribe_workshop_items_batch_native, SteamPaths,
+};
 
 /// Moves a mod folder to the Windows Recycle Bin so the user can restore it.
 /// Never falls back to permanent deletion.
@@ -21,6 +24,7 @@ pub fn delete_translation_mods(
 ) -> CleanResult {
     let mut result = CleanResult::default();
 
+    let mut allowed: Vec<&ModInfo> = Vec::new();
     for m in mods_to_delete {
         if is_protected_package_id(&m.package_id) || m.package_id.to_lowercase().starts_with("ludeon.rimworld") {
             result.errors.push(format!(
@@ -28,39 +32,30 @@ pub fn delete_translation_mods(
                 m.package_id
             ));
             result.failed_count += 1;
-            continue;
-        }
-
-        if !m.is_translation_mod {
+        } else if !m.is_translation_mod {
             result.errors.push(format!(
                 "Мод {} не является модом-переводом и заблокирован от удаления!",
                 m.name
             ));
             result.failed_count += 1;
-            continue;
+        } else {
+            allowed.push(m);
         }
+    }
 
-        // 1. Steam Workshop unsubscribe
-        if let Some(ref item_id) = m.steam_item_id {
-            if let Some(ref dll_path) = steam_paths.steam_dll_path {
-                match unsubscribe_workshop_item_native(dll_path, item_id) {
-                    Ok(unsub) => {
-                        if unsub {
-                            result.unsubscribed_count += 1;
-                        }
-                    }
-                    Err(e) => {
-                        result
-                            .errors
-                            .push(format!("Ошибка отписки в Steam для {}: {}", m.name, e));
-                    }
-                }
-            }
+    // 1. Unsubscribe all of them in ONE Steam API session (S9), not one session per mod.
+    let steam_ids: Vec<&str> = allowed.iter().filter_map(|m| m.steam_item_id.as_deref()).collect();
+    if let Some(ref dll_path) = steam_paths.steam_dll_path {
+        match unsubscribe_workshop_items_batch_native(dll_path, &steam_ids) {
+            Ok(n) => result.unsubscribed_count = n,
+            Err(e) => result.errors.push(format!("Ошибка отписки в Steam: {}", e)),
+        }
+    }
 
-            // 2. Remove from ACF manifest
-            if let Some(ref acf_path) = steam_paths.acf_path {
-                let _ = remove_workshop_item_from_acf(acf_path, item_id);
-            }
+    for m in allowed {
+        // 2. Remove from ACF manifest
+        if let (Some(item_id), Some(acf_path)) = (&m.steam_item_id, &steam_paths.acf_path) {
+            let _ = remove_workshop_item_from_acf(acf_path, item_id);
         }
 
         // 3. Move directory to the Recycle Bin
