@@ -168,6 +168,13 @@ pub enum TranslationKey {
     CategoriesManual,
     CategoriesNone,
 
+    // Game version checks
+    ModsVersionBadge,
+    ModsVersionHint,
+    ModsVersionSummary,
+    VersionPrepatcher,
+    VersionHarmony,
+
     // Optimizer v2
     OptFlip,
     OptFlipHint,
@@ -467,6 +474,16 @@ impl TranslationKey {
             (TranslationKey::CategoriesManual, Language::English) => "set manually",
             (TranslationKey::CategoriesNone, Language::Russian) => "Категория не определена",
             (TranslationKey::CategoriesNone, Language::English) => "No category detected",
+            (TranslationKey::ModsVersionBadge, Language::Russian) => "до {}",
+            (TranslationKey::ModsVersionBadge, Language::English) => "up to {}",
+            (TranslationKey::ModsVersionHint, Language::Russian) => "Мод не заявляет поддержку RimWorld {}. По словам Ludeon, моды для 1.6 на 1.7 работают полностью или частично — обычно это не проблема.",
+            (TranslationKey::ModsVersionHint, Language::English) => "The mod does not declare RimWorld {}. Per Ludeon, 1.6 mods work fully or partially on 1.7 — usually not a problem.",
+            (TranslationKey::ModsVersionSummary, Language::Russian) => "Активных модов без заявленной поддержки {}: {} — игра покажет «potentially unsupported», обычно они работают.",
+            (TranslationKey::ModsVersionSummary, Language::English) => "Active mods not declaring {}: {} — the game shows \"potentially unsupported\", they usually work.",
+            (TranslationKey::VersionPrepatcher, Language::Russian) => "Prepatcher не работает на RimWorld 1.7, пока его не обновят (по отзывам — пустое меню). Отключите его и моды, которым он нужен.",
+            (TranslationKey::VersionPrepatcher, Language::English) => "Prepatcher does not work on RimWorld 1.7 until it is updated (reports: empty menu). Disable it and the mods that need it.",
+            (TranslationKey::VersionHarmony, Language::Russian) => "RimWorld 1.7 требует Harmony 3, а установленный Harmony не заявляет поддержку 1.7. Обновите Harmony в Steam Workshop.",
+            (TranslationKey::VersionHarmony, Language::English) => "RimWorld 1.7 requires Harmony 3, but the installed Harmony does not declare 1.7. Update Harmony on Steam Workshop.",
             (TranslationKey::OptFlip, Language::Russian) => "Переворачивать по вертикали",
             (TranslationKey::OptFlip, Language::English) => "Flip vertically",
             (TranslationKey::OptFlipHint, Language::Russian) => "Как делает RimPy. По умолчанию выключено: ToDDS, который работает в 1.6, не переворачивает. Включайте только если текстуры в игре вверх ногами.",

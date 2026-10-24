@@ -134,6 +134,8 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
         ui.add_space(4.0);
     }
 
+    render_version_issues(app, ui);
+
     render_category_filter(app, ui);
     ui.add_space(4.0);
 
@@ -188,6 +190,72 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
             },
         );
     });
+}
+
+/// Hard problems of the active list for the installed game (Prepatcher / old Harmony on 1.7)
+/// plus a calm one-line summary of mods that don't declare the current version.
+fn render_version_issues(app: &App, ui: &mut Ui) {
+    let t = app.i18n;
+    let game_mm = app.steam_paths.game_major_minor();
+    let issues = crate::version_check::active_list_issues(
+        &app.active_mods,
+        &app.all_mods,
+        app.steam_paths.engine,
+        game_mm.as_deref(),
+    );
+    let unsupported = app
+        .active_mods
+        .iter()
+        .filter_map(|id| find_mod_in(&app.all_mods, id))
+        .filter(|m| crate::version_check::supports_version(m, game_mm.as_deref()) == Some(false))
+        .count();
+
+    if !issues.is_empty() {
+        card_container(ui, |ui| {
+            for issue in &issues {
+                let text = match issue {
+                    crate::version_check::VersionIssue::PrepatcherOnWaylith => t.get(TranslationKey::VersionPrepatcher),
+                    crate::version_check::VersionIssue::HarmonyNotUpdated => t.get(TranslationKey::VersionHarmony),
+                };
+                ui.horizontal(|ui| {
+                    ui.add(svg_icon(ICON_STATUS_ERROR, Vec2::splat(18.0), THEME.accent_rose));
+                    ui.label(egui::RichText::new(text).color(THEME.accent_rose).strong());
+                });
+            }
+        });
+        ui.add_space(4.0);
+    }
+    if unsupported > 0 {
+        if let Some(mm) = game_mm.as_deref() {
+            ui.horizontal(|ui| {
+                ui.add(svg_icon(ICON_INFO, Vec2::splat(14.0), THEME.text_muted));
+                ui.label(
+                    egui::RichText::new(fmt(
+                        t.get(TranslationKey::ModsVersionSummary),
+                        &[mm, &unsupported.to_string()],
+                    ))
+                    .color(THEME.text_muted)
+                    .size(12.0),
+                );
+            });
+            ui.add_space(2.0);
+        }
+    }
+}
+
+/// Muted "up to 1.6" badge for a mod that doesn't declare the installed game version.
+fn version_badge(ui: &mut Ui, m: &ModInfo, game_mm: Option<&str>, t: crate::i18n::I18n) {
+    if crate::version_check::supports_version(m, game_mm) != Some(false) {
+        return;
+    }
+    let newest = crate::version_check::newest_supported(m).unwrap_or_default();
+    badge(
+        ui,
+        &fmt(t.get(TranslationKey::ModsVersionBadge), &[&newest]),
+        THEME.bg_dark,
+        THEME.text_muted,
+    )
+    .on_hover_text(fmt(t.get(TranslationKey::ModsVersionHint), &[game_mm.unwrap_or("?")]));
 }
 
 /// Row of category chips above the lists: "All" + every category that some mod has, with counts.
@@ -375,6 +443,7 @@ fn render_mod_icon_pill(
 /// Renders the Right Column: Active Mods (exact format from Screenshot 4)
 fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
+    let game_mm = app.steam_paths.game_major_minor();
 
     // Header matching Screenshot 4:
     // "АКТИВНЫЕ МОДЫ" (bold text), count badge, [▲], [▼], [⚡ Сортировка]
@@ -671,6 +740,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                         }
                         if let Some(m) = mod_info_opt {
                             category_badges(ui, &m.categories, t, 2);
+                            version_badge(ui, m, game_mm.as_deref(), t);
                         }
                         // Listed in ModsConfig.xml but not found by the scanner: kept on save, not dropped.
                         if mod_info_opt.is_none() {
@@ -771,6 +841,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
 /// Renders the Left Column: Inactive / Available Mods
 fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
+    let game_mm = app.steam_paths.game_major_minor();
     // "x_steam" in ModsConfig refers to the Workshop copy of "x": it is active too.
     let active_set: HashSet<String> = app
         .active_mods
@@ -990,6 +1061,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                         });
 
                         category_badges(ui, &m.categories, t, 2);
+                        version_badge(ui, m, game_mm.as_deref(), t);
                         if m.origin == ModOrigin::Workshop {
                             icon_badge(ui, ICON_STATUS_WORKSHOP, "Steam", THEME.accent_cyan.linear_multiply(0.2), THEME.accent_cyan);
                         }
