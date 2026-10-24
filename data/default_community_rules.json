@@ -1,0 +1,195 @@
+{
+  "zetrith.prepatcher": {
+    "tier": 0,
+    "load_before": [
+      "brrainz.harmony"
+    ]
+  },
+  "fishery.world": {
+    "tier": 0
+  },
+  "brrainz.harmony": {
+    "tier": 1,
+    "load_before": [
+      "ludeon.rimworld"
+    ]
+  },
+  "ludeon.rimworld": {
+    "tier": 1,
+    "load_before": [
+      "unlimitedhugs.hugslib"
+    ]
+  },
+  "ludeon.rimworld.royalty": {
+    "tier": 1
+  },
+  "ludeon.rimworld.ideology": {
+    "tier": 1
+  },
+  "ludeon.rimworld.biotech": {
+    "tier": 1
+  },
+  "ludeon.rimworld.anomaly": {
+    "tier": 1
+  },
+  "ludeon.rimworld.odyssey": {
+    "tier": 1
+  },
+  "unlimitedhugs.hugslib": {
+    "tier": 2,
+    "load_before": [
+      "vanillaexpanded.framework",
+      "erdelf.humanoidalienraces",
+      "imranfish.xmlextensions"
+    ]
+  },
+  "oskarpotocki.vanillafactionsexpanded.core": {
+    "tier": 2
+  },
+  "vanillaexpanded.framework": {
+    "tier": 2
+  },
+  "jecrell.jecstools": {
+    "tier": 2
+  },
+  "erdelf.humanoidalienraces": {
+    "tier": 2,
+    "load_before": [
+      "solaris.ratkinracemod",
+      "melondove.wolfeinrace",
+      "ancot.milirarace"
+    ]
+  },
+  "smashphil.vehicleframework": {
+    "tier": 2
+  },
+  "neronix17.toolbox": {
+    "tier": 2
+  },
+  "smartkar.athena.framework": {
+    "tier": 2
+  },
+  "imranfish.xmlextensions": {
+    "tier": 2
+  },
+  "taranchuk.performanceoptimizer": {
+    "tier": 2
+  },
+  "syrchalis.processor.framework": {
+    "tier": 2
+  },
+  "oark.oberoniaaurea.framework": {
+    "tier": 2
+  },
+  "ancot.ancotlibrary": {
+    "tier": 2
+  },
+  "ariandel.ariandellibrary": {
+    "tier": 2
+  },
+  "chezhou.chezhoulib.lib": {
+    "tier": 2
+  },
+  "cpt.combatextended": {
+    "tier": 3
+  },
+  "medieval.overhaul": {
+    "tier": 3
+  },
+  "kentington.saveourship2": {
+    "tier": 3
+  },
+  "nalzurin.ratkin": {
+    "tier": 4
+  },
+  "solaris.ratkinracemod": {
+    "tier": 4
+  },
+  "ancot.milirarace": {
+    "tier": 4,
+    "load_before": [
+      "ariandel.miliraimperium",
+      "ancot.milianmodification",
+      "typ.milianfianchettoperiumshieldpatch"
+    ]
+  },
+  "melondove.wolfeinrace": {
+    "tier": 4,
+    "load_before": [
+      "jl.wolfeingfiexpanded",
+      "wolfeinexpand.blackscience"
+    ]
+  },
+  "jl.wolfeingfiexpanded": {
+    "tier": 4
+  },
+  "wolfeinexpand.blackscience": {
+    "tier": 4
+  },
+  "ariandel.miliraimperium": {
+    "tier": 4,
+    "load_before": [
+      "typ.milianfianchettoperiumshieldpatch"
+    ]
+  },
+  "ancot.milianmodification": {
+    "tier": 4
+  },
+  "typ.milianfianchettoperiumshieldpatch": {
+    "tier": 9
+  },
+  "vanillafactionsexpanded.settlers": {
+    "tier": 4
+  },
+  "vanillaweaponsexpanded.base": {
+    "tier": 5
+  },
+  "alphaanimals": {
+    "tier": 6
+  },
+  "alphabiomes": {
+    "tier": 6
+  },
+  "alphagenes": {
+    "tier": 6
+  },
+  "biomes.islands": {
+    "tier": 6
+  },
+  "jaxe.rimhud": {
+    "tier": 7
+  },
+  "dubwise.dubsmintmenus": {
+    "tier": 7
+  },
+  "dubwise.dubsmintminimap": {
+    "tier": 7
+  },
+  "brrainz.cameraplus": {
+    "tier": 7
+  },
+  "fluffy.worktab": {
+    "tier": 7
+  },
+  "mehni.pickupandhaul": {
+    "tier": 8
+  },
+  "avilmask.commonsense": {
+    "tier": 8
+  },
+  "brrainz.smartspeed": {
+    "tier": 8
+  },
+  "brrainz.downforme": {
+    "tier": 8
+  },
+  "krkr.rocketman": {
+    "tier": 11
+  },
+  "krkr.performancefish": {
+    "tier": 11
+  },
+  "dubwise.dubsperformanceanalyzer": {
+    "tier": 11
+  }
+}

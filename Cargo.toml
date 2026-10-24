@@ -1,0 +1,36 @@
+[package]
+name = "rimworld-mod-manager"
+version = "1.0.0"
+edition = "2021"
+authors = ["RimWorld Modder"]
+description = "High-performance RimWorld Mod & Load Order Manager with BC7 texture optimization and crash analysis"
+
+[dependencies]
+eframe = { version = "0.29", default-features = false, features = ["default_fonts", "glow"] }
+egui = "0.29"
+egui_extras = { version = "0.29", features = ["svg"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image_dds = "0.7"
+rayon = "1.10"
+walkdir = "2.5"
+quick-xml = "0.36"
+regex = "1.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+ureq = "2.10"
+open = "5.3"
+rfd = "0.15"
+libloading = "0.8"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+
+[build-dependencies]
+winres = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -1,0 +1,18 @@
+pub mod analyzer;
+pub mod app;
+pub mod cleaner;
+pub mod fonts;
+pub mod i18n;
+pub mod matcher;
+pub mod models;
+pub mod mods_config;
+pub mod optimizer;
+pub mod scanner;
+pub mod sorter;
+pub mod steam;
+pub mod workshop_search;
+pub mod community_rules;
+pub mod icon_cache;
+pub mod dependencies;
+
+pub mod ui;
