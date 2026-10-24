@@ -15,18 +15,37 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
         ui,
         t.get(TranslationKey::OptTitle),
         t.get(TranslationKey::OptSubtitle),
-        Some(("DirectDraw Surface DXT5 (BC3)", THEME.accent_emerald)),
+        Some(("DDS BC7 / BC1 + mipmaps", THEME.accent_emerald)),
     );
 
     ui.add_space(8.0);
 
+    // RimWorld 1.7 compresses and caches mod textures itself: conversion is off by default,
+    // the useful action here is resetting the game's own cache.
     if app.steam_paths.engine == GameEngine::Waylith {
         card_container(ui, |ui| {
-            ui.label(
-                egui::RichText::new(format!("⚠ {}", t.get(TranslationKey::OptWaylithWarning)))
-                    .color(THEME.accent_amber)
-                    .strong(),
-            );
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.add(svg_icon(ICON_STATUS_WARNING, egui::Vec2::splat(18.0), THEME.accent_amber));
+                    ui.label(
+                        egui::RichText::new(t.get(TranslationKey::OptWaylithWarning))
+                            .color(THEME.accent_amber)
+                            .strong(),
+                    );
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if secondary_button_icon(ui, ICON_TRASH, t.get(TranslationKey::OptClearGameCache)).clicked() {
+                        app.clear_game_caches();
+                    }
+                    ui.label(
+                        egui::RichText::new(t.get(TranslationKey::OptClearGameCacheHint))
+                            .color(THEME.text_muted)
+                            .size(12.0),
+                    );
+                });
+                ui.checkbox(&mut app.opt_allow_on_waylith, t.get(TranslationKey::OptAllowOnWaylith));
+            });
         });
         ui.add_space(8.0);
     }
@@ -61,6 +80,9 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
                 ui.checkbox(&mut app.opt_force, t.get(TranslationKey::OptForceReencode));
                 ui.add_space(12.0);
                 ui.checkbox(&mut app.opt_delete_source, t.get(TranslationKey::OptDeleteSource));
+                ui.add_space(12.0);
+                ui.checkbox(&mut app.opt_flip, t.get(TranslationKey::OptFlip))
+                    .on_hover_text(t.get(TranslationKey::OptFlipHint));
             });
             if app.opt_delete_source {
                 ui.label(
@@ -89,16 +111,23 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
 
             ui.horizontal(|ui| {
                 if !app.opt_is_running {
-                    if primary_button_icon(ui, ICON_ROCKET, t.get(TranslationKey::OptBtnStart)).clicked() {
-                        app.start_texture_optimization();
-                    }
-
-                    if secondary_button_icon(ui, ICON_SEARCH, t.get(TranslationKey::OptBtnScan)).clicked() {
-                        app.scan_texture_counts();
-                    }
-
-                    if secondary_button_icon(ui, ICON_UNDO, t.get(TranslationKey::OptBtnRollback)).clicked() {
-                        app.rollback_textures();
+                    // Buttons are disabled while a scan/rollback runs in the background.
+                    let idle = !app.optimizer_busy();
+                    ui.add_enabled_ui(idle && !app.optimizer_blocked(), |ui| {
+                        if primary_button_icon(ui, ICON_ROCKET, t.get(TranslationKey::OptBtnStart)).clicked() {
+                            app.start_texture_optimization();
+                        }
+                    });
+                    ui.add_enabled_ui(idle, |ui| {
+                        if secondary_button_icon(ui, ICON_SEARCH, t.get(TranslationKey::OptBtnScan)).clicked() {
+                            app.scan_texture_counts();
+                        }
+                        if secondary_button_icon(ui, ICON_UNDO, t.get(TranslationKey::OptBtnRollback)).clicked() {
+                            app.rollback_textures();
+                        }
+                    });
+                    if !idle {
+                        ui.spinner();
                     }
                 } else {
                     if danger_button_icon(ui, ICON_STOP, t.get(TranslationKey::OptBtnCancel)).clicked() {

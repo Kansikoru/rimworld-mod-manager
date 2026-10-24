@@ -132,6 +132,53 @@ pub fn manager_data_dir() -> PathBuf {
     dir
 }
 
+/// Whether RimWorld is running right now (1.6: RimWorldWin64.exe, 1.7: RimWorld.exe).
+pub fn is_game_running() -> bool {
+    [UNITY_EXE, WAYLITH_EXE].iter().any(|exe| {
+        std::process::Command::new("tasklist")
+            .args(["/NH", "/FO", "CSV", "/FI", &format!("IMAGENAME eq {exe}")])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase().contains(&exe.to_lowercase()))
+            .unwrap_or(false)
+    })
+}
+
+/// Folders where RimWorld 1.7 keeps its own compressed textures and compiled shaders.
+pub const GAME_CACHE_DIRS: &[&str] = &["TextureCache", "ShaderCache"];
+
+/// Total size in bytes of the game's cache folders (0 if there are none).
+pub fn game_cache_size() -> u64 {
+    let Some(base) = user_data_dir() else {
+        return 0;
+    };
+    GAME_CACHE_DIRS
+        .iter()
+        .map(|d| base.join(d))
+        .filter(|p| p.is_dir())
+        .flat_map(|p| walkdir::WalkDir::new(p).into_iter().flatten())
+        .filter(|e| e.file_type().is_file())
+        .filter_map(|e| e.metadata().ok().map(|m| m.len()))
+        .sum()
+}
+
+/// Moves the 1.7 texture and shader caches to the Recycle Bin; the game rebuilds them on the
+/// next start. Refuses while the game is running (it keeps the cache files open).
+pub fn clear_game_caches() -> Result<Vec<String>, String> {
+    if is_game_running() {
+        return Err("Закройте RimWorld: игра держит файлы кэша открытыми".to_string());
+    }
+    let base = user_data_dir().ok_or("Папка данных RimWorld не найдена")?;
+    let mut cleared = Vec::new();
+    for dir in GAME_CACHE_DIRS {
+        let path = base.join(dir);
+        if path.is_dir() {
+            trash::delete(&path).map_err(|e| format!("{}: {}", path.display(), e))?;
+            cleared.push(dir.to_string());
+        }
+    }
+    Ok(cleared)
+}
+
 /// Launch flags that make sense for the engine. Returns (flag, verified_for_engine).
 pub fn known_launch_flags(engine: GameEngine) -> &'static [(&'static str, bool)] {
     match engine {

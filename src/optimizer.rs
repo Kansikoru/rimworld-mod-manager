@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -19,6 +20,22 @@ pub enum OptimizeScope {
 
 // ───────────────────────── Messages ─────────────────────────
 
+/// Result of a finished conversion run.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct OptimizationSummary {
+    pub bc7: usize,
+    pub bc1: usize,
+    /// Left as PNG: side not a multiple of 4, or too small.
+    pub skipped: usize,
+    pub errors: usize,
+    /// Sources moved to the backup folder.
+    pub sources_backed_up: usize,
+    /// DDS files not made by this tool (author's or left by an old version) — untouched.
+    pub foreign_dds: usize,
+    /// Our DDS that were already up to date.
+    pub up_to_date: usize,
+}
+
 /// Messages sent from the optimizer worker thread to the UI.
 pub enum OptimizationMsg {
     /// Progress update: (done, total, skipped, current_file)
@@ -31,12 +48,7 @@ pub enum OptimizationMsg {
     /// Single file error (non-fatal, processing continues)
     FileError(String),
     /// Optimization finished
-    Done {
-        processed: usize,
-        skipped: usize,
-        errors: usize,
-        deleted_sources: usize,
-    },
+    Done(OptimizationSummary),
     /// Optimization was cancelled by user
     Cancelled,
 }
@@ -71,25 +83,6 @@ pub fn is_in_dangerous_folder(path: &Path) -> bool {
             matches!(lower.as_str(), "ui" | "gui" | "icons" | "defs" | "pawn" | "pawns" | "hair" | "heads" | "bodies" | "apparel")
         }).unwrap_or(false)
     })
-}
-
-/// Check if a .dds file already exists and is newer than the source image.
-pub fn has_newer_dds(source: &Path) -> bool {
-    let dds_path = source.with_extension("dds");
-    if !dds_path.exists() {
-        return false;
-    }
-
-    let src_modified = source
-        .metadata()
-        .and_then(|m| m.modified())
-        .unwrap_or(SystemTime::UNIX_EPOCH);
-    let dds_modified = dds_path
-        .metadata()
-        .and_then(|m| m.modified())
-        .unwrap_or(SystemTime::UNIX_EPOCH);
-
-    dds_modified >= src_modified
 }
 
 /// Walk a mod directory and collect all candidate texture files (PNG/JPG inside any Textures folder).
@@ -130,66 +123,78 @@ fn walk_mod_textures(mod_dir: &Path) -> impl Iterator<Item = PathBuf> {
         .map(|entry| entry.into_path())
 }
 
-/// Scan mod directories for texture files (PNG/JPG) that need conversion.
-pub fn scan_textures_opt(mod_dirs: &[PathBuf], force: bool) -> Vec<PathBuf> {
-    let mut textures: Vec<PathBuf> = Vec::new();
-
-    for mod_dir in mod_dirs {
-        for path in walk_mod_textures(mod_dir) {
-            if force || !has_newer_dds(&path) {
-                textures.push(path);
-            }
-        }
-    }
-
-    textures
-}
-
-pub fn scan_textures(mod_dirs: &[PathBuf]) -> Vec<PathBuf> {
-    scan_textures_opt(mod_dirs, false)
-}
-
 // ─────────────────── Single File Conversion ─────────────────
 
-/// Convert a single PNG/JPG file to DDS BC7 with automatic mipmaps.
-pub fn optimize_single_texture(source: &Path) -> Result<(), String> {
-    let mut img = image::open(source)
-        .map_err(|e| format!("{}: {}", source.display(), e))?
-        .flipv();
+/// Options for converting one texture.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ConvertOptions {
+    /// Flip the image vertically before encoding (what RimPy does). Off by default:
+    /// ToDDS — the converter that works on RimWorld 1.6 — does not flip.
+    pub flip_vertical: bool,
+}
 
-    let w = img.width();
-    let h = img.height();
+/// Textures smaller than this on both sides are left as PNG: no gain, only risk.
+pub const MIN_TEXTURE_SIDE: u32 = 64;
 
-    fn next_pot(mut n: u32) -> u32 {
-        if n == 0 { return 1; }
-        n -= 1;
-        n |= n >> 1;
-        n |= n >> 2;
-        n |= n >> 4;
-        n |= n >> 8;
-        n |= n >> 16;
-        n + 1
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConvertOutcome {
+    /// BC7 (texture has transparency) with mipmaps.
+    Bc7,
+    /// BC1 (fully opaque, half the size of BC7) with mipmaps.
+    Bc1,
+    /// Not converted: a side is not a multiple of 4 (block compression needs 4x4 blocks).
+    /// The texture is never stretched — it stays PNG.
+    SkippedSize,
+    /// Not converted: smaller than MIN_TEXTURE_SIDE on both sides.
+    SkippedSmall,
+}
+
+/// Picks the DDS format: BC7 when any pixel is transparent, BC1 otherwise.
+pub fn choose_format(rgba: &image::RgbaImage) -> image_dds::ImageFormat {
+    if rgba.pixels().any(|p| p.0[3] < 255) {
+        image_dds::ImageFormat::BC7RgbaUnorm
+    } else {
+        image_dds::ImageFormat::BC1RgbaUnorm
+    }
+}
+
+/// BC1 with a DX10 extended header -> classic "DXT1" header that every loader understands.
+/// BC7 has no classic FourCC, so its DX10 header stays.
+fn legacy_dxt1_header(mut dds_bytes: Vec<u8>) -> Vec<u8> {
+    if dds_bytes.len() >= 148 && &dds_bytes[84..88] == b"DX10" {
+        dds_bytes[84..88].copy_from_slice(b"DXT1");
+        let mut fixed = Vec::with_capacity(dds_bytes.len() - 20);
+        fixed.extend_from_slice(&dds_bytes[0..128]);
+        fixed.extend_from_slice(&dds_bytes[148..]);
+        return fixed;
+    }
+    dds_bytes
+}
+
+/// Converts one PNG/JPG to DDS next to it, the way ToDDS does it:
+/// BC7 (with alpha) or BC1 (opaque), full mipmap chain, original size, no flip unless asked.
+pub fn optimize_single_texture(source: &Path, opts: ConvertOptions) -> Result<ConvertOutcome, String> {
+    let mut img = image::open(source).map_err(|e| format!("{}: {}", source.display(), e))?;
+    if opts.flip_vertical {
+        img = img.flipv();
     }
 
-    let pot_w = next_pot(w);
-    let pot_h = next_pot(h);
-
-    if w != pot_w || h != pot_h || w < 4 || h < 4 {
-        let new_w = std::cmp::max(4, pot_w);
-        let new_h = std::cmp::max(4, pot_h);
-        
-        // In RimWorld, resizing textures exactly to POT is generally acceptable 
-        // for most apparel/items as they scale smoothly.
-        img = img.resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3);
+    let (w, h) = (img.width(), img.height());
+    if w < MIN_TEXTURE_SIDE && h < MIN_TEXTURE_SIDE {
+        return Ok(ConvertOutcome::SkippedSmall);
+    }
+    if w % 4 != 0 || h % 4 != 0 {
+        return Ok(ConvertOutcome::SkippedSize);
     }
 
     let rgba = img.to_rgba8();
+    let format = choose_format(&rgba);
 
     let dds = image_dds::dds_from_image(
         &rgba,
-        image_dds::ImageFormat::BC3RgbaUnorm,
+        format,
         image_dds::Quality::Normal,
-        image_dds::Mipmaps::Disabled,
+        image_dds::Mipmaps::GeneratedAutomatic,
     )
     .map_err(|e| format!("{}: encode error: {}", source.display(), e))?;
 
@@ -197,22 +202,12 @@ pub fn optimize_single_texture(source: &Path) -> Result<(), String> {
     dds.write(&mut dds_bytes)
         .map_err(|e| format!("{}: buffer write error: {}", source.display(), e))?;
 
-    // Fix DX10 header to legacy DXT5 (128 bytes)
-    // image_dds generates a DX10 header by default for BC3RgbaUnorm.
-    // RimWorld (and Graphics Settings) strictly rejects DX10 headers for DXT5.
-    if dds_bytes.len() >= 148 && &dds_bytes[84..88] == b"DX10" {
-        // Change FourCC from DX10 to DXT5
-        dds_bytes[84] = b'D';
-        dds_bytes[85] = b'X';
-        dds_bytes[86] = b'T';
-        dds_bytes[87] = b'5';
-        
-        // Remove the 20-byte DX10 extended header (bytes 128 to 147)
-        let mut fixed = Vec::with_capacity(dds_bytes.len() - 20);
-        fixed.extend_from_slice(&dds_bytes[0..128]);
-        fixed.extend_from_slice(&dds_bytes[148..]);
-        dds_bytes = fixed;
-    }
+    let outcome = if format == image_dds::ImageFormat::BC1RgbaUnorm {
+        dds_bytes = legacy_dxt1_header(dds_bytes);
+        ConvertOutcome::Bc1
+    } else {
+        ConvertOutcome::Bc7
+    };
 
     // Write to a temp file and rename: a cancelled or crashed run never leaves a truncated .dds
     // (a truncated file would look "newer than the PNG" and be loaded by the game).
@@ -233,17 +228,102 @@ pub fn optimize_single_texture(source: &Path) -> Result<(), String> {
         format!("{}: rename error: {}", dds_path.display(), e)
     })?;
 
-    Ok(())
+    Ok(outcome)
 }
 
 // ─────────────────── Manifest & source backups ──────────────────
 
 /// One DDS created by the optimizer. `backup` is where the source PNG/JPG was moved, if it was.
+/// `source_fp` is the source file's "size:mtime" at conversion time: when a mod update changes
+/// the PNG, the fingerprint differs and the DDS is re-encoded instead of shadowing the new art.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManifestEntry {
     pub dds: PathBuf,
     pub source: PathBuf,
     pub backup: Option<PathBuf>,
+    pub source_fp: Option<String>,
+}
+
+/// "size:mtime_secs" of a file.
+pub fn source_fingerprint(path: &Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    let secs = meta
+        .modified()
+        .ok()?
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    Some(format!("{}:{}", meta.len(), secs))
+}
+
+/// Case-insensitive key for Windows paths.
+fn path_key(p: &Path) -> String {
+    p.to_string_lossy().to_lowercase()
+}
+
+/// Manifest as a map by DDS path (the latest entry wins).
+pub fn manifest_index(entries: Vec<ManifestEntry>) -> HashMap<String, ManifestEntry> {
+    entries.into_iter().map(|e| (path_key(&e.dds), e)).collect()
+}
+
+/// Adds or replaces entries (by DDS path) and rewrites the manifest without duplicates.
+pub fn merge_manifest(path: &Path, new_entries: &[ManifestEntry]) -> std::io::Result<()> {
+    if new_entries.is_empty() {
+        return Ok(());
+    }
+    let mut index = manifest_index(read_manifest(path));
+    for e in new_entries {
+        index.insert(path_key(&e.dds), e.clone());
+    }
+    let mut all: Vec<ManifestEntry> = index.into_values().collect();
+    all.sort_by(|a, b| a.dds.cmp(&b.dds));
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    write_manifest(path, &all)
+}
+
+// ─────────────────── Planning ──────────────────
+
+/// What a conversion run would do.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TexturePlan {
+    /// No DDS yet, or our DDS is stale (source changed), or "force" for our DDS.
+    pub to_convert: Vec<PathBuf>,
+    /// Our DDS exists and matches its source.
+    pub up_to_date: usize,
+    /// A DDS exists that this tool did not make (shipped by the mod author, or left by an old
+    /// version before the manifest existed). Never overwritten; "Rollback" cleans old ones.
+    pub foreign_dds: usize,
+}
+
+pub fn plan_textures(
+    mod_dirs: &[PathBuf],
+    force: bool,
+    manifest: &HashMap<String, ManifestEntry>,
+) -> TexturePlan {
+    let mut plan = TexturePlan::default();
+    for mod_dir in mod_dirs {
+        for path in walk_mod_textures(mod_dir) {
+            let dds = path.with_extension("dds");
+            if !dds.exists() {
+                plan.to_convert.push(path);
+                continue;
+            }
+            match manifest.get(&path_key(&dds)) {
+                Some(entry) => {
+                    let fresh = entry.source_fp.is_some() && entry.source_fp == source_fingerprint(&path);
+                    if force || !fresh {
+                        plan.to_convert.push(path);
+                    } else {
+                        plan.up_to_date += 1;
+                    }
+                }
+                None => plan.foreign_dds += 1,
+            }
+        }
+    }
+    plan
 }
 
 /// `%LOCALAPPDATA%\RimWorldModManager\dds_manifest.tsv`: every DDS this tool created.
@@ -261,6 +341,7 @@ pub fn read_manifest(path: &Path) -> Vec<ManifestEntry> {
             let dds = parts.next()?.trim();
             let source = parts.next()?.trim();
             let backup = parts.next().map(str::trim).filter(|s| !s.is_empty());
+            let source_fp = parts.next().map(str::trim).filter(|s| !s.is_empty());
             if dds.is_empty() || source.is_empty() {
                 return None;
             }
@@ -268,6 +349,7 @@ pub fn read_manifest(path: &Path) -> Vec<ManifestEntry> {
                 dds: PathBuf::from(dds),
                 source: PathBuf::from(source),
                 backup: backup.map(PathBuf::from),
+                source_fp: source_fp.map(str::to_string),
             })
         })
         .collect()
@@ -275,10 +357,11 @@ pub fn read_manifest(path: &Path) -> Vec<ManifestEntry> {
 
 fn manifest_line(e: &ManifestEntry) -> String {
     format!(
-        "{}\t{}\t{}\n",
+        "{}\t{}\t{}\t{}\n",
         e.dds.display(),
         e.source.display(),
-        e.backup.as_ref().map(|b| b.display().to_string()).unwrap_or_default()
+        e.backup.as_ref().map(|b| b.display().to_string()).unwrap_or_default(),
+        e.source_fp.clone().unwrap_or_default()
     )
 }
 
@@ -376,21 +459,23 @@ pub fn run_optimization(
     mod_dirs: Vec<PathBuf>,
     force: bool,
     delete_source: bool,
+    opts: ConvertOptions,
     max_threads: usize,
     tx: mpsc::Sender<OptimizationMsg>,
     stop_flag: Arc<AtomicBool>,
 ) {
     std::thread::spawn(move || {
-        let textures = scan_textures_opt(&mod_dirs, force);
+        let manifest = manifest_index(read_manifest(&manifest_path()));
+        let plan = plan_textures(&mod_dirs, force, &manifest);
+        let textures = plan.to_convert;
         let total = textures.len();
 
         if total == 0 {
-            let _ = tx.send(OptimizationMsg::Done {
-                processed: 0,
-                skipped: 0,
-                errors: 0,
-                deleted_sources: 0,
-            });
+            let _ = tx.send(OptimizationMsg::Done(OptimizationSummary {
+                foreign_dds: plan.foreign_dds,
+                up_to_date: plan.up_to_date,
+                ..Default::default()
+            }));
             return;
         }
 
@@ -398,6 +483,9 @@ pub fn run_optimization(
         let done_count = Arc::new(AtomicUsize::new(0));
         let error_count = Arc::new(AtomicUsize::new(0));
         let deleted_count = Arc::new(AtomicUsize::new(0));
+        let bc7_count = Arc::new(AtomicUsize::new(0));
+        let bc1_count = Arc::new(AtomicUsize::new(0));
+        let skipped_count = Arc::new(AtomicUsize::new(0));
         let created: Arc<std::sync::Mutex<Vec<ManifestEntry>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
         let backup_root = texture_backup_root();
         let tx_clone = tx.clone();
@@ -432,12 +520,21 @@ pub fn run_optimization(
                     .map(|f| f.to_string_lossy().to_string())
                     .unwrap_or_default();
 
+                let source_fp = source_fingerprint(path);
                 let conv_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    optimize_single_texture(path)
+                    optimize_single_texture(path, opts)
                 }));
 
                 match conv_res {
-                    Ok(Ok(())) => {
+                    Ok(Ok(ConvertOutcome::SkippedSize | ConvertOutcome::SkippedSmall)) => {
+                        skipped_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Ok(Ok(outcome)) => {
+                        if outcome == ConvertOutcome::Bc7 {
+                            bc7_count.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            bc1_count.fetch_add(1, Ordering::Relaxed);
+                        }
                         let dds_path = path.with_extension("dds");
                         let mut backup = None;
                         // Sources are never deleted: they are moved to a backup folder so rollback can restore them.
@@ -462,6 +559,7 @@ pub fn run_optimization(
                                 dds: dds_path,
                                 source: path.clone(),
                                 backup,
+                                source_fp,
                             });
                         }
                     }
@@ -499,7 +597,7 @@ pub fn run_optimization(
 
         // Record every created DDS (also after cancel) so rollback can find all of them.
         if let Ok(list) = created.lock() {
-            if let Err(e) = append_manifest(&manifest_path(), &list) {
+            if let Err(e) = merge_manifest(&manifest_path(), &list) {
                 let _ = tx.send(OptimizationMsg::FileError(format!(
                     "Не удалось записать журнал DDS {}: {}",
                     manifest_path().display(),
@@ -511,94 +609,44 @@ pub fn run_optimization(
         if stop_flag.load(Ordering::Relaxed) {
             let _ = tx.send(OptimizationMsg::Cancelled);
         } else {
-            let proc = done_count.load(Ordering::Relaxed).saturating_sub(error_count.load(Ordering::Relaxed));
-            let del = deleted_count.load(Ordering::Relaxed);
-            let errs = error_count.load(Ordering::Relaxed);
-            let _ = tx.send(OptimizationMsg::Done {
-                processed: proc,
-                skipped: 0,
-                errors: errs,
-                deleted_sources: del,
-            });
+            let _ = tx.send(OptimizationMsg::Done(OptimizationSummary {
+                bc7: bc7_count.load(Ordering::Relaxed),
+                bc1: bc1_count.load(Ordering::Relaxed),
+                skipped: skipped_count.load(Ordering::Relaxed),
+                errors: error_count.load(Ordering::Relaxed),
+                sources_backed_up: deleted_count.load(Ordering::Relaxed),
+                foreign_dds: plan.foreign_dds,
+                up_to_date: plan.up_to_date,
+            }));
         }
     });
 }
 
-pub fn count_textures_preview_opt(mod_dirs: &[PathBuf], force: bool) -> (usize, usize) {
-    let mut needs_optimization = 0usize;
-    let mut already_optimized = 0usize;
+/// Counts for the "Scan" button — the same plan a conversion run would use
+/// (same folders, same exclusions, same manifest), so the numbers match what will happen.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct TextureSummary {
+    pub to_convert: usize,
+    pub up_to_date: usize,
+    pub foreign_dds: usize,
+}
 
-    for mod_dir in mod_dirs {
-        for entry in WalkDir::new(mod_dir)
-            .into_iter()
-            .filter_entry(|entry| {
-                if entry.file_type().is_dir() {
-                    let name = entry.file_name().to_string_lossy().to_lowercase();
-                    name != "assemblies"
-                        && name != "source"
-                        && name != ".git"
-                        && name != "languages"
-                        && name != "defs"
-                        && name != "patches"
-                        && name != "about"
-                } else {
-                    true
-                }
-            })
-            .filter_map(|e| e.ok())
-        {
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            let path = entry.path();
-            if !is_in_textures_folder(path) || is_in_about_folder(path) {
-                continue;
-            }
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-
-            if ext == "png" || ext == "jpg" || ext == "jpeg" {
-                let has_dds = has_newer_dds(path);
-                if has_dds && !force {
-                    already_optimized += 1;
-                } else {
-                    needs_optimization += 1;
-                    if has_dds {
-                        already_optimized += 1;
-                    }
-                }
-            } else if ext == "dds" {
-                let has_png = path.with_extension("png").exists();
-                let has_jpg = path.with_extension("jpg").exists();
-                let has_jpeg = path.with_extension("jpeg").exists();
-                if !has_png && !has_jpg && !has_jpeg {
-                    already_optimized += 1;
-                }
-            }
-        }
+pub fn texture_summary(mod_dirs: &[PathBuf], force: bool) -> TextureSummary {
+    let manifest = manifest_index(read_manifest(&manifest_path()));
+    let plan = plan_textures(mod_dirs, force, &manifest);
+    TextureSummary {
+        to_convert: plan.to_convert.len(),
+        up_to_date: plan.up_to_date,
+        foreign_dds: plan.foreign_dds,
     }
-
-    (needs_optimization, already_optimized)
 }
 
-pub fn count_textures_preview(mod_dirs: &[PathBuf]) -> (usize, usize) {
-    count_textures_preview_opt(mod_dirs, false)
-}
-
-pub fn count_textures_preview_async(
-    mod_dirs: Vec<PathBuf>,
-    force: bool,
-    tx: mpsc::Sender<(usize, usize)>,
-) {
+/// Runs `texture_summary` in a background thread (walking big mod folders takes a while).
+pub fn texture_summary_async(mod_dirs: Vec<PathBuf>, force: bool, tx: mpsc::Sender<TextureSummary>) {
     std::thread::spawn(move || {
-        let res = count_textures_preview_opt(&mod_dirs, force);
-        let _ = tx.send(res);
+        let _ = tx.send(texture_summary(&mod_dirs, force));
     });
 }
-
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RollbackResult {
     /// .dds files removed
@@ -694,6 +742,83 @@ mod tests {
         dir
     }
 
+    fn write_png(path: &Path, w: u32, h: u32, alpha: u8) {
+        let img = image::RgbaImage::from_fn(w, h, |x, y| image::Rgba([(x * 4) as u8, (y * 4) as u8, 120, alpha]));
+        img.save(path).unwrap();
+    }
+
+    /// Reads (fourcc, mipmap count) from a DDS header.
+    fn dds_info(path: &Path) -> (String, u32) {
+        let b = std::fs::read(path).unwrap();
+        assert_eq!(&b[0..4], b"DDS ");
+        let mips = u32::from_le_bytes([b[28], b[29], b[30], b[31]]);
+        (String::from_utf8_lossy(&b[84..88]).to_string(), mips)
+    }
+
+    #[test]
+    fn converts_like_todds_bc7_bc1_with_mipmaps() {
+        let dir = temp_dir("convert");
+        let opaque = dir.join("opaque.png");
+        let transparent = dir.join("transparent.png");
+        let odd = dir.join("odd.png");
+        let tiny = dir.join("tiny.png");
+        write_png(&opaque, 128, 64, 255);
+        write_png(&transparent, 64, 64, 128);
+        write_png(&odd, 66, 64, 255);
+        write_png(&tiny, 32, 32, 255);
+
+        let opts = ConvertOptions::default();
+        assert_eq!(optimize_single_texture(&opaque, opts).unwrap(), ConvertOutcome::Bc1);
+        let (fourcc, mips) = dds_info(&opaque.with_extension("dds"));
+        assert_eq!(fourcc, "DXT1", "BC1 uses the classic DXT1 header");
+        assert_eq!(mips, 8, "128x64 -> full chain down to 1x1");
+
+        assert_eq!(optimize_single_texture(&transparent, opts).unwrap(), ConvertOutcome::Bc7);
+        let (fourcc, mips) = dds_info(&transparent.with_extension("dds"));
+        assert_eq!(fourcc, "DX10", "BC7 needs the DX10 header");
+        assert_eq!(mips, 7);
+
+        assert_eq!(optimize_single_texture(&odd, opts).unwrap(), ConvertOutcome::SkippedSize);
+        assert!(!odd.with_extension("dds").exists(), "never stretched, left as PNG");
+        assert_eq!(optimize_single_texture(&tiny, opts).unwrap(), ConvertOutcome::SkippedSmall);
+        assert!(!dir.join("opaque.dds.tmp").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn plan_detects_stale_and_foreign_dds() {
+        let dir = temp_dir("plan");
+        let tex = dir.join("Mod").join("Textures").join("Things");
+        std::fs::create_dir_all(&tex).unwrap();
+        let ours_fresh = tex.join("a.png");
+        let ours_stale = tex.join("b.png");
+        let foreign = tex.join("c.png");
+        let new_tex = tex.join("d.png");
+        for p in [&ours_fresh, &ours_stale, &foreign, &new_tex] {
+            write_png(p, 64, 64, 255);
+        }
+        for p in [&ours_fresh, &ours_stale, &foreign] {
+            std::fs::write(p.with_extension("dds"), b"dds").unwrap();
+        }
+        let entries = vec![
+            ManifestEntry { dds: ours_fresh.with_extension("dds"), source: ours_fresh.clone(), backup: None, source_fp: source_fingerprint(&ours_fresh) },
+            ManifestEntry { dds: ours_stale.with_extension("dds"), source: ours_stale.clone(), backup: None, source_fp: Some("1:1".into()) },
+        ];
+        let manifest = manifest_index(entries);
+
+        let plan = plan_textures(&[dir.join("Mod")], false, &manifest);
+        let mut names: Vec<String> = plan.to_convert.iter().map(|p| p.file_name().unwrap().to_string_lossy().to_string()).collect();
+        names.sort();
+        assert_eq!(names, vec!["b.png", "d.png"], "stale ours + brand new; fresh ours and foreign skipped");
+        assert_eq!((plan.up_to_date, plan.foreign_dds), (1, 1));
+
+        let forced = plan_textures(&[dir.join("Mod")], true, &manifest);
+        assert_eq!(forced.to_convert.len(), 3, "force re-encodes ours, never the author's DDS");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn backup_path_keeps_drive_and_folders() {
         let root = PathBuf::from(r"C:\backup");
@@ -722,7 +847,7 @@ mod tests {
         let manifest = dir.join("manifest.tsv");
         append_manifest(
             &manifest,
-            &[ManifestEntry { dds: dds.clone(), source: source.clone(), backup: Some(backup.clone()) }],
+            &[ManifestEntry { dds: dds.clone(), source: source.clone(), backup: Some(backup.clone()), source_fp: None }],
         )
         .unwrap();
 

@@ -16,8 +16,8 @@ use crate::matcher::{classify_and_link_translations, filter_and_rank_workshop_tr
 use crate::models::{is_protected_package_id, is_optimizer_blacklisted, ModInfo, TranslationTargetLang};
 use crate::mods_config::{get_default_mods_config_path, load_active_mods, save_active_mods};
 use crate::optimizer::{
-    count_textures_preview, default_cpu_threads, dirs_from_mods, rollback_dds, run_optimization,
-    total_system_threads, OptimizationMsg, OptimizeScope,
+    default_cpu_threads, dirs_from_mods, rollback_dds_async, run_optimization, texture_summary_async,
+    total_system_threads, ConvertOptions, OptimizationMsg, OptimizeScope, RollbackResult, TextureSummary,
 };
 use crate::scanner::scan_mods;
 use crate::sorter::sort_load_order;
@@ -114,6 +114,14 @@ pub struct App {
     pub opt_stop_flag: Arc<AtomicBool>,
     pub opt_rx: Option<Receiver<OptimizationMsg>>,
     pub opt_ignore_list: std::collections::HashSet<String>,
+    /// Flip textures vertically before encoding (RimPy style). Off by default.
+    pub opt_flip: bool,
+    /// On RimWorld 1.7 conversion is blocked unless the user explicitly allows it.
+    pub opt_allow_on_waylith: bool,
+    /// Background "Scan" result.
+    pub opt_scan_rx: Option<Receiver<TextureSummary>>,
+    /// Background "Rollback" result.
+    pub opt_rollback_rx: Option<Receiver<RollbackResult>>,
 
     // Analyzer State
     pub log_report: Option<LogReport>,
@@ -238,6 +246,10 @@ impl App {
             opt_stop_flag: Arc::new(AtomicBool::new(false)),
             opt_rx: None,
             opt_ignore_list,
+            opt_flip: false,
+            opt_allow_on_waylith: false,
+            opt_scan_rx: None,
+            opt_rollback_rx: None,
 
             log_report: None,
             custom_log_path: None,
@@ -666,6 +678,11 @@ impl App {
             self.status_message = "Нет выбранных модов для оптимизации текстур".to_string();
             return;
         }
+        if self.optimizer_blocked() {
+            self.status_message =
+                "RimWorld 1.7 сжимает текстуры сам — конвертация отключена (можно разрешить вручную)".to_string();
+            return;
+        }
 
         let (tx, rx) = channel();
         self.opt_rx = Some(rx);
@@ -679,12 +696,32 @@ impl App {
             dirs,
             self.opt_force,
             self.opt_delete_source,
+            ConvertOptions { flip_vertical: self.opt_flip },
             self.opt_threads,
             tx,
             self.opt_stop_flag.clone(),
         );
 
-        self.status_message = "Запущена конвертация текстур в BC7...".to_string();
+        self.status_message = "Запущена конвертация текстур (BC7 / BC1 с мипмапами)...".to_string();
+    }
+
+    /// Conversion is blocked on 1.7 (the game compresses textures itself) unless explicitly allowed.
+    pub fn optimizer_blocked(&self) -> bool {
+        self.steam_paths.engine == crate::game_install::GameEngine::Waylith && !self.opt_allow_on_waylith
+    }
+
+    /// RimWorld 1.7: moves TextureCache and ShaderCache to the Recycle Bin (game rebuilds them).
+    pub fn clear_game_caches(&mut self) {
+        let size_mb = crate::game_install::game_cache_size() as f64 / (1024.0 * 1024.0);
+        self.status_message = match crate::game_install::clear_game_caches() {
+            Ok(cleared) if cleared.is_empty() => "Кэш игры уже пуст".to_string(),
+            Ok(cleared) => format!(
+                "Кэш игры перемещён в Корзину ({}, {:.0} МБ). Игра пересоберёт его при следующем запуске.",
+                cleared.join(", "),
+                size_mb
+            ),
+            Err(e) => format!("Не удалось очистить кэш: {}", e),
+        };
     }
 
     pub fn cancel_texture_optimization(&mut self) {
@@ -705,17 +742,17 @@ impl App {
             .collect()
     }
 
+    /// "Scan": counts in a background thread (no UI freeze on big mod folders).
     pub fn scan_texture_counts(&mut self) {
         let dirs = dirs_from_mods(&self.optimizable_mods());
-        let (needs, already) = count_textures_preview(&dirs);
-        self.status_message = format!(
-            "Текстур для конвертации: {} | Уже в DDS: {}",
-            needs, already
-        );
+        let (tx, rx) = channel();
+        texture_summary_async(dirs, self.opt_force, tx);
+        self.opt_scan_rx = Some(rx);
+        self.status_message = "Подсчёт текстур...".to_string();
     }
 
     /// Rolls back every mod except Core/DLC — including ignored/blacklisted ones,
-    /// because older versions of the optimizer did not respect those lists.
+    /// because older versions of the optimizer did not respect those lists. Runs in background.
     pub fn rollback_textures(&mut self) {
         let mods: Vec<ModInfo> = self
             .all_mods
@@ -723,11 +760,36 @@ impl App {
             .filter(|m| !self.is_official_mod(m))
             .cloned()
             .collect();
-        let res = rollback_dds(&dirs_from_mods(&mods));
-        self.status_message = format!(
-            "Откат: удалено .dds: {} | восстановлено исходников из бэкапа: {} | ошибок: {}",
-            res.removed, res.restored, res.errors
-        );
+        let (tx, rx) = channel();
+        rollback_dds_async(dirs_from_mods(&mods), tx);
+        self.opt_rollback_rx = Some(rx);
+        self.status_message = "Откат текстур...".to_string();
+    }
+
+    /// Whether a background optimizer task (scan, rollback, conversion) is running.
+    pub fn optimizer_busy(&self) -> bool {
+        self.opt_is_running || self.opt_scan_rx.is_some() || self.opt_rollback_rx.is_some()
+    }
+
+    fn poll_optimizer_tasks(&mut self) {
+        if let Some(rx) = &self.opt_scan_rx {
+            if let Ok(s) = rx.try_recv() {
+                self.status_message = format!(
+                    "Будет сконвертировано: {} | уже готово: {} | чужих DDS (не трогаются): {}",
+                    s.to_convert, s.up_to_date, s.foreign_dds
+                );
+                self.opt_scan_rx = None;
+            }
+        }
+        if let Some(rx) = &self.opt_rollback_rx {
+            if let Ok(res) = rx.try_recv() {
+                self.status_message = format!(
+                    "Откат: удалено .dds: {} | восстановлено исходников из бэкапа: {} | ошибок: {}",
+                    res.removed, res.restored, res.errors
+                );
+                self.opt_rollback_rx = None;
+            }
+        }
     }
 
     pub fn run_log_analysis(&mut self) {
@@ -789,6 +851,11 @@ impl eframe::App for App {
             self.mod_textures.insert(pkg_id, Some(handle));
         }
 
+        self.poll_optimizer_tasks();
+        if self.opt_scan_rx.is_some() || self.opt_rollback_rx.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+
         // Receive background optimizer messages
         if let Some(ref rx) = self.opt_rx {
             while let Ok(msg) = rx.try_recv() {
@@ -806,17 +873,19 @@ impl eframe::App for App {
                     OptimizationMsg::FileError(_) => {
                         self.opt_errors += 1;
                     }
-                    OptimizationMsg::Done {
-                        processed,
-                        errors,
-                        deleted_sources,
-                        ..
-                    } => {
+                    OptimizationMsg::Done(s) => {
                         self.opt_is_running = false;
-                        self.status_message = format!(
-                            "Конвертация завершена! Обработано: {}, Ошибок: {}, Исходников перенесено в бэкап: {}",
-                            processed, errors, deleted_sources
+                        let mut msg = format!(
+                            "Готово: BC7 {}, BC1 {} | оставлено PNG (размер): {} | уже актуально: {} | ошибок: {}",
+                            s.bc7, s.bc1, s.skipped, s.up_to_date, s.errors
                         );
+                        if s.sources_backed_up > 0 {
+                            msg.push_str(&format!(" | исходников в бэкапе: {}", s.sources_backed_up));
+                        }
+                        if s.foreign_dds > 0 {
+                            msg.push_str(&format!(" | чужих DDS не тронуто: {}", s.foreign_dds));
+                        }
+                        self.status_message = msg;
                     }
                     OptimizationMsg::Cancelled => {
                         self.opt_is_running = false;
