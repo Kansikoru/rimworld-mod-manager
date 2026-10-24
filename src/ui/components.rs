@@ -4,7 +4,7 @@ use super::theme::THEME;
 /// Renders a modern badge pill (e.g. "Workshop", "DLC", "RU", "Tier 2")
 pub fn badge(ui: &mut Ui, text: &str, bg: Color32, fg: Color32) -> Response {
     let padding = Vec2::new(7.0, 3.0);
-    let font_id = egui::FontId::proportional(11.0);
+    let font_id = egui::FontId::proportional(12.0);
 
     let galley = ui.painter().layout_no_wrap(text.to_string(), font_id, fg);
     let desired_size = galley.size() + padding * 2.0;
@@ -35,9 +35,9 @@ pub fn icon_badge(
     fg: Color32,
 ) -> Response {
     let padding = Vec2::new(6.0, 3.0);
-    let icon_size = 11.0;
-    let gap = if text.is_empty() { 0.0 } else { 4.0 };
-    let font_id = egui::FontId::proportional(11.0);
+    let icon_size = 14.0;
+    let gap = if text.is_empty() { 0.0 } else { 5.0 };
+    let font_id = egui::FontId::proportional(12.0);
 
     let galley = ui.painter().layout_no_wrap(text.to_string(), font_id, fg);
     let content_h = galley.size().y.max(icon_size);
@@ -49,11 +49,17 @@ pub fn icon_badge(
     let (rect, response) = ui.allocate_exact_size(desired_size, Sense::hover());
     if ui.is_rect_visible(rect) {
         ui.painter().rect(rect, Rounding::same(4.0), bg, Stroke::NONE);
+        // Snap the icon to whole physical pixels: a half-pixel offset blurs thin lines.
+        let ppp = ui.ctx().pixels_per_point();
+        let snap = |v: f32| (v * ppp).round() / ppp;
         let icon_rect = egui::Rect::from_min_size(
-            Pos2::new(rect.min.x + padding.x, rect.center().y - icon_size / 2.0),
+            Pos2::new(snap(rect.min.x + padding.x), snap(rect.center().y - icon_size / 2.0)),
             Vec2::splat(icon_size),
         );
-        egui::Image::new(icon).tint(fg).paint_at(ui, icon_rect);
+        egui::Image::new(icon)
+            .texture_options(egui::TextureOptions::NEAREST)
+            .tint(fg)
+            .paint_at(ui, icon_rect);
         let text_pos = Pos2::new(
             icon_rect.max.x + gap,
             rect.center().y - galley.size().y / 2.0,
@@ -246,7 +252,7 @@ use super::icons::*;
 /// Primary button with SVG icon (Cyan / Sky blue)
 pub fn primary_button_icon(ui: &mut Ui, icon: ImageSource<'static>, text: &str) -> Response {
     let btn = egui::Button::image_and_text(
-        svg_icon(icon, Vec2::new(14.0, 14.0), Color32::WHITE),
+        svg_icon(icon, Vec2::new(16.0, 16.0), Color32::WHITE),
         egui::RichText::new(text).color(Color32::WHITE).size(13.0).strong(),
     )
     .fill(THEME.accent_cyan)
@@ -258,8 +264,8 @@ pub fn primary_button_icon(ui: &mut Ui, icon: ImageSource<'static>, text: &str) 
 /// Secondary button with SVG icon (dark card background, subtle border)
 pub fn secondary_button_icon(ui: &mut Ui, icon: ImageSource<'static>, text: &str) -> Response {
     let btn = egui::Button::image_and_text(
-        svg_icon(icon, Vec2::new(13.0, 13.0), THEME.text_primary),
-        egui::RichText::new(text).color(THEME.text_primary).size(12.0),
+        svg_icon(icon, Vec2::new(16.0, 16.0), THEME.text_primary),
+        egui::RichText::new(text).color(THEME.text_primary).size(13.0),
     )
     .fill(THEME.bg_card)
     .stroke(Stroke::new(1.0, THEME.border_subtle))
@@ -270,8 +276,8 @@ pub fn secondary_button_icon(ui: &mut Ui, icon: ImageSource<'static>, text: &str
 /// Danger button with SVG icon (Red)
 pub fn danger_button_icon(ui: &mut Ui, icon: ImageSource<'static>, text: &str) -> Response {
     let btn = egui::Button::image_and_text(
-        svg_icon(icon, Vec2::new(13.0, 13.0), Color32::WHITE),
-        egui::RichText::new(text).color(Color32::WHITE).size(12.0),
+        svg_icon(icon, Vec2::new(16.0, 16.0), Color32::WHITE),
+        egui::RichText::new(text).color(Color32::WHITE).size(13.0),
     )
     .fill(Color32::from_rgb(159, 18, 57))
     .stroke(Stroke::new(1.0, Color32::from_rgb(244, 63, 94)))
@@ -282,8 +288,8 @@ pub fn danger_button_icon(ui: &mut Ui, icon: ImageSource<'static>, text: &str) -
 /// Success button with SVG icon (Green)
 pub fn success_button_icon(ui: &mut Ui, icon: ImageSource<'static>, text: &str) -> Response {
     let btn = egui::Button::image_and_text(
-        svg_icon(icon, Vec2::new(13.0, 13.0), Color32::WHITE),
-        egui::RichText::new(text).color(Color32::WHITE).size(12.0),
+        svg_icon(icon, Vec2::new(16.0, 16.0), Color32::WHITE),
+        egui::RichText::new(text).color(Color32::WHITE).size(13.0),
     )
     .fill(Color32::from_rgb(21, 128, 61))
     .stroke(Stroke::new(1.0, Color32::from_rgb(34, 197, 94)))

@@ -62,7 +62,7 @@ fn main() {
         native_options,
         Box::new(|cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            setup_custom_fonts(&cc.egui_ctx);
+            setup_custom_fonts(&cc.egui_ctx, &rimworld_mod_manager::ui_prefs::UiPrefs::load());
             Ok(Box::new(App::new(&cc.egui_ctx)))
         }),
     );

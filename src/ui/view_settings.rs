@@ -3,6 +3,7 @@ use eframe::egui::{self, Ui};
 use crate::app::App;
 use crate::game_install::{known_launch_flags, GameEngine};
 use crate::i18n::{fmt, Language, TranslationKey};
+use crate::ui_prefs::{UiFont, TEXT_SCALE_RANGE};
 use super::components::*;
 use super::icons::*;
 use super::theme::THEME;
@@ -29,13 +30,52 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
             );
 
             ui.horizontal(|ui| {
-                if ui.selectable_label(app.is_russian, "🇷🇺 Русский").clicked() {
+                if ui.selectable_label(app.is_russian, "Русский").clicked() {
                     app.set_language(Language::Russian);
                 }
-                if ui.selectable_label(!app.is_russian, "🇬🇧 English").clicked() {
+                if ui.selectable_label(!app.is_russian, "English").clicked() {
                     app.set_language(Language::English);
                 }
             });
+        });
+    });
+
+    ui.add_space(8.0);
+
+    // Interface font & text size: egui draws text without hinting, so the most comfortable
+    // font depends on the monitor. Changes apply immediately and are saved.
+    card_container(ui, |ui| {
+        ui.vertical(|ui| {
+            ui.label(
+                egui::RichText::new(format!("{}:", t.get(TranslationKey::SettingsFont)))
+                    .color(THEME.text_secondary)
+                    .strong(),
+            );
+            let before = app.ui_prefs;
+            ui.horizontal_wrapped(|ui| {
+                for font in UiFont::ALL {
+                    ui.selectable_value(&mut app.ui_prefs.font, font, font.label());
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label(t.get(TranslationKey::SettingsTextSize));
+                ui.add(
+                    egui::Slider::new(&mut app.ui_prefs.text_scale, TEXT_SCALE_RANGE)
+                        .step_by(0.05)
+                        .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                );
+            });
+            ui.label(
+                egui::RichText::new(t.get(TranslationKey::SettingsFontHint))
+                    .color(THEME.text_muted)
+                    .size(12.0),
+            );
+            if app.ui_prefs != before {
+                crate::fonts::setup_custom_fonts(ui.ctx(), &app.ui_prefs);
+                if let Err(e) = app.ui_prefs.save() {
+                    app.status_message = format!("Не удалось сохранить настройки шрифта: {}", e);
+                }
+            }
         });
     });
 
@@ -182,7 +222,7 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
                 ui.label(
                     egui::RichText::new(t.get(TranslationKey::SettingsLaunchWaylithHint))
                         .color(THEME.text_muted)
-                        .size(11.0),
+                        .size(12.0),
                 );
             }
 

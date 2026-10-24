@@ -18,3 +18,4 @@ pub mod icon_cache;
 pub mod dependencies;
 
 pub mod ui;
+pub mod ui_prefs;

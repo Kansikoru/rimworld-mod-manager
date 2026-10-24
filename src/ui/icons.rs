@@ -78,8 +78,12 @@ pub fn category_icon(cat: ModCategory) -> ImageSource<'static> {
     }
 }
 
+/// An SVG icon rasterized at exactly `size` and drawn 1:1 without smoothing,
+/// so thin lines stay sharp instead of being blurred by texture filtering.
+/// Sizes are rounded to whole pixels; 16 px or more keeps the line icons legible.
 pub fn svg_icon(source: ImageSource<'static>, size: Vec2, tint: Color32) -> Image<'static> {
     Image::new(source)
-        .fit_to_exact_size(size)
+        .fit_to_exact_size(size.round())
+        .texture_options(egui::TextureOptions::NEAREST)
         .tint(tint)
 }

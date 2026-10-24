@@ -167,6 +167,11 @@ pub enum TranslationKey {
     CategoriesReset,
     CategoriesManual,
     CategoriesNone,
+
+    // Interface font
+    SettingsFont,
+    SettingsTextSize,
+    SettingsFontHint,
 }
 
 /// Fills `{}` placeholders one by one: `fmt("A: {} | B: {}", &["1", "2"])` -> "A: 1 | B: 2".
@@ -455,6 +460,12 @@ impl TranslationKey {
             (TranslationKey::CategoriesManual, Language::English) => "set manually",
             (TranslationKey::CategoriesNone, Language::Russian) => "Категория не определена",
             (TranslationKey::CategoriesNone, Language::English) => "No category detected",
+            (TranslationKey::SettingsFont, Language::Russian) => "Шрифт интерфейса",
+            (TranslationKey::SettingsFont, Language::English) => "Interface font",
+            (TranslationKey::SettingsTextSize, Language::Russian) => "Размер текста:",
+            (TranslationKey::SettingsTextSize, Language::English) => "Text size:",
+            (TranslationKey::SettingsFontHint, Language::Russian) => "Если текст кажется размытым — попробуйте другой шрифт или размер побольше. Применяется сразу.",
+            (TranslationKey::SettingsFontHint, Language::English) => "If text looks blurry, try another font or a larger size. Applies immediately.",
         }
     }
 }

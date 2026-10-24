@@ -155,7 +155,7 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
                     ui.label(
                         egui::RichText::new(format!("Файл: {}", app.opt_current_file))
                             .color(THEME.text_muted)
-                            .size(11.0),
+                            .size(12.0),
                     );
                 }
             });

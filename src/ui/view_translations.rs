@@ -139,13 +139,13 @@ fn render_installed_translations_column(app: &mut App, ui: &mut Ui) {
                                 ui.label(
                                     egui::RichText::new(format!("↳ Родительский мод: {}", parent_id))
                                         .color(THEME.accent_cyan)
-                                        .size(11.0),
+                                        .size(12.0),
                                 );
                             }
                         });
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if icon_button(ui, ICON_TRASH, egui::vec2(12.0, 12.0), THEME.text_muted).on_hover_text("Удалить и отписаться").clicked() {
+                            if icon_button(ui, ICON_TRASH, egui::vec2(14.0, 14.0), THEME.text_muted).on_hover_text("Удалить и отписаться").clicked() {
                                 to_delete_single = Some(m.package_id.clone());
                             }
                             if let Some(ref sid) = m.steam_item_id {
@@ -222,7 +222,7 @@ fn render_workshop_search_column(app: &mut App, ui: &mut Ui) {
                             ui.label(
                                 egui::RichText::new(format!("Steam ID: {}", item.id))
                                     .color(THEME.text_muted)
-                                    .size(11.0),
+                                    .size(12.0),
                             );
                         });
 

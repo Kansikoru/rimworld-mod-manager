@@ -139,6 +139,9 @@ pub struct App {
     /// Mod list filter: show only mods with any of these categories (empty = all).
     pub category_filter: std::collections::HashSet<ModCategory>,
 
+    /// Interface font and text size (Settings), saved to ui_prefs.json.
+    pub ui_prefs: crate::ui_prefs::UiPrefs,
+
     // Status Message
     pub status_message: String,
 }
@@ -250,6 +253,7 @@ impl App {
 
             category_overrides: crate::categories::load_overrides(&crate::categories::overrides_path()),
             category_filter: std::collections::HashSet::new(),
+            ui_prefs: crate::ui_prefs::UiPrefs::load(),
 
             status_message: "Готов к работе".to_string(),
         };
@@ -838,7 +842,7 @@ impl eframe::App for App {
                 ui.label(
                     egui::RichText::new("v2.5 High-Perf Native")
                         .color(THEME.text_muted)
-                        .size(11.0),
+                        .size(12.0),
                 );
 
                 ui.add_space(16.0);
@@ -863,7 +867,7 @@ impl eframe::App for App {
 
                     let btn_resp = ui.add(
                         egui::Button::image_and_text(
-                            svg_icon(icon, egui::vec2(15.0, 15.0), text_color),
+                            svg_icon(icon, egui::vec2(16.0, 16.0), text_color),
                             egui::RichText::new(label)
                                 .color(text_color)
                                 .size(13.0)
@@ -883,7 +887,7 @@ impl eframe::App for App {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.add(
                         egui::Button::image_and_text(
-                            svg_icon(ICON_PLAY, egui::vec2(14.0, 14.0), Color32::WHITE),
+                            svg_icon(ICON_PLAY, egui::vec2(16.0, 16.0), Color32::WHITE),
                             egui::RichText::new(self.i18n.get(TranslationKey::AppPlayBtn))
                                 .color(Color32::WHITE)
                                 .size(13.0)
@@ -905,7 +909,7 @@ impl eframe::App for App {
                 ui.label(
                     egui::RichText::new(&self.status_message)
                         .color(THEME.text_secondary)
-                        .size(11.0),
+                        .size(12.0),
                 );
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -915,7 +919,7 @@ impl eframe::App for App {
                             &[&self.all_mods.len().to_string(), &self.active_mods.len().to_string()],
                         ))
                         .color(THEME.text_muted)
-                        .size(11.0),
+                        .size(12.0),
                     );
                 });
             });

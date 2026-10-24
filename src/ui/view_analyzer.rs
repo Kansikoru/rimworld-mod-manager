@@ -96,7 +96,7 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
                     ui.label(
                         egui::RichText::new(file_stats)
                             .color(THEME.text_muted)
-                            .size(11.0),
+                            .size(12.0),
                     );
                 });
             });
@@ -175,7 +175,7 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
                                         egui::RichText::new(&culprit.stack_trace_excerpt)
                                             .color(Color32::from_rgb(252, 165, 165))
                                             .monospace()
-                                            .size(11.0),
+                                            .size(12.0),
                                     );
                                 });
                             }

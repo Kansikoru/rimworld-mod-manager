@@ -122,7 +122,7 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
                     ui.horizontal(|ui| {
                         origin_badge(ui, *origin);
                         if ui
-                            .link(egui::RichText::new(dir.display().to_string()).size(11.0))
+                            .link(egui::RichText::new(dir.display().to_string()).size(12.0))
                             .clicked()
                         {
                             let _ = open::that(dir);
@@ -220,7 +220,7 @@ fn render_category_filter(app: &mut App, ui: &mut Ui) {
             let (bg, fg) = cat.colors();
             let fg = Color32::from_rgb(fg[0], fg[1], fg[2]);
             let chip = egui::Button::image_and_text(
-                svg_icon(category_icon(cat), Vec2::splat(13.0), fg),
+                svg_icon(category_icon(cat), Vec2::splat(14.0), fg),
                 egui::RichText::new(format!("{} ({})", cat.label(t.language()), n))
                     .color(fg)
                     .size(12.0),
@@ -284,7 +284,7 @@ fn category_context_menu(
             let mut on = cats.contains(&cat);
             let (_, fg) = cat.colors();
             ui.horizontal(|ui| {
-                ui.add(svg_icon(category_icon(cat), Vec2::splat(13.0), Color32::from_rgb(fg[0], fg[1], fg[2])));
+                ui.add(svg_icon(category_icon(cat), Vec2::splat(14.0), Color32::from_rgb(fg[0], fg[1], fg[2])));
                 if ui.checkbox(&mut on, cat.label(t.language())).changed() {
                     *toggle = Some((pkg_id.to_string(), cat));
                 }
@@ -295,7 +295,7 @@ fn category_context_menu(
             ui.label(
                 egui::RichText::new(t.get(TranslationKey::CategoriesManual))
                     .color(THEME.text_muted)
-                    .size(11.0),
+                    .size(12.0),
             );
             if ui.button(t.get(TranslationKey::CategoriesReset)).clicked() {
                 *reset = Some(pkg_id.to_string());
@@ -368,7 +368,7 @@ fn render_mod_icon_pill(
         shadow: egui::epaint::Shadow::NONE,
     };
     frame.show(ui, |ui| {
-        ui.add(svg_icon(icon, Vec2::splat(14.0), fg_col));
+        ui.add(svg_icon(icon, Vec2::splat(16.0), fg_col));
     });
 }
 
@@ -398,14 +398,14 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
             ui.label(
                 egui::RichText::new(format!("{}", app.active_mods.len()))
                     .color(THEME.text_secondary)
-                    .size(11.0)
+                    .size(12.0)
                     .strong(),
             );
         });
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // Move Down (frameless button)
-            if ui.add(egui::Button::new(egui::RichText::new("▼").size(11.0).color(THEME.text_secondary)).frame(false)).clicked() {
+            if ui.add(egui::Button::new(egui::RichText::new("▼").size(12.0).color(THEME.text_secondary)).frame(false)).clicked() {
                 if let Some(ref sel) = app.selected_mod_id {
                     if let Some(pos) = app.active_mods.iter().position(|id| id == sel) {
                         if pos + 1 < app.active_mods.len() {
@@ -416,7 +416,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
             }
 
             // Move Up (frameless button)
-            if ui.add(egui::Button::new(egui::RichText::new("▲").size(11.0).color(THEME.text_secondary)).frame(false)).clicked() {
+            if ui.add(egui::Button::new(egui::RichText::new("▲").size(12.0).color(THEME.text_secondary)).frame(false)).clicked() {
                 if let Some(ref sel) = app.selected_mod_id {
                     if let Some(pos) = app.active_mods.iter().position(|id| id == sel) {
                         if pos > 0 {
@@ -508,7 +508,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                     rounding: Rounding::same(5.0),
                     fill: bg_color,
                     stroke: if is_selected {
-                        Stroke::new(1.5, THEME.accent_cyan)
+                        Stroke::new(1.0, THEME.accent_cyan)
                     } else {
                         Stroke::new(1.0, THEME.border_subtle)
                     },
@@ -517,12 +517,18 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
 
                 frame.show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        // Numeric index: 1., 2., 3.
-                        ui.label(
-                            egui::RichText::new(format!("{}.", idx + 1))
-                                .color(THEME.text_muted)
-                                .monospace()
-                                .size(11.0),
+                        // Numeric index in a fixed-width column, so "9." and "10." rows stay aligned.
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(30.0, 18.0),
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                ui.label(
+                                    egui::RichText::new(format!("{}.", idx + 1))
+                                        .color(THEME.text_muted)
+                                        .monospace()
+                                        .size(12.0),
+                                );
+                            },
                         );
 
                         // Mod Icon badge
@@ -679,7 +685,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                     let btn = egui::Button::new(
                                         egui::RichText::new(app.i18n.get(TranslationKey::ModsDepEnable))
                                             .color(Color32::from_rgb(74, 222, 128))
-                                            .size(10.0)
+                                            .size(12.0)
                                             .strong(),
                                     )
                                     .fill(Color32::from_rgb(20, 60, 35))
@@ -708,12 +714,12 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                             }
 
                             if idx < app.active_mods.len().saturating_sub(1)
-                                && icon_button(ui, ICON_ARROW_DOWN, Vec2::new(12.0, 12.0), THEME.text_muted).clicked()
+                                && icon_button(ui, ICON_ARROW_DOWN, Vec2::new(14.0, 14.0), THEME.text_muted).clicked()
                             {
                                 move_down_idx = Some(idx);
                             }
 
-                            if idx > 0 && icon_button(ui, ICON_ARROW_UP, Vec2::new(12.0, 12.0), THEME.text_muted).clicked() {
+                            if idx > 0 && icon_button(ui, ICON_ARROW_UP, Vec2::new(14.0, 14.0), THEME.text_muted).clicked() {
                                 move_up_idx = Some(idx);
                             }
                         });
@@ -801,7 +807,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
             ui.label(
                 egui::RichText::new(format!("{}", inactive_mods.len()))
                     .color(THEME.text_secondary)
-                    .size(11.0)
+                    .size(12.0)
                     .strong(),
             );
         });
@@ -810,7 +816,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
             ui.label(
                 egui::RichText::new(app.i18n.get(TranslationKey::ModsTotal).replace("{}", &app.all_mods.len().to_string()))
                     .color(THEME.text_muted)
-                    .size(11.0),
+                    .size(12.0),
             );
         });
     });
@@ -872,7 +878,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                     rounding: Rounding::same(5.0),
                     fill: bg_color,
                     stroke: if is_selected {
-                        Stroke::new(1.5, THEME.accent_cyan)
+                        Stroke::new(1.0, THEME.accent_cyan)
                     } else {
                         Stroke::new(1.0, THEME.border_subtle)
                     },
@@ -990,7 +996,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.add_space(16.0); // Padding to prevent scrollbar overlap
-                            if icon_button(ui, ICON_PLUS, Vec2::new(12.0, 12.0), THEME.text_muted).on_hover_text(t.get(TranslationKey::BtnActivate)).clicked() {
+                            if icon_button(ui, ICON_PLUS, Vec2::new(14.0, 14.0), THEME.text_muted).on_hover_text(t.get(TranslationKey::BtnActivate)).clicked() {
                                 activate_id = Some(m.package_id.clone());
                             }
                         });
@@ -1064,7 +1070,7 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
 
             // Close button [✕] to hide panel
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if icon_button(ui, ICON_CLOSE, Vec2::new(11.0, 11.0), THEME.text_muted).on_hover_text(app.i18n.get(TranslationKey::ModsHideInfoPanel)).clicked() {
+                if icon_button(ui, ICON_CLOSE, Vec2::new(14.0, 14.0), THEME.text_muted).on_hover_text(app.i18n.get(TranslationKey::ModsHideInfoPanel)).clicked() {
                     app.is_details_panel_visible = false;
                 }
             });
@@ -1151,7 +1157,7 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
                         ui.label(
                             egui::RichText::new(app.i18n.get(TranslationKey::CategoriesNone))
                                 .color(THEME.text_muted)
-                                .size(11.0),
+                                .size(12.0),
                         );
                     } else {
                         category_badges(ui, &m.categories, app.i18n, usize::MAX);
@@ -1160,7 +1166,7 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
                         ui.label(
                             egui::RichText::new(format!("({})", app.i18n.get(TranslationKey::CategoriesManual)))
                                 .color(THEME.text_muted)
-                                .size(10.0),
+                                .size(12.0),
                         );
                     }
                 });
@@ -1172,14 +1178,14 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
                     egui::RichText::new(format!("Package ID: {}", m.package_id))
                         .color(Color32::from_rgb(245, 158, 11))
                         .monospace()
-                        .size(11.0),
+                        .size(12.0),
                 );
 
                 if !m.author.is_empty() {
                     ui.label(
                         egui::RichText::new(app.i18n.get(TranslationKey::ModsAuthor).replace("{}", &m.author))
                             .color(THEME.text_muted)
-                            .size(11.0),
+                            .size(12.0),
                     );
                 }
             });
@@ -1187,7 +1193,7 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
             // Dependencies list
             if !m.dependencies.is_empty() {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(egui::RichText::new(app.i18n.get(TranslationKey::ModsDependencies)).color(THEME.text_muted).size(10.0));
+                    ui.label(egui::RichText::new(app.i18n.get(TranslationKey::ModsDependencies)).color(THEME.text_muted).size(12.0));
                     for dep in &m.dependencies {
                         badge(ui, dep, THEME.bg_dark, THEME.text_secondary);
                     }
@@ -1203,7 +1209,7 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
                         ui.label(
                             egui::RichText::new(&m.description)
                                 .color(THEME.text_secondary)
-                                .size(11.0),
+                                .size(12.0),
                         );
                     });
             }
@@ -1221,7 +1227,7 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
                         ],
                     ))
                     .color(THEME.text_muted)
-                    .size(11.0),
+                    .size(12.0),
                 );
             });
         }
