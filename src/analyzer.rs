@@ -811,6 +811,7 @@ mod tests {
             has_defs: true,
             has_assemblies: true,
             has_other_content: true,
+            ..Default::default()
         }
     }
 

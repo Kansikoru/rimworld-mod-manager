@@ -27,13 +27,14 @@ pub fn is_optimizer_blacklisted(package_id: &str) -> bool {
         .any(|&p| p.eq_ignore_ascii_case(package_id))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ModOrigin {
     Workshop,
+    #[default]
     Local,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModInfo {
     pub package_id: String,
     pub name: String,
@@ -60,6 +61,18 @@ pub struct ModInfo {
     /// (Patches, Textures, Sounds, AssetBundles, Shaders...). Such a mod is never a pure translation.
     #[serde(default)]
     pub has_other_content: bool,
+    /// Has a Patches/ folder.
+    #[serde(default)]
+    pub has_patches: bool,
+    /// Has a Textures/ folder.
+    #[serde(default)]
+    pub has_textures: bool,
+    /// Counts of def types found in Defs/ (races, buildings, weapons...).
+    #[serde(default)]
+    pub def_stats: crate::categories::DefStats,
+    /// Categories computed from the content (or set by the user), strongest first.
+    #[serde(default)]
+    pub categories: Vec<crate::categories::ModCategory>,
 }
 
 impl ModInfo {

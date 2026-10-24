@@ -31,15 +31,30 @@ pub fn scan_mods(
         }
     }
 
-    let mods: Vec<ModInfo> = targets
+    // Def counts are cached by a fingerprint of each mod's Defs files: a rescan only
+    // re-reads XML of mods that changed.
+    let cache_path = crate::categories::cache_path();
+    let cache = crate::categories::load_cache(&cache_path);
+
+    let results: Vec<(ModInfo, crate::categories::DefStatsCacheEntry)> = targets
         .into_par_iter()
-        .filter_map(|(dir, origin)| parse_mod_folder(&dir, origin))
+        .filter_map(|(dir, origin)| parse_mod_folder(&dir, origin, &cache))
         .collect();
 
-    mods
+    let new_cache: crate::categories::DefStatsCache = results
+        .iter()
+        .map(|(m, entry)| (m.dir_path.to_string_lossy().to_string(), entry.clone()))
+        .collect();
+    crate::categories::save_cache(&cache_path, &new_cache);
+
+    results.into_iter().map(|(m, _)| m).collect()
 }
 
-pub fn parse_mod_folder(dir: &Path, origin: ModOrigin) -> Option<ModInfo> {
+pub fn parse_mod_folder(
+    dir: &Path,
+    origin: ModOrigin,
+    cache: &crate::categories::DefStatsCache,
+) -> Option<(ModInfo, crate::categories::DefStatsCacheEntry)> {
     let about_file = dir.join("About").join("About.xml");
     if !about_file.exists() {
         return None;
@@ -72,10 +87,12 @@ pub fn parse_mod_folder(dir: &Path, origin: ModOrigin) -> Option<ModInfo> {
         ModOrigin::Local => None,
     };
 
-    let (has_defs, has_assemblies, has_other_content) = scan_content_kinds(dir);
+    let content = scan_content(dir);
+    let (def_stats, cache_entry) =
+        crate::categories::def_stats_for(dir, &content.def_dirs, cache);
 
     let name_lower = meta.name.to_lowercase();
-    Some(ModInfo {
+    let info = ModInfo {
         package_id: meta.package_id,
         name: meta.name,
         name_lower,
@@ -94,10 +111,15 @@ pub fn parse_mod_folder(dir: &Path, origin: ModOrigin) -> Option<ModInfo> {
         is_translation_mod: false,
         parent_package_id: None,
         steam_item_id,
-        has_defs,
-        has_assemblies,
-        has_other_content,
-    })
+        has_defs: content.has_defs,
+        has_assemblies: content.has_assemblies,
+        has_other_content: content.has_other,
+        has_patches: content.has_patches,
+        has_textures: content.has_textures,
+        def_stats,
+        categories: Vec::new(),
+    };
+    Some((info, cache_entry))
 }
 
 /// Folder names that mean "this mod has real content" (besides Defs and DLLs).
@@ -111,46 +133,74 @@ const CONTENT_DIR_NAMES: &[&str] = &[
     "materials",
 ];
 
-/// Returns (has_defs, has_assemblies, has_other_content).
-/// Does not look inside About/ and Languages/ folders.
-pub fn scan_content_kinds(dir: &Path) -> (bool, bool, bool) {
-    let mut has_defs = false;
-    let mut has_assemblies = false;
-    let mut has_other = false;
+/// What kinds of content a mod folder has. About/ and Languages/ are not looked into.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ContentKinds {
+    pub has_defs: bool,
+    pub has_assemblies: bool,
+    /// Patches, Textures, Sounds, AssetBundles, Shaders...
+    pub has_other: bool,
+    pub has_patches: bool,
+    pub has_textures: bool,
+    /// Every Defs folder (root and version folders like 1.6/Defs).
+    pub def_dirs: Vec<std::path::PathBuf>,
+}
 
-    let walker = walkdir::WalkDir::new(dir)
-        .max_depth(4)
-        .into_iter()
-        .filter_entry(|e| {
-            if e.depth() == 0 || !e.file_type().is_dir() {
-                return true;
-            }
-            let name = e.file_name().to_string_lossy().to_lowercase();
-            name != "languages" && name != "about" && name != ".git" && name != "source"
-        });
+pub fn scan_content(dir: &Path) -> ContentKinds {
+    let mut kinds = ContentKinds::default();
+    let mut dll_found = false;
 
-    for entry in walker.flatten() {
-        let name = entry.file_name().to_string_lossy().to_lowercase();
-        if entry.file_type().is_file() {
-            if name.ends_with(".dll") {
-                has_assemblies = true;
+    {
+        let walker = walkdir::WalkDir::new(dir)
+            .max_depth(4)
+            .into_iter()
+            .filter_entry(|e| {
+                if e.depth() == 0 || !e.file_type().is_dir() {
+                    return true;
+                }
+                let name = e.file_name().to_string_lossy().to_lowercase();
+                match name.as_str() {
+                    "languages" | "about" | ".git" | "source" => false,
+                    "defs" => {
+                        kinds.has_defs = true;
+                        kinds.def_dirs.push(e.path().to_path_buf());
+                        false // read later, file by file, by the category scanner
+                    }
+                    "assemblies" => {
+                        // Counts even if the DLL sits deeper than the walk depth.
+                        kinds.has_assemblies = true;
+                        true
+                    }
+                    other if CONTENT_DIR_NAMES.contains(&other) => {
+                        kinds.has_other = true;
+                        match other {
+                            "patches" => kinds.has_patches = true,
+                            "textures" => kinds.has_textures = true,
+                            _ => {}
+                        }
+                        false // thousands of files inside; the folder itself is enough
+                    }
+                    _ => true,
+                }
+            });
+
+        for entry in walker.flatten() {
+            if entry.file_type().is_file()
+                && entry.file_name().to_string_lossy().to_lowercase().ends_with(".dll")
+            {
+                dll_found = true;
             }
-        } else if entry.file_type().is_dir() && entry.depth() > 0 {
-            if name == "defs" {
-                has_defs = true;
-            } else if name == "assemblies" {
-                // An Assemblies folder counts even if the DLL sits deeper than the walk depth.
-                has_assemblies = true;
-            } else if CONTENT_DIR_NAMES.contains(&name.as_str()) {
-                has_other = true;
-            }
-        }
-        if has_defs && has_assemblies && has_other {
-            break;
         }
     }
 
-    (has_defs, has_assemblies, has_other)
+    kinds.has_assemblies |= dll_found;
+    kinds
+}
+
+/// Returns (has_defs, has_assemblies, has_other_content).
+pub fn scan_content_kinds(dir: &Path) -> (bool, bool, bool) {
+    let k = scan_content(dir);
+    (k.has_defs, k.has_assemblies, k.has_other)
 }
 
 #[derive(Default, Debug)]
@@ -453,6 +503,7 @@ mod tests {
             has_defs: true,
             has_assemblies: false,
             has_other_content: false,
+            ..Default::default()
         }
     }
 

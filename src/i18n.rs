@@ -160,6 +160,13 @@ pub enum TranslationKey {
     TransNoneForLang,
     ModsNotOnDisk,
     ModsDuplicatesTitle,
+
+    // Mod categories
+    CategoriesAll,
+    CategoriesMenu,
+    CategoriesReset,
+    CategoriesManual,
+    CategoriesNone,
 }
 
 /// Fills `{}` placeholders one by one: `fmt("A: {} | B: {}", &["1", "2"])` -> "A: 1 | B: 2".
@@ -438,6 +445,16 @@ impl TranslationKey {
             (TranslationKey::ModsNotOnDisk, Language::English) => "Not on disk",
             (TranslationKey::ModsDuplicatesTitle, Language::Russian) => "Найдены копии одного мода ({}). В игре такие моды видны дважды — оставьте одну копию:",
             (TranslationKey::ModsDuplicatesTitle, Language::English) => "Same mod found more than once ({}). The game lists such mods twice — keep one copy:",
+            (TranslationKey::CategoriesAll, Language::Russian) => "Все",
+            (TranslationKey::CategoriesAll, Language::English) => "All",
+            (TranslationKey::CategoriesMenu, Language::Russian) => "🏷 Категории",
+            (TranslationKey::CategoriesMenu, Language::English) => "🏷 Categories",
+            (TranslationKey::CategoriesReset, Language::Russian) => "↺ Определять автоматически",
+            (TranslationKey::CategoriesReset, Language::English) => "↺ Detect automatically",
+            (TranslationKey::CategoriesManual, Language::Russian) => "задано вручную",
+            (TranslationKey::CategoriesManual, Language::English) => "set manually",
+            (TranslationKey::CategoriesNone, Language::Russian) => "Категория не определена",
+            (TranslationKey::CategoriesNone, Language::English) => "No category detected",
         }
     }
 }

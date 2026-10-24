@@ -1,3 +1,4 @@
+use crate::categories::ModCategory;
 use crate::models::{is_protected_package_id, ModInfo};
 use crate::community_rules::CommunityDatabase;
 use std::cmp::Ordering;
@@ -89,14 +90,43 @@ pub fn classify_mod_tier(package_id: &str, name: &str, is_translation: bool) -> 
         package_id,
         name,
         is_translation,
+        &[],
         Some(crate::community_rules::get_default_community_db()),
     )
+}
+
+/// Tier from the content-based categories (strongest category first). None if there are none.
+pub fn tier_from_categories(categories: &[ModCategory], name_lower: &str) -> Option<ModTier> {
+    let first = categories.first()?;
+    Some(match first {
+        ModCategory::Translation => ModTier::Tier10Translations,
+        ModCategory::Framework => ModTier::Tier2Frameworks,
+        ModCategory::Race | ModCategory::Faction => ModTier::Tier4FactionsRaces,
+        ModCategory::Animal | ModCategory::Biome => ModTier::Tier6BiomesAnimals,
+        ModCategory::Patch | ModCategory::Retexture => ModTier::Tier9Patches,
+        ModCategory::QoL => {
+            // A code-only mod named "...patch" / "...compatibility" is a patch, not a QoL mod.
+            let words: Vec<&str> = name_lower
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|w| !w.is_empty())
+                .collect();
+            if words.iter().any(|w| matches!(*w, "patch" | "patches" | "compatibility" | "compat" | "fix" | "hotfix")) {
+                ModTier::Tier9Patches
+            } else {
+                ModTier::Tier8QolBehaviors
+            }
+        }
+        ModCategory::Building | ModCategory::Weapon | ModCategory::Apparel | ModCategory::Storyteller => {
+            ModTier::Tier5ContentItems
+        }
+    })
 }
 
 pub fn classify_mod_tier_with_db(
     package_id: &str,
     name: &str,
     is_translation: bool,
+    categories: &[ModCategory],
     db: Option<&CommunityDatabase>,
 ) -> ModTier {
     let id = package_id.to_lowercase();
@@ -133,6 +163,12 @@ pub fn classify_mod_tier_with_db(
         || n.contains("runtimegc")
     {
         return ModTier::Tier11Optimizers;
+    }
+
+    // 4b. Категории по содержимому мода (Defs, DLL, Patches...) — надёжнее, чем угадывание по названию.
+    //     Эвристики по подстрокам ниже остаются только для модов без категорий.
+    if let Some(tier) = tier_from_categories(categories, &n) {
+        return tier;
     }
 
     // 5. Переводы
@@ -361,17 +397,18 @@ pub fn sort_load_order_with_db(
     let mut parent_of_trans: HashMap<String, String> = HashMap::new();
 
     for (id_lower, _) in &unique_active {
-        let (name, is_trans, parent) = if let Some(m) = mod_map.get(id_lower) {
+        let (name, is_trans, parent, categories) = if let Some(m) = mod_map.get(id_lower) {
             (
                 m.name.clone(),
                 m.is_translation_mod,
                 m.parent_package_id.clone(),
+                m.categories.clone(),
             )
         } else {
-            (id_lower.clone(), false, None)
+            (id_lower.clone(), false, None, Vec::new())
         };
 
-        let tier = classify_mod_tier_with_db(id_lower, &name, is_trans, Some(db_ref));
+        let tier = classify_mod_tier_with_db(id_lower, &name, is_trans, &categories, Some(db_ref));
         tier_map.insert(id_lower.clone(), tier);
 
         if let Some(p) = parent {
@@ -596,3 +633,31 @@ pub fn sort_load_order_with_db(
 }
 
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn categories_decide_tier_instead_of_name_guessing() {
+        // "Quality" contains "ui": the old substring heuristic put such mods into the UI tier.
+        assert_eq!(classify_mod_tier_with_db("a.b", "Quality Builder", false, &[], None), ModTier::Tier7UiCamera);
+        assert_eq!(
+            classify_mod_tier_with_db("a.b", "Quality Builder", false, &[ModCategory::QoL], None),
+            ModTier::Tier8QolBehaviors
+        );
+        assert_eq!(
+            classify_mod_tier_with_db("a.b", "Ratkin", false, &[ModCategory::Race, ModCategory::Apparel], None),
+            ModTier::Tier4FactionsRaces
+        );
+        assert_eq!(
+            classify_mod_tier_with_db("a.b", "CE Compatibility Patch", false, &[ModCategory::QoL], None),
+            ModTier::Tier9Patches
+        );
+        // Official mods keep their tier regardless of categories.
+        assert_eq!(
+            classify_mod_tier_with_db("ludeon.rimworld", "Core", false, &[ModCategory::Weapon], None),
+            ModTier::Tier1CoreOfficial
+        );
+    }
+}

@@ -405,6 +405,7 @@ mod tests {
             has_defs: false,
             has_assemblies: false,
             has_other_content: false,
+            ..Default::default()
         }
     }
 

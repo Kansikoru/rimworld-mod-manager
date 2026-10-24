@@ -9,6 +9,7 @@ use crate::analyzer::{analyze_rimworld_log, detect_rimworld_log_paths, LogReport
 use crate::cleaner::{delete_translation_mods, unsubscribe_and_delete_single};
 use crate::community_rules::get_default_community_db;
 use crate::dependencies::{validate_dependencies, DependencyProblem, DependencyReport};
+use crate::categories::ModCategory;
 use crate::game_install::known_launch_flags;
 use crate::i18n::{fmt, I18n, Language, TranslationKey};
 use crate::matcher::{classify_and_link_translations, filter_and_rank_workshop_translations};
@@ -35,6 +36,15 @@ pub fn find_mod_in<'a>(all_mods: &'a [ModInfo], id: &str) -> Option<&'a ModInfo>
         let lower = id.to_lowercase();
         lower.strip_suffix("_steam").and_then(by_id)
     })
+}
+
+/// Empty filter shows everything; otherwise the mod needs at least one of the categories.
+/// Mods that are not on disk (`None`) are hidden while a filter is active.
+pub fn passes_category_filter(
+    filter: &std::collections::HashSet<ModCategory>,
+    m: Option<&ModInfo>,
+) -> bool {
+    filter.is_empty() || m.map(|m| m.categories.iter().any(|c| filter.contains(c))).unwrap_or(false)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +133,11 @@ pub struct App {
 
     /// Mods found more than once on disk (same packageId in several folders).
     pub duplicate_mods: Vec<crate::scanner::DuplicateModEntry>,
+
+    /// Categories set by the user (lowercase packageId -> categories), saved to disk.
+    pub category_overrides: std::collections::HashMap<String, Vec<ModCategory>>,
+    /// Mod list filter: show only mods with any of these categories (empty = all).
+    pub category_filter: std::collections::HashSet<ModCategory>,
 
     // Status Message
     pub status_message: String,
@@ -233,6 +248,9 @@ impl App {
             pending_delete: None,
             duplicate_mods: Vec::new(),
 
+            category_overrides: crate::categories::load_overrides(&crate::categories::overrides_path()),
+            category_filter: std::collections::HashSet::new(),
+
             status_message: "Готов к работе".to_string(),
         };
 
@@ -286,6 +304,44 @@ impl App {
             .unwrap_or(false)
     }
 
+    /// Whether a mod passes the category filter of the mod list.
+    pub fn passes_category_filter(&self, m: Option<&ModInfo>) -> bool {
+        passes_category_filter(&self.category_filter, m)
+    }
+
+    /// Adds or removes a category of a mod by hand (right-click menu). Saved to disk.
+    pub fn toggle_mod_category(&mut self, pkg_id: &str, cat: ModCategory) {
+        let key = pkg_id.to_lowercase();
+        let current = self
+            .find_mod(pkg_id)
+            .map(|m| m.categories.clone())
+            .unwrap_or_default();
+        let mut cats = self.category_overrides.get(&key).cloned().unwrap_or(current);
+        if let Some(pos) = cats.iter().position(|c| *c == cat) {
+            cats.remove(pos);
+        } else {
+            cats.push(cat);
+        }
+        self.category_overrides.insert(key, cats);
+        self.apply_category_overrides();
+    }
+
+    /// Drops the manual categories of a mod and goes back to the automatic ones.
+    pub fn reset_mod_categories(&mut self, pkg_id: &str) {
+        self.category_overrides.remove(&pkg_id.to_lowercase());
+        self.apply_category_overrides();
+    }
+
+    fn apply_category_overrides(&mut self) {
+        crate::categories::assign_categories(&mut self.all_mods, &self.category_overrides);
+        if let Err(e) = crate::categories::save_overrides(
+            &crate::categories::overrides_path(),
+            &self.category_overrides,
+        ) {
+            self.status_message = format!("Не удалось сохранить категории: {}", e);
+        }
+    }
+
     /// Switches the game folder from Settings: recomputes engine, exe, Steam DLL, Mods/Data and rescans.
     pub fn set_game_path(&mut self, folder: PathBuf) {
         self.steam_paths.set_game_dir(folder);
@@ -333,6 +389,7 @@ impl App {
         // Two copies with the same packageId show up twice in the game's mod list: keep one, warn about it.
         let (mut unique, duplicates) = crate::scanner::dedupe_mods(scanned);
         classify_and_link_translations(&mut unique);
+        crate::categories::assign_categories(&mut unique, &self.category_overrides);
         self.all_mods = unique;
         self.duplicate_mods = duplicates;
 

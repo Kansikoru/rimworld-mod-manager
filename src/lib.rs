@@ -1,5 +1,6 @@
 pub mod analyzer;
 pub mod app;
+pub mod categories;
 pub mod cleaner;
 pub mod fonts;
 pub mod game_install;

@@ -1,7 +1,8 @@
 use eframe::egui::{self, Color32, Rounding, Stroke, Ui, Vec2};
 use std::collections::HashSet;
 
-use crate::app::{find_mod_in, App};
+use crate::app::{find_mod_in, passes_category_filter, App};
+use crate::categories::ModCategory;
 use crate::dependencies::DependencyProblem;
 use crate::i18n::{fmt, TranslationKey};
 use crate::models::{is_protected_package_id, ModInfo, ModOrigin};
@@ -135,6 +136,9 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
         ui.add_space(4.0);
     }
 
+    render_category_filter(app, ui);
+    ui.add_space(4.0);
+
     // MAIN 2-COLUMN LAYOUT:
     // Left: Available Mods (Доступные моды)
     // Right: Active Mods (Активные моды) + Docked Mod Details Panel (Screenshot 4)
@@ -186,6 +190,117 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
             },
         );
     });
+}
+
+/// Row of category chips above the lists: "All" + every category that some mod has, with counts.
+/// Clicking chips toggles them; a mod is shown if it has any selected category.
+fn render_category_filter(app: &mut App, ui: &mut Ui) {
+    let t = app.i18n;
+    let mut counts: std::collections::HashMap<ModCategory, usize> = std::collections::HashMap::new();
+    for m in &app.all_mods {
+        for c in &m.categories {
+            *counts.entry(*c).or_insert(0) += 1;
+        }
+    }
+    if counts.is_empty() {
+        return;
+    }
+
+    ui.horizontal_wrapped(|ui| {
+        let all_selected = app.category_filter.is_empty();
+        if ui
+            .selectable_label(all_selected, format!("{} ({})", t.get(TranslationKey::CategoriesAll), app.all_mods.len()))
+            .clicked()
+        {
+            app.category_filter.clear();
+        }
+        for cat in ModCategory::ALL {
+            let Some(n) = counts.get(&cat) else {
+                continue;
+            };
+            let selected = app.category_filter.contains(&cat);
+            let text = format!("{} {} ({})", cat.icon(), cat.label(t.language()), n);
+            let (_, fg) = cat.colors();
+            let label = egui::RichText::new(text).color(if selected {
+                Color32::WHITE
+            } else {
+                Color32::from_rgb(fg[0], fg[1], fg[2])
+            });
+            if ui.selectable_label(selected, label).clicked() {
+                if selected {
+                    app.category_filter.remove(&cat);
+                } else {
+                    app.category_filter.insert(cat);
+                }
+            }
+        }
+    });
+}
+
+/// Up to `max` category badges (strongest first); the rest are listed in the hover text.
+fn category_badges(ui: &mut Ui, cats: &[ModCategory], t: crate::i18n::I18n, max: usize) {
+    for cat in cats.iter().take(max) {
+        let (bg, fg) = cat.colors();
+        badge(
+            ui,
+            &format!("{} {}", cat.icon(), cat.label(t.language())),
+            Color32::from_rgb(bg[0], bg[1], bg[2]).linear_multiply(0.6),
+            Color32::from_rgb(fg[0], fg[1], fg[2]),
+        );
+    }
+    if cats.len() > max {
+        let rest: Vec<String> = cats[max..]
+            .iter()
+            .map(|c| format!("{} {}", c.icon(), c.label(t.language())))
+            .collect();
+        badge(ui, &format!("+{}", cats.len() - max), THEME.bg_dark, THEME.text_muted)
+            .on_hover_text(rest.join("\n"));
+    }
+}
+
+/// "🏷 Categories" submenu in a mod's right-click menu: checkboxes + "detect automatically".
+fn category_context_menu(
+    ui: &mut Ui,
+    t: crate::i18n::I18n,
+    cats: &[ModCategory],
+    is_manual: bool,
+    pkg_id: &str,
+    toggle: &mut Option<(String, ModCategory)>,
+    reset: &mut Option<String>,
+) {
+    ui.separator();
+    ui.menu_button(t.get(TranslationKey::CategoriesMenu), |ui| {
+        for cat in ModCategory::ALL {
+            let mut on = cats.contains(&cat);
+            if ui
+                .checkbox(&mut on, format!("{} {}", cat.icon(), cat.label(t.language())))
+                .changed()
+            {
+                *toggle = Some((pkg_id.to_string(), cat));
+            }
+        }
+        if is_manual {
+            ui.separator();
+            ui.label(
+                egui::RichText::new(t.get(TranslationKey::CategoriesManual))
+                    .color(THEME.text_muted)
+                    .size(11.0),
+            );
+            if ui.button(t.get(TranslationKey::CategoriesReset)).clicked() {
+                *reset = Some(pkg_id.to_string());
+                ui.close_menu();
+            }
+        }
+    });
+}
+
+fn apply_category_actions(app: &mut App, toggle: Option<(String, ModCategory)>, reset: Option<String>) {
+    if let Some((pkg_id, cat)) = toggle {
+        app.toggle_mod_category(&pkg_id, cat);
+    }
+    if let Some(pkg_id) = reset {
+        app.reset_mod_categories(&pkg_id);
+    }
 }
 
 /// Helper function to draw a distinctive mod icon badge or real image
@@ -302,15 +417,19 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     let mut enable_dep_id = None;
     let mut deactivate_selected = false;
     let mut toggle_ignore_id = None;
+    let mut cat_toggle: Option<(String, ModCategory)> = None;
+    let mut cat_reset: Option<String> = None;
 
     // Collect visible indices for Shift-range selection
     let visible_active_ids: Vec<String> = app.active_mods.iter().filter_map(|pkg_id| {
-        let display_name = find_mod_in(&app.all_mods, pkg_id)
+        let mod_opt = find_mod_in(&app.all_mods, pkg_id);
+        let display_name = mod_opt
             .map(|m| m.name.as_str())
             .unwrap_or(pkg_id.as_str());
-        if !query_lower.is_empty()
+        if (!query_lower.is_empty()
             && !display_name.to_lowercase().contains(&query_lower)
-            && !pkg_id.to_lowercase().contains(&query_lower)
+            && !pkg_id.to_lowercase().contains(&query_lower))
+            || !passes_category_filter(&app.category_filter, mod_opt)
         {
             None
         } else {
@@ -334,6 +453,9 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                     && !display_name.to_lowercase().contains(&query_lower)
                     && !pkg_id.to_lowercase().contains(&query_lower)
                 {
+                    continue;
+                }
+                if !passes_category_filter(&app.category_filter, mod_info_opt) {
                     continue;
                 }
 
@@ -495,13 +617,25 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                     ui.close_menu();
                                 }
                             }
+                            if let Some(m) = mod_info_opt.filter(|m| !m.package_id.to_lowercase().starts_with("ludeon.rimworld")) {
+                                category_context_menu(
+                                    ui,
+                                    t,
+                                    &m.categories,
+                                    app.category_overrides.contains_key(&m.package_id.to_lowercase()),
+                                    &m.package_id,
+                                    &mut cat_toggle,
+                                    &mut cat_reset,
+                                );
+                            }
                         });
 
-                        // Badges: Core, RU, etc.
+                        // Badges: Core, categories, "not on disk"
                         if is_protected {
                             badge(ui, "Core", Color32::from_rgb(30, 41, 59), THEME.text_muted);
-                        } else if is_trans {
-                            badge(ui, "RU", Color32::from_rgb(30, 58, 138), Color32::from_rgb(96, 165, 250));
+                        }
+                        if let Some(m) = mod_info_opt {
+                            category_badges(ui, &m.categories, t, 2);
                         }
                         // Listed in ModsConfig.xml but not found by the scanner: kept on save, not dropped.
                         if mod_info_opt.is_none() {
@@ -570,6 +704,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     if let Some(pkg_id) = toggle_ignore_id {
         app.toggle_optimizer_ignore(&pkg_id);
     }
+    apply_category_actions(app, cat_toggle, cat_reset);
 
     if let Some(req_id) = enable_dep_id {
         if !app.active_mods.iter().any(|id| id.eq_ignore_ascii_case(&req_id)) {
@@ -657,13 +792,16 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     let mut activate_id = None;
     let mut activate_selected = false;
     let mut toggle_ignore_id = None;
+    let mut cat_toggle: Option<(String, ModCategory)> = None;
+    let mut cat_reset: Option<String> = None;
 
     // Collect visible inactive mod IDs for Shift-range selection
     let visible_inactive_ids: Vec<String> = inactive_mods.iter().filter_map(|m| {
-        if !query_lower.is_empty()
+        if (!query_lower.is_empty()
             && !m.name.to_lowercase().contains(&query_lower)
             && !m.package_id.to_lowercase().contains(&query_lower)
-            && !m.author.to_lowercase().contains(&query_lower)
+            && !m.author.to_lowercase().contains(&query_lower))
+            || !passes_category_filter(&app.category_filter, Some(m))
         {
             None
         } else {
@@ -683,6 +821,9 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                     && !m.package_id.to_lowercase().contains(&query_lower)
                     && !m.author.to_lowercase().contains(&query_lower)
                 {
+                    continue;
+                }
+                if !passes_category_filter(&app.category_filter, Some(m)) {
                     continue;
                 }
 
@@ -800,11 +941,20 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                                     ui.close_menu();
                                 }
                             }
+                            if !pkg_id_ctx.to_lowercase().starts_with("ludeon.rimworld") {
+                                category_context_menu(
+                                    ui,
+                                    t,
+                                    &m.categories,
+                                    app.category_overrides.contains_key(&pkg_id_ctx.to_lowercase()),
+                                    &pkg_id_ctx,
+                                    &mut cat_toggle,
+                                    &mut cat_reset,
+                                );
+                            }
                         });
 
-                        if m.is_translation_mod {
-                            badge(ui, "RU", Color32::from_rgb(30, 58, 138), Color32::from_rgb(96, 165, 250));
-                        }
+                        category_badges(ui, &m.categories, t, 2);
                         if m.origin == ModOrigin::Workshop {
                             badge(ui, "Steam", THEME.accent_cyan.linear_multiply(0.2), THEME.accent_cyan);
                         }
@@ -830,6 +980,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     if let Some(pkg_id) = toggle_ignore_id {
         app.toggle_optimizer_ignore(&pkg_id);
     }
+    apply_category_actions(app, cat_toggle, cat_reset);
 
     // Activate all selected (from context menu)
     if activate_selected {
@@ -973,6 +1124,28 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
                     }
                 });
             });
+
+            // All categories of the mod
+            if !m.package_id.to_lowercase().starts_with("ludeon.rimworld") {
+                ui.horizontal_wrapped(|ui| {
+                    if m.categories.is_empty() {
+                        ui.label(
+                            egui::RichText::new(app.i18n.get(TranslationKey::CategoriesNone))
+                                .color(THEME.text_muted)
+                                .size(11.0),
+                        );
+                    } else {
+                        category_badges(ui, &m.categories, app.i18n, usize::MAX);
+                    }
+                    if app.category_overrides.contains_key(&m.package_id.to_lowercase()) {
+                        ui.label(
+                            egui::RichText::new(format!("({})", app.i18n.get(TranslationKey::CategoriesManual)))
+                                .color(THEME.text_muted)
+                                .size(10.0),
+                        );
+                    }
+                });
+            }
 
             // Package ID & Author
             ui.horizontal(|ui| {

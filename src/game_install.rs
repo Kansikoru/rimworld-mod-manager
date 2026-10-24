@@ -197,10 +197,11 @@ mod tests {
             paths.game_data_path.as_deref(),
         );
         crate::matcher::classify_and_link_translations(&mut mods);
+        crate::categories::assign_categories(&mut mods, &Default::default());
         for m in &mods {
             println!(
-                "  {:40} trans={:5} defs={:5} dll={:5} other={:5} langs={:?}",
-                m.package_id, m.is_translation_mod, m.has_defs, m.has_assemblies, m.has_other_content, m.languages
+                "  {:40} trans={:5} dll={:5} cats={:?} stats={:?}",
+                m.package_id, m.is_translation_mod, m.has_assemblies, m.categories, m.def_stats
             );
         }
         if let Some((_, log)) = logs.first() {
