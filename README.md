@@ -4,7 +4,9 @@
 
 *Mod and load order manager for RimWorld 1.6 and 1.7 (Windows): load order sorting with RimSort community rules, mod categories, dependency checks, translation search on Steam Workshop, DDS texture optimizer, Player.log analyzer. The interface is available in Russian and English.*
 
-![Главное окно](docs/screenshot.png)
+![Main window](docs/screenshot.png)
+
+Скриншот с русским интерфейсом: [docs/screenshot-ru.png](docs/screenshot-ru.png).
 
 ## Скачать
 
