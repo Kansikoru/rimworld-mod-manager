@@ -203,6 +203,42 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
     });
 }
 
+/// Width reserved at the right edge of a row for its buttons (padding + buttons).
+const ACTIVE_ROW_BUTTONS_WIDTH: f32 = 84.0;
+const INACTIVE_ROW_BUTTONS_WIDTH: f32 = 40.0;
+
+/// Where a row's button slot starts and ends.
+struct RowSplit {
+    right_x: f32,
+    max_x: f32,
+}
+
+/// Splits a row: returns a child UI for the content (clipped before the button slot, so a long
+/// name or many badges can never run under the buttons) and the position of the slot.
+fn split_row(ui: &mut Ui, buttons_width: f32) -> (Ui, RowSplit) {
+    let full = ui.available_rect_before_wrap();
+    let right_x = (full.max.x - buttons_width).max(full.min.x);
+    let left_rect = egui::Rect::from_min_max(full.min, egui::pos2(right_x - 4.0, full.max.y));
+    let mut left = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(left_rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    let mut clip = ui.clip_rect();
+    clip.max.x = clip.max.x.min(right_x - 4.0);
+    left.set_clip_rect(clip);
+    (left, RowSplit { right_x, max_x: full.max.x })
+}
+
+/// Reserves the content area in the row (never wider than its slot) and returns the rect
+/// for the buttons, as tall as the content.
+fn finish_row(ui: &mut Ui, left: &Ui, split: &RowSplit) -> egui::Rect {
+    let used = left.min_rect();
+    let content = egui::Rect::from_min_max(used.min, egui::pos2(split.right_x - 4.0, used.max.y));
+    ui.allocate_rect(content, egui::Sense::hover());
+    egui::Rect::from_min_max(egui::pos2(split.right_x, used.min.y), egui::pos2(split.max_x, used.max.y))
+}
+
 /// Average height of the rows just drawn (without item spacing), for `ScrollArea::show_rows`.
 /// Rows get taller with a bigger font, so the height is measured instead of hard-coded.
 fn measure_row_height(ui: &Ui, rows_top: f32, rows_count: usize) -> Option<f32> {
@@ -608,6 +644,11 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
 
                 frame.show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        // Buttons get a fixed slot at the right edge; long names and badges are
+                        // clipped before it instead of pushing the buttons over them.
+                        let (mut left_ui, split) = split_row(ui, ACTIVE_ROW_BUTTONS_WIDTH);
+                        {
+                        let ui = &mut left_ui;
                         // Numeric index in a fixed-width column, so "9." and "10." rows stay aligned.
                         ui.allocate_ui_with_layout(
                             Vec2::new(30.0, 18.0),
@@ -798,8 +839,15 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                             }
                         }
 
+                        }
+                        let right_rect = finish_row(ui, &left_ui, &split);
+
                         // Right action buttons (deactivate, move)
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.allocate_new_ui(
+                            egui::UiBuilder::new()
+                                .max_rect(right_rect)
+                                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                            |ui| {
                             ui.add_space(16.0); // Padding to prevent scrollbar overlap
 
                             if !is_protected && icon_button(ui, ICON_CLOSE, Vec2::new(14.0, 14.0), THEME.text_muted).on_hover_text(t.get(TranslationKey::BtnDeactivate)).clicked() {
@@ -981,6 +1029,10 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
 
                 frame.show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        // Fixed slot for the "+" button at the right edge (see the active list).
+                        let (mut left_ui, split) = split_row(ui, INACTIVE_ROW_BUTTONS_WIDTH);
+                        {
+                        let ui = &mut left_ui;
                         // Mod Icon badge
                         let tex_opt = app.mod_textures.get(&m.package_id);
                         if tex_opt.is_none() {
@@ -1087,8 +1139,14 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                         if m.origin == ModOrigin::Workshop {
                             icon_badge(ui, ICON_STATUS_WORKSHOP, "Steam", THEME.accent_cyan.linear_multiply(0.2), THEME.accent_cyan);
                         }
+                        }
+                        let right_rect = finish_row(ui, &left_ui, &split);
 
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.allocate_new_ui(
+                            egui::UiBuilder::new()
+                                .max_rect(right_rect)
+                                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                            |ui| {
                             ui.add_space(16.0); // Padding to prevent scrollbar overlap
                             if icon_button(ui, ICON_PLUS, Vec2::new(14.0, 14.0), THEME.text_muted).on_hover_text(t.get(TranslationKey::BtnActivate)).clicked() {
                                 activate_id = Some(m.package_id.clone());
