@@ -32,6 +32,10 @@ cargo build --release
 
 Готовая программа: `target/release/rimworld-mod-manager.exe`.
 
+## Лицензия
+
+MIT — см. [LICENSE](LICENSE).
+
 ## Тесты
 
 ```bash

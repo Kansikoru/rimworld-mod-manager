@@ -2,6 +2,7 @@
 **/*.rs.bk
 *.log
 cache/
-# Old prebuilt binary and crash dumps
-/rimworld-mod-manager.exe
 crash_log.txt
+
+# Local notes, not part of the project
+PLAN.md
