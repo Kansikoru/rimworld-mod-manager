@@ -14,7 +14,7 @@ pub fn render_translations_view(app: &mut App, ui: &mut Ui) {
         ui,
         t.get(TranslationKey::TransTitle),
         t.get(TranslationKey::TransSubtitle),
-        Some(("Steam Workshop UGC", THEME.accent_purple)),
+        None,
     );
 
     ui.add_space(8.0);
@@ -143,7 +143,7 @@ fn render_installed_translations_column(app: &mut App, ui: &mut Ui) {
                             );
                             if let Some(ref parent_id) = m.parent_package_id {
                                 ui.label(
-                                    egui::RichText::new(format!("↳ Родительский мод: {}", parent_id))
+                                    egui::RichText::new(format!("Перевод для: {}", parent_id))
                                         .color(THEME.accent_cyan)
                                         .size(12.0),
                                 );

@@ -124,12 +124,12 @@ pub enum TranslationTargetLang {
 impl TranslationTargetLang {
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Ru => "🇷🇺 Русский",
-            Self::En => "🇬🇧 English",
-            Self::Zh => "🇨🇳 中文",
-            Self::De => "🇩🇪 Deutsch",
-            Self::Fr => "🇫🇷 Français",
-            Self::All => "🌐 Все",
+            Self::Ru => "Русский",
+            Self::En => "English",
+            Self::Zh => "中文",
+            Self::De => "Deutsch",
+            Self::Fr => "Français",
+            Self::All => "Все",
         }
     }
 
@@ -396,38 +396,6 @@ pub fn has_de_tag_or_keyword(s: &str) -> bool {
         || lower.contains("uebersetzung")
 }
 
-/// Detects the visual language badge for an item.
-pub fn detect_language_badge(title: &str, tags: &[String]) -> &'static str {
-    let title_low = title.to_lowercase();
-    if contains_cyrillic(title)
-        || has_ru_tag_or_keyword(title)
-        || tags.iter().any(|t| t.eq_ignore_ascii_case("Russian"))
-    {
-        "🇷🇺 RU"
-    } else if contains_chinese_chars(title)
-        || has_zh_tag_or_keyword(title)
-        || tags.iter().any(|t| {
-            t.eq_ignore_ascii_case("Chinese")
-                || t.eq_ignore_ascii_case("Traditional Chinese")
-                || t.eq_ignore_ascii_case("Simplified Chinese")
-        })
-    {
-        "🇨🇳 ZH"
-    } else if has_fr_tag_or_keyword(title) || tags.iter().any(|t| t.eq_ignore_ascii_case("French"))
-    {
-        "🇫🇷 FR"
-    } else if has_de_tag_or_keyword(title) || tags.iter().any(|t| t.eq_ignore_ascii_case("German"))
-    {
-        "🇩🇪 DE"
-    } else if title_low.contains("english")
-        || title_low.contains("[en]")
-        || tags.iter().any(|t| t.eq_ignore_ascii_case("English"))
-    {
-        "🇬🇧 EN"
-    } else {
-        "🌐"
-    }
-}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CommunityRule {

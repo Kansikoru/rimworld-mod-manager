@@ -52,24 +52,6 @@ impl ModCategory {
         ModCategory::Translation,
     ];
 
-    pub fn icon(&self) -> &'static str {
-        match self {
-            ModCategory::Framework => "🧩",
-            ModCategory::QoL => "⚙",
-            ModCategory::Race => "🧬",
-            ModCategory::Faction => "⚑",
-            ModCategory::Building => "🏗",
-            ModCategory::Weapon => "⚔",
-            ModCategory::Apparel => "👕",
-            ModCategory::Animal => "🐾",
-            ModCategory::Biome => "🌍",
-            ModCategory::Storyteller => "📖",
-            ModCategory::Patch => "🩹",
-            ModCategory::Retexture => "🎨",
-            ModCategory::Translation => "🌐",
-        }
-    }
-
     pub fn label(&self, lang: Language) -> &'static str {
         let ru = lang == Language::Russian;
         match self {
@@ -89,7 +71,7 @@ impl ModCategory {
         }
     }
 
-    /// (background, foreground) RGB for the badge — from assets/icons_v2/design_tokens.json.
+    /// (background, foreground) RGB for the badge.
     pub fn colors(&self) -> ([u8; 3], [u8; 3]) {
         match self {
             ModCategory::Framework => ([0x0C, 0x4A, 0x6E], [0xE0, 0xF2, 0xFE]),
@@ -141,8 +123,7 @@ impl DefStats {
     }
 }
 
-// ───────────────────────── Defs parsing ─────────────────────────
-
+// Defs parsing
 fn attr(e: &BytesStart, name: &[u8]) -> String {
     e.attributes()
         .flatten()
@@ -397,8 +378,7 @@ pub fn def_stats_for(
     (stats, entry)
 }
 
-// ───────────────────────── Categories ─────────────────────────
-
+// Categories
 fn is_framework_name(name_lower: &str, id_lower: &str) -> bool {
     let words: Vec<&str> = name_lower
         .split(|c: char| !c.is_alphanumeric())
@@ -488,8 +468,7 @@ pub fn assign_categories(mods: &mut [ModInfo], overrides: &HashMap<String, Vec<M
     }
 }
 
-// ───────────────────────── User overrides ─────────────────────────
-
+// User overrides
 pub fn overrides_path() -> PathBuf {
     crate::game_install::manager_data_dir().join("category_overrides.json")
 }

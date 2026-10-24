@@ -671,7 +671,7 @@ impl App {
     pub fn sort_active_mods(&mut self) {
         self.active_mods = sort_load_order_with_db(&self.active_mods, &self.all_mods, Some(&self.community_db));
         self.validate_deps();
-        self.status_message = "Порядок модов оптимизирован топологическим алгоритмом".to_string();
+        self.status_message = self.i18n.get(TranslationKey::AppSortedMsg).to_string();
     }
 
     pub fn save_config(&mut self) {
@@ -1204,7 +1204,7 @@ impl eframe::App for App {
                 );
 
                 ui.label(
-                    egui::RichText::new("v2.5 High-Perf Native")
+                    egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
                         .color(THEME.text_muted)
                         .size(12.0),
                 );

@@ -21,44 +21,44 @@ impl ErrorSeverity {
         match self {
             ErrorSeverity::HardCrash => {
                 if is_ru {
-                    "ФАТАЛЬНЫЙ КРАШ (CTD)"
+                    "Вылет игры"
                 } else {
-                    "FATAL CRASH (CTD)"
+                    "Game crash"
                 }
             }
             ErrorSeverity::PrepatcherHarmonyError => {
                 if is_ru {
-                    "СБОЙ PREPATCHER / HARMONY"
+                    "Ошибка Prepatcher / Harmony"
                 } else {
-                    "PREPATCHER / HARMONY ERROR"
+                    "Prepatcher / Harmony error"
                 }
             }
             ErrorSeverity::DefException => {
                 if is_ru {
-                    "ОШИБКА ДЕФОВ (NULLREFERENCE)"
+                    "Ошибка в Defs"
                 } else {
-                    "DEF EXCEPTION (NULLREF)"
+                    "Defs error"
                 }
             }
             ErrorSeverity::MissingDependency => {
                 if is_ru {
-                    "НЕТ ЗАВИСИМОСТИ"
+                    "Нет зависимости"
                 } else {
-                    "MISSING DEPENDENCY"
+                    "Missing dependency"
                 }
             }
             ErrorSeverity::ModError => {
                 if is_ru {
-                    "ОШИБКА В МОДЕ"
+                    "Ошибка в моде"
                 } else {
-                    "MOD ERROR"
+                    "Mod error"
                 }
             }
             ErrorSeverity::Warning => {
                 if is_ru {
-                    "ПРЕДУПРЕЖДЕНИЕ"
+                    "Предупреждение"
                 } else {
-                    "WARNING"
+                    "Warning"
                 }
             }
         }
@@ -707,42 +707,42 @@ pub fn generate_ai_diagnostic_prompt(report: &LogReport, is_ru: bool) -> String 
     let mut out = String::new();
 
     if is_ru {
-        out.push_str("Привет! Пожалуйста, помоги разобраться с ошибкой/вылетом игры RimWorld на основе системного лога.\n\n");
-        out.push_str(&format!("📁 **Файл лога:** {}\n", report.log_file_name));
-        out.push_str(&format!("📊 **Общий статус:** {}\n", summary_for(report, true)));
+        out.push_str("Помоги разобраться с ошибкой или вылетом RimWorld. Ниже данные из Player.log.\n\n");
+        out.push_str(&format!("Файл лога: {}\n", report.log_file_name));
+        out.push_str(&format!("Итог анализа: {}\n", summary_for(report, true)));
 
         out.push_str(if report.is_waylith {
-            "🎮 **Версия игры:** RimWorld 1.7+ (движок Waylith, .NET 10)\n"
+            "Версия игры: RimWorld 1.7+ (движок Waylith, .NET 10)\n"
         } else {
-            "🎮 **Версия игры:** RimWorld 1.6 или старше (движок Unity, Mono)\n"
+            "Версия игры: RimWorld 1.6 или старше (движок Unity, Mono)\n"
         });
 
         if report.has_hard_crash {
             out.push_str(if report.is_waylith {
-                "⚠️ **Внимание: Зафиксирован фатальный вылет игрового процесса (Crash to Desktop).**\n"
+                "Игра вылетела на рабочий стол.\n"
             } else {
-                "⚠️ **Внимание: Зафиксирован фатальный вылет игрового процесса (Crash to Desktop / Unity engine fault).**\n"
+                "Игра вылетела на рабочий стол (сбой движка Unity).\n"
             });
         }
 
         if !report.culprits.is_empty() {
-            out.push_str("\n### НАЙДЕННЫЕ ПРОБЛЕМНЫЕ МОДЫ И ОШИБКИ:\n\n");
+            out.push_str("\nМоды, на которые указывает лог:\n\n");
             for (idx, c) in report.culprits.iter().enumerate() {
                 out.push_str(&format!(
-                    "{}. Мод: **{}** (ID: `{}`)\n",
+                    "{}. {} ({})\n",
                     idx + 1,
                     c.mod_name,
                     c.package_id.as_deref().unwrap_or("неизвестен")
                 ));
                 out.push_str(&format!(
-                    "   - Уровень серьезности: {}\n",
+                    "   Тип: {}\n",
                     c.severity.badge_text(true)
                 ));
-                out.push_str(&format!("   - Ошибка: {}\n", c.headline));
-                out.push_str(&format!("   - Описание проблемы: {}\n", c.explanation));
+                out.push_str(&format!("   Ошибка: {}\n", c.headline));
+                out.push_str(&format!("   Подробности: {}\n", c.explanation));
 
                 if !c.stack_trace_excerpt.is_empty() {
-                    out.push_str("   - Стек вызовов из лога:\n   ```text\n");
+                    out.push_str("   Стек вызовов:\n   ```text\n");
                     for line in c.stack_trace_excerpt.lines().take(20) {
                         out.push_str(&format!("     {}\n", line));
                     }
@@ -752,47 +752,47 @@ pub fn generate_ai_diagnostic_prompt(report: &LogReport, is_ru: bool) -> String 
             }
         }
 
-        out.push_str("### ВОПРОСЫ К НЕЙРОСЕТИ:\n");
-        out.push_str("1. В чем конкретно заключается причина данного сбоя или конфликта?\n");
-        out.push_str("2. Какой мод является главным виновником, и с чем он конфликтует?\n");
-        out.push_str("3. Какие конкретные действия предпринять: отключить определенный мод, изменить порядок загрузки, обновить версию или использовать патч совместимости?\n");
+        out.push_str("Вопросы:\n");
+        out.push_str("1. В чём причина сбоя?\n");
+        out.push_str("2. Какой мод виноват и с чем он конфликтует?\n");
+        out.push_str("3. Что сделать: отключить мод, поменять порядок загрузки, обновить мод или поставить патч совместимости?\n");
     } else {
-        out.push_str("Hello! Please help diagnose a RimWorld crash/startup error based on this system log.\n\n");
-        out.push_str(&format!("📁 **Log file:** {}\n", report.log_file_name));
-        out.push_str(&format!("📊 **Status:** {}\n", summary_for(report, false)));
+        out.push_str("Help me find the cause of a RimWorld error or crash. Data from Player.log is below.\n\n");
+        out.push_str(&format!("Log file: {}\n", report.log_file_name));
+        out.push_str(&format!("Analysis result: {}\n", summary_for(report, false)));
 
         out.push_str(if report.is_waylith {
-            "🎮 **Game version:** RimWorld 1.7+ (Waylith engine, .NET 10)\n"
+            "Game version: RimWorld 1.7+ (Waylith engine, .NET 10)\n"
         } else {
-            "🎮 **Game version:** RimWorld 1.6 or older (Unity engine, Mono)\n"
+            "Game version: RimWorld 1.6 or older (Unity engine, Mono)\n"
         });
 
         if report.has_hard_crash {
             out.push_str(if report.is_waylith {
-                "⚠️ **Warning: A fatal game crash occurred (Crash to Desktop).**\n"
+                "The game crashed to desktop.\n"
             } else {
-                "⚠️ **Warning: A fatal game crash occurred (Crash to Desktop / Unity engine fault).**\n"
+                "The game crashed to desktop (Unity engine fault).\n"
             });
         }
 
         if !report.culprits.is_empty() {
-            out.push_str("\n### DETECTED PROBLEMATIC MODS & ERRORS:\n\n");
+            out.push_str("\nMods the log points to:\n\n");
             for (idx, c) in report.culprits.iter().enumerate() {
                 out.push_str(&format!(
-                    "{}. Mod: **{}** (ID: `{}`)\n",
+                    "{}. {} ({})\n",
                     idx + 1,
                     c.mod_name,
                     c.package_id.as_deref().unwrap_or("unknown")
                 ));
                 out.push_str(&format!(
-                    "   - Severity: {}\n",
+                    "   Type: {}\n",
                     c.severity.badge_text(false)
                 ));
-                out.push_str(&format!("   - Issue: {}\n", c.headline));
-                out.push_str(&format!("   - Details: {}\n", c.explanation));
+                out.push_str(&format!("   Error: {}\n", c.headline));
+                out.push_str(&format!("   Details: {}\n", c.explanation));
 
                 if !c.stack_trace_excerpt.is_empty() {
-                    out.push_str("   - Stack trace excerpt:\n   ```text\n");
+                    out.push_str("   Stack trace:\n   ```text\n");
                     for line in c.stack_trace_excerpt.lines().take(20) {
                         out.push_str(&format!("     {}\n", line));
                     }
@@ -802,10 +802,10 @@ pub fn generate_ai_diagnostic_prompt(report: &LogReport, is_ru: bool) -> String 
             }
         }
 
-        out.push_str("### QUESTIONS FOR AI:\n");
-        out.push_str("1. What is the root cause of this crash or failure?\n");
-        out.push_str("2. Which mod is the primary culprit and what is it conflicting with?\n");
-        out.push_str("3. What specific actions should I take (disable mod, change load order, update, or patch)?\n");
+        out.push_str("Questions:\n");
+        out.push_str("1. What caused the failure?\n");
+        out.push_str("2. Which mod is at fault and what does it conflict with?\n");
+        out.push_str("3. What should I do: disable a mod, change the load order, update, or add a compatibility patch?\n");
     }
 
     out

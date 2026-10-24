@@ -202,7 +202,7 @@ pub fn search_input(ui: &mut Ui, query: &mut String, placeholder: &str) {
                 .desired_width(ui.available_width().min(320.0))
                 .margin(Vec2::new(8.0, 6.0)),
         );
-        if !query.is_empty() && ui.button("✕").clicked() {
+        if !query.is_empty() && icon_button(ui, ICON_CLOSE, Vec2::new(12.0, 12.0), THEME.text_muted).clicked() {
             query.clear();
         }
     });

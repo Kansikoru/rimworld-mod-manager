@@ -15,7 +15,7 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
         ui,
         t.get(TranslationKey::OptTitle),
         t.get(TranslationKey::OptSubtitle),
-        Some(("DDS BC7 / BC1 + mipmaps", THEME.accent_emerald)),
+        None,
     );
 
     ui.add_space(8.0);

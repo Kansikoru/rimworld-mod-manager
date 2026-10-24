@@ -23,7 +23,7 @@ pub struct ThemeColors {
 }
 
 pub const THEME: ThemeColors = ThemeColors {
-    bg_dark: Color32::from_rgb(7, 10, 18),           // #070A12 - Ultra deep space background
+    bg_dark: Color32::from_rgb(7, 10, 18),           // #070A12 - window background
     bg_surface: Color32::from_rgb(11, 15, 25),       // #0B0F19 - Charcoal-navy surface
     bg_surface_hover: Color32::from_rgb(20, 28, 46), // #141C2E - Hover state
     bg_card: Color32::from_rgb(14, 20, 34),          // #0E1422 - Mod card item

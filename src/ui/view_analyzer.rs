@@ -14,7 +14,7 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
         ui,
         t.get(TranslationKey::CrashTitle),
         t.get(TranslationKey::CrashSubtitle),
-        Some(("Player.log Engine", THEME.accent_rose)),
+        None,
     );
 
     ui.add_space(8.0);
@@ -34,12 +34,11 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
 
             if let Some(ref report) = app.log_report {
                 // Also useful when there are errors but no identified culprit.
-                if !report.culprits.is_empty() || report.total_errors > 0 || report.has_hard_crash {
-                    if success_button_icon(ui, ICON_COPY, t.get(TranslationKey::CrashBtnCopyPrompt)).clicked() {
+                if (!report.culprits.is_empty() || report.total_errors > 0 || report.has_hard_crash)
+                    && success_button_icon(ui, ICON_COPY, t.get(TranslationKey::CrashBtnCopyPrompt)).clicked() {
                         let prompt = generate_ai_diagnostic_prompt(report, app.is_russian);
                         ui.output_mut(|o| o.copied_text = prompt);
                     }
-                }
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

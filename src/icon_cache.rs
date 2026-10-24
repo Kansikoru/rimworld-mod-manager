@@ -120,7 +120,7 @@ impl IconDiskCache {
 
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().map_or(true, |e| e != "png") {
+            if path.extension().is_none_or(|e| e != "png") {
                 continue;
             }
             if let Ok(meta) = fs::metadata(&path) {
@@ -158,7 +158,7 @@ impl IconDiskCache {
 
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().map_or(true, |e| e != "png") {
+            if path.extension().is_none_or(|e| e != "png") {
                 continue;
             }
             if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {

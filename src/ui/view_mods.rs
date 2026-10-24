@@ -55,12 +55,11 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
         }
 
         // Toggle button for Mod Info panel if closed
-        if !app.is_details_panel_visible {
-            if secondary_button_icon(ui, ICON_INFO, app.i18n.get(TranslationKey::ModsBtnInfoPanel)).clicked() {
+        if !app.is_details_panel_visible
+            && secondary_button_icon(ui, ICON_INFO, app.i18n.get(TranslationKey::ModsBtnInfoPanel)).clicked() {
                 app.is_details_panel_visible = true;
                 app.is_details_panel_collapsed = false;
             }
-        }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             search_input(ui, &mut app.mod_search_query, t.get(TranslationKey::SearchPlaceholder));
@@ -152,7 +151,7 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
 
     // MAIN 2-COLUMN LAYOUT:
     // Left: Available Mods (Доступные моды)
-    // Right: Active Mods (Активные моды) + Docked Mod Details Panel (Screenshot 4)
+    // Right: active mods + mod details panel
     let available_width = ui.available_width();
     let col_width = ((available_width - 12.0) / 2.0).max(280.0);
     let total_height = ui.available_height();
@@ -169,7 +168,7 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
 
         ui.separator();
 
-        // RIGHT COLUMN: Active Mods + Bottom Details Panel (Exact Screenshot 4 layout)
+        // Right column: active mods + details panel below
         ui.allocate_ui_with_layout(
             Vec2::new(col_width, total_height),
             egui::Layout::top_down(egui::Align::Min),
@@ -193,7 +192,7 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
                     },
                 );
 
-                // Bottom: Collapsible Mod Details Panel (Screenshot 4 & 5)
+                // Collapsible mod details panel
                 if app.is_details_panel_visible {
                     ui.add_space(4.0);
                     render_mod_details_panel(app, ui);
@@ -462,13 +461,12 @@ fn render_mod_icon_pill(
     });
 }
 
-/// Renders the Right Column: Active Mods (exact format from Screenshot 4)
+/// Right column: active mods in load order.
 fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
     let game_mm = app.steam_paths.game_major_minor();
 
-    // Header matching Screenshot 4:
-    // "АКТИВНЫЕ МОДЫ" (bold text), count badge, [▲], [▼], [⚡ Сортировка]
+    // Header: title, count, move up / down buttons
     ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new(t.get(TranslationKey::ActiveModsTitle).to_uppercase())
@@ -521,7 +519,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
 
     ui.add_space(4.0);
 
-    // Search filter for active mods (Screenshot 4: "Поиск в активных...")
+    // Search in active mods
     search_input(ui, &mut app.active_search_query, app.i18n.get(TranslationKey::ModsSearchActive));
 
     ui.add_space(4.0);
@@ -701,26 +699,23 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                     ui.close_menu();
                                 }
                                 // Deactivate all selected
-                                if app.selected_mod_ids.len() > 1 {
-                                    if ui.button(app.i18n.get(TranslationKey::ModsCtxDeactivateSelected).replace("{}", &app.selected_mod_ids.len().to_string())).clicked() {
+                                if app.selected_mod_ids.len() > 1
+                                    && ui.button(app.i18n.get(TranslationKey::ModsCtxDeactivateSelected).replace("{}", &app.selected_mod_ids.len().to_string())).clicked() {
                                         deactivate_selected = true;
                                         ui.close_menu();
                                     }
-                                }
                                 ui.separator();
                             }
-                            if idx > 0 {
-                                if ui.button(app.i18n.get(TranslationKey::ModsCtxMoveUp)).clicked() {
+                            if idx > 0
+                                && ui.button(app.i18n.get(TranslationKey::ModsCtxMoveUp)).clicked() {
                                     move_up_idx = Some(idx);
                                     ui.close_menu();
                                 }
-                            }
-                            if idx < app.active_mods.len().saturating_sub(1) {
-                                if ui.button(app.i18n.get(TranslationKey::ModsCtxMoveDown)).clicked() {
+                            if idx < app.active_mods.len().saturating_sub(1)
+                                && ui.button(app.i18n.get(TranslationKey::ModsCtxMoveDown)).clicked() {
                                     move_down_idx = Some(idx);
                                     ui.close_menu();
                                 }
-                            }
                             ui.separator();
                             if let Some(ref dir) = dir_path_ctx {
                                 if ui.button(app.i18n.get(TranslationKey::ModsCtxOpenFolder)).clicked() {
@@ -735,7 +730,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                     ui.close_menu();
                                 }
                             }
-                            if !is_protected_package_id(&pkg_id) && !pkg_id.to_lowercase().starts_with("ludeon.rimworld") {
+                            if !is_protected_package_id(pkg_id) && !pkg_id.to_lowercase().starts_with("ludeon.rimworld") {
                                 ui.separator();
                                 let is_ignored = app.opt_ignore_list.contains(&pkg_id.to_lowercase());
                                 let ignore_text = if is_ignored { app.i18n.get(TranslationKey::ModsCtxOptSkip) } else { app.i18n.get(TranslationKey::ModsCtxOptAllow) };
@@ -806,7 +801,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.add_space(16.0); // Padding to prevent scrollbar overlap
 
-                            if !is_protected && ui.add(egui::Button::new(egui::RichText::new("✕").color(THEME.text_muted)).frame(false)).on_hover_text(t.get(TranslationKey::BtnDeactivate)).clicked() {
+                            if !is_protected && icon_button(ui, ICON_CLOSE, Vec2::new(14.0, 14.0), THEME.text_muted).on_hover_text(t.get(TranslationKey::BtnDeactivate)).clicked() {
                                 deactivate_idx = Some(idx);
                             }
 
@@ -1046,12 +1041,11 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                                 activate_id = Some(pkg_id_ctx.clone());
                                 ui.close_menu();
                             }
-                            if app.selected_mod_ids.len() > 1 {
-                                if ui.button(app.i18n.get(TranslationKey::ModsCtxActivateSelected).replace("{}", &app.selected_mod_ids.len().to_string())).clicked() {
+                            if app.selected_mod_ids.len() > 1
+                                && ui.button(app.i18n.get(TranslationKey::ModsCtxActivateSelected).replace("{}", &app.selected_mod_ids.len().to_string())).clicked() {
                                     activate_selected = true;
                                     ui.close_menu();
                                 }
-                            }
                             ui.separator();
                             if ui.button(app.i18n.get(TranslationKey::ModsCtxOpenFolder)).clicked() {
                                 let _ = std::process::Command::new("explorer").arg(&dir_path_ctx).spawn();
@@ -1134,7 +1128,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     }
 }
 
-/// Renders the Docked Mod Details Panel at bottom of right column (Screenshot 4 & 5)
+/// Mod details panel at the bottom of the right column.
 fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
     let selected_opt = app.selected_mod_id.as_ref().and_then(|sel_id| {
         app.all_mods.iter().find(|m| m.package_id.eq_ignore_ascii_case(sel_id)).cloned()
@@ -1150,7 +1144,7 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
     };
 
     frame.show(ui, |ui| {
-        // Collapsible header bar (Screenshot 5: [▼] Информация о моде ... [✕])
+        // Header: collapse toggle and close button
         ui.horizontal(|ui| {
             let toggle_symbol = if app.is_details_panel_collapsed { "▶" } else { "▼" };
             let title = if selected_opt.is_some() {
@@ -1242,7 +1236,7 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(ref steam_id) = m.steam_item_id {
-                        if ui.small_button("Steam ↗").clicked() {
+                        if ui.small_button("Steam").clicked() {
                             let url = format!("https://steamcommunity.com/sharedfiles/filedetails/?id={}", steam_id);
                             let _ = open::that(url);
                         }

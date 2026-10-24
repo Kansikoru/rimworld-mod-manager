@@ -18,8 +18,7 @@ pub enum OptimizeScope {
     SelectedOnly,
 }
 
-// ───────────────────────── Messages ─────────────────────────
-
+// Messages
 /// Result of a finished conversion run.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct OptimizationSummary {
@@ -53,8 +52,7 @@ pub enum OptimizationMsg {
     Cancelled,
 }
 
-// ───────────────────── Texture Scanning ─────────────────────
-
+// Texture Scanning
 /// Check whether a path contains a directory named "textures" (case-insensitive)
 pub fn is_in_textures_folder(path: &Path) -> bool {
     path.components().any(|c| {
@@ -123,8 +121,7 @@ fn walk_mod_textures(mod_dir: &Path) -> impl Iterator<Item = PathBuf> {
         .map(|entry| entry.into_path())
 }
 
-// ─────────────────── Single File Conversion ─────────────────
-
+// Single File Conversion
 /// Options for converting one texture.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ConvertOptions {
@@ -231,8 +228,7 @@ pub fn optimize_single_texture(source: &Path, opts: ConvertOptions) -> Result<Co
     Ok(outcome)
 }
 
-// ─────────────────── Manifest & source backups ──────────────────
-
+// Manifest & source backups
 /// One DDS created by the optimizer. `backup` is where the source PNG/JPG was moved, if it was.
 /// `source_fp` is the source file's "size:mtime" at conversion time: when a mod update changes
 /// the PNG, the fingerprint differs and the DDS is re-encoded instead of shadowing the new art.
@@ -283,8 +279,7 @@ pub fn merge_manifest(path: &Path, new_entries: &[ManifestEntry]) -> std::io::Re
     write_manifest(path, &all)
 }
 
-// ─────────────────── Planning ──────────────────
-
+// Planning
 /// What a conversion run would do.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TexturePlan {
@@ -425,8 +420,7 @@ fn texture_backup_root() -> PathBuf {
     crate::game_install::manager_data_dir().join("texture_backup")
 }
 
-// ─────────────────── Background Worker ──────────────────────
-
+// Background Worker
 /// Total logical CPU threads available on this system.
 pub fn total_system_threads() -> usize {
     std::thread::available_parallelism()
