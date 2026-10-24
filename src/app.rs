@@ -11,7 +11,7 @@ use crate::community_rules::get_default_community_db;
 use crate::dependencies::{validate_dependencies, DependencyProblem, DependencyReport};
 use crate::game_install::known_launch_flags;
 use crate::i18n::{fmt, I18n, Language, TranslationKey};
-use crate::matcher::classify_and_link_translations;
+use crate::matcher::{classify_and_link_translations, filter_and_rank_workshop_translations};
 use crate::models::{is_protected_package_id, is_optimizer_blacklisted, ModInfo, TranslationTargetLang};
 use crate::mods_config::{get_default_mods_config_path, load_active_mods, save_active_mods};
 use crate::optimizer::{
@@ -121,12 +121,27 @@ pub struct App {
     /// Deletion waiting for confirmation (modal window).
     pub pending_delete: Option<PendingDelete>,
 
+    /// Mods found more than once on disk (same packageId in several folders).
+    pub duplicate_mods: Vec<crate::scanner::DuplicateModEntry>,
+
     // Status Message
     pub status_message: String,
 }
 
 impl Default for App {
     fn default() -> Self {
+        Self::build(None)
+    }
+}
+
+impl App {
+    /// Creates the app. The context lets background threads (icon loading) wake the UI
+    /// when they finish, so icons appear without moving the mouse.
+    pub fn new(ctx: &egui::Context) -> Self {
+        Self::build(Some(ctx.clone()))
+    }
+
+    fn build(repaint_ctx: Option<egui::Context>) -> Self {
         let i18n = I18n::new(Language::Russian);
         let steam_paths = detect_steam_paths();
         let mods_config_path = get_default_mods_config_path();
@@ -157,7 +172,12 @@ impl Default for App {
         std::thread::spawn(move || {
             while let Ok((pkg_id, path)) = icon_thread_rx.recv() {
                 if let Some(img) = crate::icon_cache::load_or_cache_image(&cache_clone, &path, 64) {
-                    let _ = icon_thread_tx.send((pkg_id, img));
+                    if icon_thread_tx.send((pkg_id, img)).is_err() {
+                        break;
+                    }
+                    if let Some(ref ctx) = repaint_ctx {
+                        ctx.request_repaint();
+                    }
                 }
             }
         });
@@ -211,6 +231,7 @@ impl Default for App {
             community_db_rules_count: db_rules_count,
 
             pending_delete: None,
+            duplicate_mods: Vec::new(),
 
             status_message: "Готов к работе".to_string(),
         };
@@ -303,14 +324,17 @@ impl App {
     pub fn rescan_mods(&mut self) {
         self.status_message = "Сканирование модов на диске...".to_string();
 
-        let mut scanned = scan_mods(
+        let scanned = scan_mods(
             self.steam_paths.workshop_path.as_deref(),
             self.steam_paths.local_mods_path.as_deref(),
             self.steam_paths.game_data_path.as_deref(),
         );
 
-        classify_and_link_translations(&mut scanned);
-        self.all_mods = scanned;
+        // Two copies with the same packageId show up twice in the game's mod list: keep one, warn about it.
+        let (mut unique, duplicates) = crate::scanner::dedupe_mods(scanned);
+        classify_and_link_translations(&mut unique);
+        self.all_mods = unique;
+        self.duplicate_mods = duplicates;
 
         if let Some(ref config_p) = self.mods_config_path {
             // Keep IDs that were not found on disk: they stay in ModsConfig.xml on save
@@ -473,9 +497,28 @@ impl App {
             if let Some(m) = self.all_mods.iter().find(|m| m.package_id.eq_ignore_ascii_case(sel_id)) {
                 let query = format!("{} {}", m.name, self.trans_target_lang.search_suffix());
                 self.workshop_search_query = query.clone();
-                self.status_message = format!("Поиск в Workshop: {}", query);
-                if let Ok(res) = search_steam_workshop(&query) {
-                    self.workshop_search_results = res;
+                match search_steam_workshop(&query) {
+                    Ok(raw) => {
+                        let found = raw.len();
+                        // Keep only translations of this mod in the selected language,
+                        // drop the mod itself and unrelated items, best matches first.
+                        let filtered = filter_and_rank_workshop_translations(
+                            raw,
+                            &m.name,
+                            m.steam_item_id.as_deref(),
+                            self.trans_target_lang,
+                        );
+                        self.status_message = format!(
+                            "Workshop: найдено {}, подходящих переводов «{}»: {}",
+                            found,
+                            m.name,
+                            filtered.len()
+                        );
+                        self.workshop_search_results = filtered;
+                    }
+                    Err(e) => {
+                        self.status_message = format!("Ошибка поиска в Workshop: {}", e);
+                    }
                 }
             }
         }
@@ -483,9 +526,18 @@ impl App {
 
     pub fn search_workshop_custom(&mut self) {
         if !self.workshop_search_query.trim().is_empty() {
-            self.status_message = format!("Поиск в Workshop: {}", self.workshop_search_query);
-            if let Ok(res) = search_steam_workshop(&self.workshop_search_query) {
-                self.workshop_search_results = res;
+            match search_steam_workshop(&self.workshop_search_query) {
+                Ok(res) => {
+                    self.status_message = format!(
+                        "Поиск в Workshop «{}»: результатов {}",
+                        self.workshop_search_query,
+                        res.len()
+                    );
+                    self.workshop_search_results = res;
+                }
+                Err(e) => {
+                    self.status_message = format!("Ошибка поиска в Workshop: {}", e);
+                }
             }
         }
     }

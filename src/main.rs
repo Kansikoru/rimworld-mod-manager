@@ -63,7 +63,7 @@ fn main() {
         Box::new(|cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
             setup_custom_fonts(&cc.egui_ctx);
-            Ok(Box::new(App::default()))
+            Ok(Box::new(App::new(&cc.egui_ctx)))
         }),
     );
 

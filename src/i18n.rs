@@ -159,6 +159,7 @@ pub enum TranslationKey {
     BtnCancel,
     TransNoneForLang,
     ModsNotOnDisk,
+    ModsDuplicatesTitle,
 }
 
 /// Fills `{}` placeholders one by one: `fmt("A: {} | B: {}", &["1", "2"])` -> "A: 1 | B: 2".
@@ -435,6 +436,8 @@ impl TranslationKey {
             (TranslationKey::TransNoneForLang, Language::English) => "No installed translations for language: {}",
             (TranslationKey::ModsNotOnDisk, Language::Russian) => "Нет на диске",
             (TranslationKey::ModsNotOnDisk, Language::English) => "Not on disk",
+            (TranslationKey::ModsDuplicatesTitle, Language::Russian) => "Найдены копии одного мода ({}). В игре такие моды видны дважды — оставьте одну копию:",
+            (TranslationKey::ModsDuplicatesTitle, Language::English) => "Same mod found more than once ({}). The game lists such mods twice — keep one copy:",
         }
     }
 }

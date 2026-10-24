@@ -11,6 +11,16 @@ use super::icons::*;
 use super::theme::THEME;
 
 pub fn render_mods_view(app: &mut App, ui: &mut Ui) {
+    // Any manual change to the active list (enable, disable, move) re-runs the dependency check,
+    // so the "not in list" / "order" badges never show stale results.
+    let active_before = app.active_mods.clone();
+    render_mods_view_inner(app, ui);
+    if app.active_mods != active_before {
+        app.validate_deps();
+    }
+}
+
+fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
 
     // Top action bar
@@ -87,6 +97,40 @@ pub fn render_mods_view(app: &mut App, ui: &mut Ui) {
                     }
                 });
             });
+        });
+        ui.add_space(4.0);
+    }
+
+    // Duplicate copies of the same mod (e.g. Workshop + game Mods folder)
+    if !app.duplicate_mods.is_empty() {
+        card_container(ui, |ui| {
+            ui.label(
+                egui::RichText::new(fmt(
+                    t.get(TranslationKey::ModsDuplicatesTitle),
+                    &[&app.duplicate_mods.len().to_string()],
+                ))
+                .color(THEME.accent_amber)
+                .strong(),
+            );
+            for dup in &app.duplicate_mods {
+                ui.label(
+                    egui::RichText::new(format!("{} ({})", dup.name, dup.package_id))
+                        .color(THEME.text_primary)
+                        .size(12.0),
+                );
+                for (origin, dir) in &dup.origins {
+                    ui.horizontal(|ui| {
+                        let origin_label = if *origin == ModOrigin::Workshop { "Steam" } else { "Local" };
+                        badge(ui, origin_label, THEME.bg_dark, THEME.text_muted);
+                        if ui
+                            .link(egui::RichText::new(dir.display().to_string()).size(11.0))
+                            .clicked()
+                        {
+                            let _ = open::that(dir);
+                        }
+                    });
+                }
+            }
         });
         ui.add_space(4.0);
     }

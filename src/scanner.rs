@@ -338,6 +338,41 @@ pub fn scan_languages(mod_dir: &Path) -> Vec<String> {
     result
 }
 
+/// Removes extra copies of the same packageId (case-insensitive), keeping scan order.
+/// A local copy wins over a Workshop copy — RimWorld refers to the Workshop one as `<id>_steam`.
+/// Returns the unique mods and the list of duplicates found (for a warning in the UI).
+pub fn dedupe_mods(mods: Vec<ModInfo>) -> (Vec<ModInfo>, Vec<DuplicateModEntry>) {
+    let mut unique: Vec<ModInfo> = Vec::with_capacity(mods.len());
+    let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut dups: Vec<DuplicateModEntry> = Vec::new();
+    let mut dup_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+    for m in mods {
+        let key = m.package_id.to_lowercase();
+        match index.get(&key) {
+            None => {
+                index.insert(key, unique.len());
+                unique.push(m);
+            }
+            Some(&pos) => {
+                let di = *dup_index.entry(key.clone()).or_insert_with(|| {
+                    dups.push(DuplicateModEntry {
+                        package_id: unique[pos].package_id.clone(),
+                        name: unique[pos].name.clone(),
+                        origins: vec![(unique[pos].origin, unique[pos].dir_path.clone())],
+                    });
+                    dups.len() - 1
+                });
+                dups[di].origins.push((m.origin, m.dir_path.clone()));
+                if m.origin == ModOrigin::Local && unique[pos].origin == ModOrigin::Workshop {
+                    unique[pos] = m;
+                }
+            }
+        }
+    }
+    (unique, dups)
+}
+
 #[derive(Debug, Clone)]
 pub struct DuplicateModEntry {
     pub package_id: String,
@@ -365,7 +400,7 @@ pub fn scan_and_deduplicate(discovered_mods: Vec<ModInfo>) -> ModScanReport {
             let mod_name = instances[0].name.clone();
             let origins = instances
                 .iter()
-                .map(|inst| (inst.origin.clone(), inst.dir_path.clone()))
+                .map(|inst| (inst.origin, inst.dir_path.clone()))
                 .collect();
 
             report.duplicates.push(DuplicateModEntry {
@@ -389,4 +424,63 @@ pub fn scan_and_deduplicate(discovered_mods: Vec<ModInfo>) -> ModScanReport {
     }
 
     report
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn m(id: &str, origin: ModOrigin, dir: &str) -> ModInfo {
+        ModInfo {
+            package_id: id.to_string(),
+            name: id.to_string(),
+            name_lower: id.to_lowercase(),
+            author: String::new(),
+            description: String::new(),
+            dir_path: std::path::PathBuf::from(dir),
+            preview_path: None,
+            supported_versions: vec![],
+            load_after: vec![],
+            force_load_after: vec![],
+            load_before: vec![],
+            force_load_before: vec![],
+            dependencies: vec![],
+            origin,
+            languages: vec![],
+            is_translation_mod: false,
+            parent_package_id: None,
+            steam_item_id: None,
+            has_defs: true,
+            has_assemblies: false,
+            has_other_content: false,
+        }
+    }
+
+    #[test]
+    fn dedupe_keeps_order_prefers_local_and_reports() {
+        let mods = vec![
+            m("a.first", ModOrigin::Workshop, "ws/1"),
+            m("brrainz.harmony", ModOrigin::Workshop, "ws/2009463077"),
+            m("b.second", ModOrigin::Workshop, "ws/3"),
+            m("Brrainz.Harmony", ModOrigin::Local, "Mods/Harmony"),
+        ];
+        let (unique, dups) = dedupe_mods(mods);
+        let ids: Vec<&str> = unique.iter().map(|m| m.package_id.as_str()).collect();
+        assert_eq!(ids, vec!["a.first", "Brrainz.Harmony", "b.second"]);
+        assert_eq!(unique[1].origin, ModOrigin::Local);
+        assert_eq!(dups.len(), 1);
+        assert_eq!(dups[0].origins.len(), 2);
+    }
+
+    #[test]
+    fn content_kinds_ignore_languages_folder() {
+        let dir = std::env::temp_dir().join(format!("rwmm_scan_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("About")).unwrap();
+        std::fs::create_dir_all(dir.join("Languages").join("Russian").join("Textures")).unwrap();
+        assert_eq!(scan_content_kinds(&dir), (false, false, false), "translated textures inside Languages don't count");
+        std::fs::create_dir_all(dir.join("1.6").join("Patches")).unwrap();
+        assert_eq!(scan_content_kinds(&dir), (false, false, true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
