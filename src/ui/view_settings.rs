@@ -259,11 +259,34 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
 
             ui.label(t.get(TranslationKey::SettingsDbCount).replace("{}", &app.community_db_rules_count.to_string()));
 
+            ui.label(
+                egui::RichText::new(t.get(TranslationKey::SettingsDbHint))
+                    .color(THEME.text_muted)
+                    .size(12.0),
+            );
+
             ui.add_space(4.0);
 
-            if secondary_button_icon(ui, ICON_REFRESH, t.get(TranslationKey::SettingsBtnUpdateDb)).clicked() {
-                app.update_community_rules();
-            }
+            ui.horizontal(|ui| {
+                let downloading = app.rules_rx.is_some();
+                ui.add_enabled_ui(!downloading, |ui| {
+                    if secondary_button_icon(ui, ICON_REFRESH, t.get(TranslationKey::SettingsBtnUpdateDb)).clicked() {
+                        app.update_community_rules();
+                    }
+                    if secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::SettingsBtnImportDb)).clicked() {
+                        let mut dialog = rfd::FileDialog::new().add_filter("communityRules.json", &["json"]);
+                        if let Some(dir) = crate::community_rules::find_rimpy_rules_dir() {
+                            dialog = dialog.set_directory(dir);
+                        }
+                        if let Some(file) = dialog.pick_file() {
+                            app.import_community_rules(&file);
+                        }
+                    }
+                });
+                if downloading {
+                    ui.spinner();
+                }
+            });
         });
     });
 }

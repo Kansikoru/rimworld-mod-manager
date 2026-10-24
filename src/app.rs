@@ -7,7 +7,7 @@ use eframe::egui::{self, Color32, Rounding, Stroke};
 
 use crate::analyzer::{analyze_rimworld_log, detect_rimworld_log_paths, LogReport};
 use crate::cleaner::{delete_translation_mods, unsubscribe_and_delete_single};
-use crate::community_rules::get_default_community_db;
+use crate::community_rules::CommunityDatabase;
 use crate::dependencies::{validate_dependencies, DependencyProblem, DependencyReport};
 use crate::categories::ModCategory;
 use crate::game_install::known_launch_flags;
@@ -20,7 +20,7 @@ use crate::optimizer::{
     total_system_threads, ConvertOptions, OptimizationMsg, OptimizeScope, RollbackResult, TextureSummary,
 };
 use crate::scanner::scan_mods;
-use crate::sorter::sort_load_order;
+use crate::sorter::sort_load_order_with_db;
 use crate::steam::{
     detect_steam_paths, launch_rimworld, subscribe_workshop_item_native, SteamPaths,
 };
@@ -141,6 +141,10 @@ pub struct App {
     /// Last settings written to disk; saved again whenever something differs.
     last_saved_settings: crate::settings::AppSettings,
     pub community_db_rules_count: usize,
+    /// Built-in rules + RimSort/RimPy community rules (S14), used by the sorter.
+    pub community_db: CommunityDatabase,
+    /// Background download of the community rules.
+    pub rules_rx: Option<Receiver<Result<usize, String>>>,
 
     /// Deletion waiting for confirmation (modal window).
     pub pending_delete: Option<PendingDelete>,
@@ -217,7 +221,8 @@ impl App {
         } else {
             ["-logfile".to_string()].into_iter().collect()
         };
-        let db_rules_count = get_default_community_db().rules.len();
+        let community_db = crate::community_rules::load_effective_db();
+        let db_rules_count = community_db.rules.len();
 
         let mut opt_ignore_list = std::collections::HashSet::new();
         if let Some(local_appdata) = std::env::var_os("LOCALAPPDATA") {
@@ -308,6 +313,8 @@ impl App {
             custom_config_path,
             last_saved_settings: s,
             community_db_rules_count: db_rules_count,
+            community_db,
+            rules_rx: None,
 
             pending_delete: None,
             duplicate_mods: Vec::new(),
@@ -369,6 +376,12 @@ impl App {
                     }
                     Err(e) => self.status_message = format!("Ошибка поиска в Workshop: {}", e),
                 }
+            }
+        }
+        if let Some(rx) = &self.rules_rx {
+            if let Ok(res) = rx.try_recv() {
+                self.rules_rx = None;
+                self.finish_rules_update(res);
             }
         }
         if let Some(rx) = &self.log_rx {
@@ -644,7 +657,7 @@ impl App {
     }
 
     pub fn sort_active_mods(&mut self) {
-        self.active_mods = sort_load_order(&self.active_mods, &self.all_mods);
+        self.active_mods = sort_load_order_with_db(&self.active_mods, &self.all_mods, Some(&self.community_db));
         self.validate_deps();
         self.status_message = "Порядок модов оптимизирован топологическим алгоритмом".to_string();
     }
@@ -1055,8 +1068,33 @@ impl App {
         }
     }
 
+    /// Downloads the RimSort community rules in the background (S14).
     pub fn update_community_rules(&mut self) {
-        self.status_message = "База правил сообщества обновлена".to_string();
+        if self.rules_rx.is_some() {
+            return;
+        }
+        self.status_message = "Загрузка базы правил RimSort с GitHub...".to_string();
+        self.rules_rx = Some(self.spawn_task(crate::community_rules::download_rules));
+    }
+
+    /// Imports a communityRules.json (RimPy / RimSort) from disk (S14).
+    pub fn import_community_rules(&mut self, file: &std::path::Path) {
+        let res = crate::community_rules::import_rules_file(file);
+        self.finish_rules_update(res);
+    }
+
+    fn finish_rules_update(&mut self, res: Result<usize, String>) {
+        match res {
+            Ok(imported) => {
+                self.community_db = crate::community_rules::load_effective_db();
+                self.community_db_rules_count = self.community_db.rules.len();
+                self.status_message = format!(
+                    "База правил обновлена: правил сообщества {}, всего с встроенными {}",
+                    imported, self.community_db_rules_count
+                );
+            }
+            Err(e) => self.status_message = format!("Не удалось обновить базу правил: {}", e),
+        }
     }
 }
 

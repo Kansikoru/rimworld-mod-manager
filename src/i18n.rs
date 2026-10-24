@@ -182,6 +182,10 @@ pub enum TranslationKey {
     OptClearGameCache,
     OptClearGameCacheHint,
 
+    // Community rules
+    SettingsBtnImportDb,
+    SettingsDbHint,
+
     // Saved settings
     SettingsAutoDetect,
     SettingsSavedHint,
@@ -340,8 +344,8 @@ impl TranslationKey {
             (TranslationKey::SettingsBtnLaunchRimWorld, Language::English) => "Launch RimWorld",
             (TranslationKey::SettingsDbTitle, Language::Russian) => "База правил сообщества",
             (TranslationKey::SettingsDbTitle, Language::English) => "Community Rules Database",
-            (TranslationKey::SettingsBtnUpdateDb, Language::Russian) => "Обновить базу правил",
-            (TranslationKey::SettingsBtnUpdateDb, Language::English) => "Update Rules DB",
+            (TranslationKey::SettingsBtnUpdateDb, Language::Russian) => "Обновить из интернета",
+            (TranslationKey::SettingsBtnUpdateDb, Language::English) => "Update from the internet",
 
             // Dynamic & Extended keys
             (TranslationKey::SettingsSubtitle, Language::Russian) => "Конфигурация путей, локализации и параметров запуска",
@@ -498,6 +502,10 @@ impl TranslationKey {
             (TranslationKey::OptClearGameCache, Language::English) => "Reset game texture cache",
             (TranslationKey::OptClearGameCacheHint, Language::Russian) => "TextureCache и ShaderCache уйдут в Корзину; игра пересоберёт их при запуске. Помогает при битых или старых текстурах.",
             (TranslationKey::OptClearGameCacheHint, Language::English) => "TextureCache and ShaderCache go to the Recycle Bin; the game rebuilds them on start. Helps with broken or stale textures.",
+            (TranslationKey::SettingsBtnImportDb, Language::Russian) => "Импорт из файла (RimPy / RimSort)",
+            (TranslationKey::SettingsBtnImportDb, Language::English) => "Import from file (RimPy / RimSort)",
+            (TranslationKey::SettingsDbHint, Language::Russian) => "«Обновить» скачивает базу правил сообщества RimSort с GitHub (лицензия CC0). Можно также взять communityRules.json из папки RimPy.",
+            (TranslationKey::SettingsDbHint, Language::English) => "\"Update\" downloads the RimSort community rules from GitHub (CC0 license). You can also import communityRules.json from a RimPy folder.",
             (TranslationKey::SettingsAutoDetect, Language::Russian) => "Определить пути автоматически",
             (TranslationKey::SettingsAutoDetect, Language::English) => "Detect paths automatically",
             (TranslationKey::SettingsSavedHint, Language::Russian) => "Выбранные вручную пути, язык и параметры запуска сохраняются между запусками.",
