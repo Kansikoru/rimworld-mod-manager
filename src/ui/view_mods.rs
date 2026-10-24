@@ -203,6 +203,18 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
     });
 }
 
+/// Mod name in a list row: clickable, takes at most ~60% of the row so badges keep room,
+/// and a long name ends with "…" (full name on hover) instead of being cut mid-letter.
+fn mod_name_label(ui: &mut Ui, text: egui::RichText) -> egui::Response {
+    let max_width = (ui.available_width() * 0.6).max(80.0);
+    ui.scope(|ui| {
+        ui.set_max_width(max_width);
+        ui.add(egui::Label::new(text).truncate().sense(egui::Sense::click()))
+    })
+    .inner
+    .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// Width reserved at the right edge of a row for its buttons (padding + buttons).
 const ACTIVE_ROW_BUTTONS_WIDTH: f32 = 84.0;
 const INACTIVE_ROW_BUTTONS_WIDTH: f32 = 40.0;
@@ -307,13 +319,14 @@ fn version_badge(ui: &mut Ui, m: &ModInfo, game_mm: Option<&str>, t: crate::i18n
         return;
     }
     let newest = crate::version_check::newest_supported(m).unwrap_or_default();
-    badge(
+    if let Some(resp) = badge_if_fits(
         ui,
         &fmt(t.get(TranslationKey::ModsVersionBadge), &[&newest]),
         THEME.bg_dark,
         THEME.text_muted,
-    )
-    .on_hover_text(fmt(t.get(TranslationKey::ModsVersionHint), &[game_mm.unwrap_or("?")]));
+    ) {
+        resp.on_hover_text(fmt(t.get(TranslationKey::ModsVersionHint), &[game_mm.unwrap_or("?")]));
+    }
 }
 
 /// Row of category chips above the lists: "All" + every category that some mod has, with counts.
@@ -374,23 +387,31 @@ fn render_category_filter(app: &mut App, ui: &mut Ui) {
 
 /// Up to `max` category badges (strongest first); the rest are listed in the hover text.
 fn category_badges(ui: &mut Ui, cats: &[ModCategory], t: crate::i18n::I18n, max: usize) {
+    // In list rows a badge is drawn only if it fits completely; the ones that don't fit
+    // go into the "+N" badge (with the full list on hover).
+    let mut shown = 0;
     for cat in cats.iter().take(max) {
         let (bg, fg) = cat.colors();
-        icon_badge(
+        let drawn = icon_badge_if_fits(
             ui,
             category_icon(*cat),
             cat.label(t.language()),
             Color32::from_rgb(bg[0], bg[1], bg[2]),
             Color32::from_rgb(fg[0], fg[1], fg[2]),
         );
+        if drawn.is_none() {
+            break;
+        }
+        shown += 1;
     }
-    if cats.len() > max {
-        let rest: Vec<String> = cats[max..]
+    if cats.len() > shown {
+        let rest: Vec<String> = cats[shown..]
             .iter()
             .map(|c| c.label(t.language()).to_string())
             .collect();
-        badge(ui, &format!("+{}", cats.len() - max), THEME.bg_dark, THEME.text_muted)
-            .on_hover_text(rest.join("\n"));
+        if let Some(resp) = badge_if_fits(ui, &format!("+{}", cats.len() - shown), THEME.bg_dark, THEME.text_muted) {
+            resp.on_hover_text(rest.join("\n"));
+        }
     }
 }
 
@@ -677,8 +698,8 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                         );
 
                         // Mod Name (selectable)
-                        let label_resp = ui.selectable_label(
-                            is_selected,
+                        let label_resp = mod_name_label(
+                            ui,
                             egui::RichText::new(display_name)
                                 .color(if is_protected {
                                     Color32::from_rgb(251, 191, 36)
@@ -796,7 +817,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
 
                         // Badges: Core, categories, "not on disk"
                         if is_protected {
-                            badge(ui, "Core", Color32::from_rgb(30, 41, 59), THEME.text_muted);
+                            badge_if_fits(ui, "Core", Color32::from_rgb(30, 41, 59), THEME.text_muted);
                         }
                         if let Some(m) = mod_info_opt {
                             category_badges(ui, &m.categories, t, 2);
@@ -804,14 +825,14 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                         }
                         // Listed in ModsConfig.xml but not found by the scanner: kept on save, not dropped.
                         if mod_info_opt.is_none() {
-                            icon_badge(ui, ICON_STATUS_NOT_ON_DISK, app.i18n.get(TranslationKey::ModsNotOnDisk), Color32::from_rgb(0x7F, 0x1D, 0x1D), Color32::from_rgb(0xFE, 0xE2, 0xE2));
+                            icon_badge_if_fits(ui, ICON_STATUS_NOT_ON_DISK, app.i18n.get(TranslationKey::ModsNotOnDisk), Color32::from_rgb(0x7F, 0x1D, 0x1D), Color32::from_rgb(0xFE, 0xE2, 0xE2));
                         }
 
                         // Missing or Disabled dependency pill
                         if let Some(prob) = dep_problem {
                             match prob {
                                 DependencyProblem::Disabled { required_id, .. } => {
-                                    icon_badge(ui, ICON_STATUS_WARNING, app.i18n.get(TranslationKey::ModsDepNotInList), Color32::from_rgb(0x78, 0x35, 0x0F), Color32::from_rgb(0xFE, 0xF3, 0xC7));
+                                    icon_badge_if_fits(ui, ICON_STATUS_WARNING, app.i18n.get(TranslationKey::ModsDepNotInList), Color32::from_rgb(0x78, 0x35, 0x0F), Color32::from_rgb(0xFE, 0xF3, 0xC7));
                                     let btn = egui::Button::new(
                                         egui::RichText::new(app.i18n.get(TranslationKey::ModsDepEnable))
                                             .color(Color32::from_rgb(74, 222, 128))
@@ -827,14 +848,15 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                     }
                                 }
                                 DependencyProblem::Missing { .. } => {
-                                    icon_badge(ui, ICON_STATUS_MISSING, app.i18n.get(TranslationKey::ModsDepNotFound), Color32::from_rgb(0x7F, 0x1D, 0x1D), Color32::from_rgb(0xFE, 0xE2, 0xE2));
+                                    icon_badge_if_fits(ui, ICON_STATUS_MISSING, app.i18n.get(TranslationKey::ModsDepNotFound), Color32::from_rgb(0x7F, 0x1D, 0x1D), Color32::from_rgb(0xFE, 0xE2, 0xE2));
                                 }
                                 DependencyProblem::WrongOrder { .. } => {
-                                    icon_badge(ui, ICON_SORT, app.i18n.get(TranslationKey::ModsDepOrder), Color32::from_rgb(0x78, 0x35, 0x0F), Color32::from_rgb(0xFE, 0xF3, 0xC7));
+                                    icon_badge_if_fits(ui, ICON_SORT, app.i18n.get(TranslationKey::ModsDepOrder), Color32::from_rgb(0x78, 0x35, 0x0F), Color32::from_rgb(0xFE, 0xF3, 0xC7));
                                 }
                                 DependencyProblem::Incompatible { other_name, .. } => {
-                                    icon_badge(ui, ICON_STATUS_ERROR, app.i18n.get(TranslationKey::ModsDepIncompatible), Color32::from_rgb(0x7F, 0x1D, 0x1D), Color32::from_rgb(0xFE, 0xE2, 0xE2))
-                                        .on_hover_text(other_name.as_str());
+                                    if let Some(resp) = icon_badge_if_fits(ui, ICON_STATUS_ERROR, app.i18n.get(TranslationKey::ModsDepIncompatible), Color32::from_rgb(0x7F, 0x1D, 0x1D), Color32::from_rgb(0xFE, 0xE2, 0xE2)) {
+                                        resp.on_hover_text(other_name.as_str());
+                                    }
                                 }
                             }
                         }
@@ -1041,8 +1063,8 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                         let texture = tex_opt.and_then(|t| t.as_ref());
                         render_mod_icon_pill(ui, m.categories.first().copied(), false, texture);
 
-                        let label_resp = ui.selectable_label(
-                            is_selected,
+                        let label_resp = mod_name_label(
+                            ui,
                             egui::RichText::new(&m.name)
                                 .color(if is_selected { Color32::WHITE } else { THEME.text_primary })
                                 .size(12.0),
@@ -1137,7 +1159,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                         category_badges(ui, &m.categories, t, 2);
                         version_badge(ui, m, game_mm.as_deref(), t);
                         if m.origin == ModOrigin::Workshop {
-                            icon_badge(ui, ICON_STATUS_WORKSHOP, "Steam", THEME.accent_cyan.linear_multiply(0.2), THEME.accent_cyan);
+                            icon_badge_if_fits(ui, ICON_STATUS_WORKSHOP, "Steam", THEME.accent_cyan.linear_multiply(0.2), THEME.accent_cyan);
                         }
                         }
                         let right_rect = finish_row(ui, &left_ui, &split);

@@ -26,6 +26,44 @@ pub fn badge(ui: &mut Ui, text: &str, bg: Color32, fg: Color32) -> Response {
     response
 }
 
+/// Width a `badge` with this text takes.
+pub fn badge_width(ui: &Ui, text: &str) -> f32 {
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), egui::FontId::proportional(12.0), Color32::WHITE);
+    galley.size().x + 7.0 * 2.0
+}
+
+/// Width an `icon_badge` with this text takes.
+pub fn icon_badge_width(ui: &Ui, text: &str) -> f32 {
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), egui::FontId::proportional(12.0), Color32::WHITE);
+    let gap = if text.is_empty() { 0.0 } else { 5.0 };
+    6.0 * 2.0 + 14.0 + gap + galley.size().x
+}
+
+/// Whether something this wide still fits in the row (plus the spacing before it).
+pub fn fits(ui: &Ui, width: f32) -> bool {
+    ui.available_width() >= width + ui.spacing().item_spacing.x
+}
+
+/// `badge` only if it fits completely; a half-cut badge looks broken.
+pub fn badge_if_fits(ui: &mut Ui, text: &str, bg: Color32, fg: Color32) -> Option<Response> {
+    fits(ui, badge_width(ui, text)).then(|| badge(ui, text, bg, fg))
+}
+
+/// `icon_badge` only if it fits completely.
+pub fn icon_badge_if_fits(
+    ui: &mut Ui,
+    icon: egui::ImageSource<'static>,
+    text: &str,
+    bg: Color32,
+    fg: Color32,
+) -> Option<Response> {
+    fits(ui, icon_badge_width(ui, text)).then(|| icon_badge(ui, icon, text, bg, fg))
+}
+
 /// Badge pill with an SVG icon (tinted with `fg`) in front of the text.
 pub fn icon_badge(
     ui: &mut Ui,
