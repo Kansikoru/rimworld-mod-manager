@@ -1352,6 +1352,7 @@ impl eframe::App for App {
 
                 // Fast Launch Game button in top right
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(8.0); // keep the button off the window edge
                     if ui.add(
                         egui::Button::image_and_text(
                             svg_icon(ICON_PLAY, egui::vec2(16.0, 16.0), Color32::WHITE),
