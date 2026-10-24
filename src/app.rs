@@ -11,7 +11,7 @@ use crate::community_rules::CommunityDatabase;
 use crate::dependencies::{validate_dependencies, DependencyProblem, DependencyReport};
 use crate::categories::ModCategory;
 use crate::game_install::known_launch_flags;
-use crate::i18n::{fmt, I18n, Language, TranslationKey};
+use crate::i18n::{fmt, tr, I18n, Language, TranslationKey};
 use crate::matcher::{classify_and_link_translations, filter_and_rank_workshop_translations};
 use crate::models::{is_protected_package_id, is_optimizer_blacklisted, ModInfo, TranslationTargetLang};
 use crate::mods_config::{get_default_mods_config_path, load_active_mods, save_active_mods};
@@ -25,7 +25,7 @@ use crate::steam::{
     detect_steam_paths, launch_rimworld, subscribe_workshop_item_native, SteamPaths,
 };
 use crate::ui::icons::*;
-use crate::ui::theme::{apply_dark_theme, THEME};
+use crate::ui::theme::THEME;
 use crate::workshop_search::{search_steam_workshop, WorkshopItemResult};
 
 /// Finds an installed mod by package ID: case-insensitive, and understands the `_steam`
@@ -336,7 +336,7 @@ impl App {
             active_row_height: 34.0,
             inactive_row_height: 34.0,
 
-            status_message: "Готов к работе".to_string(),
+            status_message: tr!("Готов к работе", "Ready").to_string(),
         };
 
         // Scans in the background: the window opens at once and fills in when the scan is done.
@@ -377,7 +377,9 @@ impl App {
                         self.workshop_search_results = items;
                         self.status_message = status;
                     }
-                    Err(e) => self.status_message = format!("Ошибка поиска в Workshop: {}", e),
+                    Err(e) => {
+                        self.status_message = tr!("Ошибка поиска в Workshop: {}", "Workshop search failed: {}", e)
+                    }
                 }
             }
         }
@@ -436,6 +438,38 @@ pub fn lookup_mod<'a>(
         .get(&lower)
         .or_else(|| lower.strip_suffix("_steam").and_then(|base| index.get(base)))
         .and_then(|&i| mods.get(i))
+}
+
+/// Adds `id` (lower case) unless the list already has it in any letter case.
+pub fn add_active_id(active: &mut Vec<String>, id: &str) -> bool {
+    if active.iter().any(|a| a.eq_ignore_ascii_case(id)) {
+        return false;
+    }
+    active.push(id.to_lowercase());
+    true
+}
+
+/// Enables installed-but-disabled dependencies until none are left, so the
+/// dependencies of newly enabled mods are enabled too. Returns how many were added.
+pub fn enable_dependencies_recursive(active: &mut Vec<String>, all_mods: &[ModInfo]) -> usize {
+    let mut added = 0;
+    // Each pass enables at least one mod, so the number of passes is bounded.
+    for _ in 0..=all_mods.len() {
+        let report = validate_dependencies(active, all_mods);
+        let mut changed = false;
+        for prob in report.problems {
+            if let DependencyProblem::Disabled { required_id, .. } = prob {
+                if add_active_id(active, &required_id) {
+                    added += 1;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    added
 }
 
 impl App {
@@ -517,7 +551,7 @@ impl App {
             &crate::categories::overrides_path(),
             &self.category_overrides,
         ) {
-            self.status_message = format!("Не удалось сохранить категории: {}", e);
+            self.status_message = tr!("Не удалось сохранить категории: {}", "Could not save categories: {}", e);
         }
     }
 
@@ -573,7 +607,7 @@ impl App {
             match snap.save_to(&crate::settings::AppSettings::path()) {
                 Ok(()) => self.last_saved_settings = snap,
                 Err(e) => {
-                    self.status_message = format!("Не удалось сохранить настройки: {}", e);
+                    self.status_message = tr!("Не удалось сохранить настройки: {}", "Could not save settings: {}", e);
                     self.last_saved_settings = snap; // don't retry every frame
                 }
             }
@@ -617,7 +651,7 @@ impl App {
             return;
         }
         if !self.rescan_keep_status {
-            self.status_message = "Сканирование модов на диске...".to_string();
+            self.status_message = tr!("Сканирование модов на диске...", "Scanning mods on disk...").to_string();
         }
 
         let workshop = self.steam_paths.workshop_path.clone();
@@ -644,6 +678,14 @@ impl App {
         self.all_mods = mods;
         self.duplicate_mods = res.duplicates;
         self.rebuild_mod_index();
+
+        // Drop cached thumbnails of mods that are gone (the cache folder doesn't grow forever).
+        let previews: std::collections::HashSet<PathBuf> =
+            self.all_mods.iter().filter_map(|m| m.preview_path.clone()).collect();
+        std::thread::spawn(move || {
+            crate::icon_cache::IconDiskCache::new(crate::icon_cache::IconDiskCache::default_cache_dir())
+                .cleanup_unreferenced(&previews);
+        });
 
         if let Some(ref config_p) = self.mods_config_path {
             // Keep IDs that were not found on disk: they stay in ModsConfig.xml on save
@@ -678,20 +720,26 @@ impl App {
         if let Some(ref config_p) = self.mods_config_path {
             match save_active_mods(config_p, &self.active_mods) {
                 Ok(_) => {
-                    self.status_message = "ModsConfig.xml успешно сохранён!".to_string();
+                    self.status_message = tr!("ModsConfig.xml сохранён", "ModsConfig.xml saved").to_string();
                 }
                 Err(e) => {
-                    self.status_message = format!("Ошибка сохранения конфига: {}", e);
+                    self.status_message = tr!("Ошибка сохранения ModsConfig.xml: {}", "Could not save ModsConfig.xml: {}", e);
                 }
             }
         }
     }
 
+    /// Adds a mod to the end of the load order unless it is already there (IDs are
+    /// compared case-insensitively and stored in lower case, like ModsConfig.xml does).
+    /// Returns whether it was added.
+    pub fn activate_mod(&mut self, id: &str) -> bool {
+        add_active_id(&mut self.active_mods, id)
+    }
+
     pub fn activate_all_mods(&mut self) {
-        for m in &self.all_mods {
-            if !self.active_mods.iter().any(|id| id.eq_ignore_ascii_case(&m.package_id)) {
-                self.active_mods.push(m.package_id.clone());
-            }
+        let ids: Vec<String> = self.all_mods.iter().map(|m| m.package_id.clone()).collect();
+        for id in ids {
+            self.activate_mod(&id);
         }
         self.validate_deps();
     }
@@ -701,21 +749,21 @@ impl App {
         self.validate_deps();
     }
 
+    /// Enables every missing dependency, including dependencies of the mods it just
+    /// enabled, then sorts the load order once.
     pub fn auto_fix_dependencies(&mut self) {
-        for prob in self.dependency_report.problems.clone() {
-            match prob {
-                DependencyProblem::Disabled { required_id, .. } => {
-                    if !self.active_mods.iter().any(|id| id.eq_ignore_ascii_case(&required_id)) {
-                        self.active_mods.push(required_id);
-                    }
-                }
-                DependencyProblem::WrongOrder { .. } => {
-                    self.sort_active_mods();
-                }
-                _ => {}
-            }
-        }
-        self.sort_active_mods();
+        let added = enable_dependencies_recursive(&mut self.active_mods, &self.all_mods);
+        self.active_mods = sort_load_order_with_db(&self.active_mods, &self.all_mods, Some(&self.community_db));
+        self.validate_deps();
+        self.status_message = if added > 0 {
+            tr!(
+                "Включено зависимостей: {}, порядок загрузки отсортирован",
+                "Enabled dependencies: {}, load order sorted",
+                added
+            )
+        } else {
+            self.i18n.get(TranslationKey::AppSortedMsg).to_string()
+        };
     }
 
     /// Translation mods installed for the language selected on the Translations tab.
@@ -750,7 +798,11 @@ impl App {
             return;
         };
         if self.is_official_mod(m) {
-            self.status_message = format!("Защищённый мод '{}' нельзя удалить!", m.package_id);
+            self.status_message = tr!(
+                "Защищённый мод '{}' нельзя удалить",
+                "Protected mod '{}' can't be deleted",
+                m.package_id
+            );
             return;
         }
         let pending = PendingDelete {
@@ -776,12 +828,14 @@ impl App {
         match pending.kind {
             DeleteKind::Translations => {
                 let res = delete_translation_mods(&targets, &self.steam_paths);
-                let mut msg = format!(
+                let mut msg = tr!(
                     "Перемещено в Корзину: {} | Отписано в Steam: {}",
-                    res.deleted_count, res.unsubscribed_count
+                    "Moved to Recycle Bin: {} | Unsubscribed in Steam: {}",
+                    res.deleted_count,
+                    res.unsubscribed_count
                 );
                 if let Some(err) = res.errors.first() {
-                    msg.push_str(&format!(" | Ошибок: {} ({})", res.errors.len(), err));
+                    msg.push_str(&tr!(" | Ошибок: {} ({})", " | Errors: {} ({})", res.errors.len(), err));
                 }
                 self.status_message = msg;
                 self.rescan_mods_keep_status();
@@ -793,11 +847,12 @@ impl App {
                 let name = m.name.clone();
                 match unsubscribe_and_delete_single(m, &self.steam_paths) {
                     Ok(_) => {
-                        self.status_message = format!("Мод {} перемещён в Корзину", name);
+                        self.status_message =
+                            tr!("Мод {} перемещён в Корзину", "Mod {} moved to the Recycle Bin", name);
                         self.rescan_mods_keep_status();
                     }
                     Err(e) => {
-                        self.status_message = format!("Ошибка удаления: {}", e);
+                        self.status_message = tr!("Ошибка удаления: {}", "Delete failed: {}", e);
                     }
                 }
             }
@@ -816,7 +871,11 @@ impl App {
             return;
         }
         let Some(m) = self.selected_mod_id.as_deref().and_then(|id| self.find_mod(id)) else {
-            self.status_message = "Выберите мод в списке, чтобы найти для него перевод".to_string();
+            self.status_message = tr!(
+                "Выберите мод в списке, чтобы найти для него перевод",
+                "Select a mod in the list to find a translation for it"
+            )
+            .to_string();
             return;
         };
         let name = m.name.clone();
@@ -824,7 +883,7 @@ impl App {
         let lang = self.trans_target_lang;
         let query = format!("{} {}", name, lang.search_suffix());
         self.workshop_search_query = query.clone();
-        self.status_message = format!("Поиск в Workshop: {}...", query);
+        self.status_message = tr!("Поиск в Workshop: {}...", "Searching the Workshop: {}...", query);
 
         self.workshop_rx = Some(self.spawn_task(move || {
             let raw = search_steam_workshop(&query)?;
@@ -832,8 +891,9 @@ impl App {
             // Keep only translations of this mod in the selected language,
             // drop the mod itself and unrelated items, best matches first.
             let filtered = filter_and_rank_workshop_translations(raw, &name, steam_id.as_deref(), lang);
-            let status = format!(
+            let status = tr!(
                 "Workshop: найдено {}, подходящих переводов «{}»: {}",
+                "Workshop: found {}, matching translations of \"{}\": {}",
                 found,
                 name,
                 filtered.len()
@@ -848,10 +908,15 @@ impl App {
             return;
         }
         let query = self.workshop_search_query.clone();
-        self.status_message = format!("Поиск в Workshop: {}...", query);
+        self.status_message = tr!("Поиск в Workshop: {}...", "Searching the Workshop: {}...", query);
         self.workshop_rx = Some(self.spawn_task(move || {
             let res = search_steam_workshop(&query)?;
-            let status = format!("Поиск в Workshop «{}»: результатов {}", query, res.len());
+            let status = tr!(
+                "Поиск в Workshop «{}»: результатов {}",
+                "Workshop search \"{}\": {} results",
+                query,
+                res.len()
+            );
             Ok((res, status))
         }));
     }
@@ -862,13 +927,21 @@ impl App {
             return;
         }
         let Some(dll) = self.steam_paths.steam_dll_path.clone() else {
-            self.status_message = "steam_api64.dll не найден — проверьте папку игры".to_string();
+            self.status_message = tr!(
+                "steam_api64.dll не найден — проверьте папку игры",
+                "steam_api64.dll not found — check the game folder"
+            )
+            .to_string();
             return;
         };
-        self.status_message = "Проверка Steam API...".to_string();
+        self.status_message = tr!("Проверка Steam API...", "Checking the Steam API...").to_string();
         self.steam_rx = Some(self.spawn_task(move || match crate::steam::steam_api_check(&dll) {
-            Ok(n) => format!("Steam API работает: подписок на моды RimWorld — {}", n),
-            Err(e) => format!("Steam API не работает: {}", e),
+            Ok(n) => tr!(
+                "Steam API работает: подписок на моды RimWorld — {}",
+                "Steam API works: RimWorld mod subscriptions — {}",
+                n
+            ),
+            Err(e) => tr!("Steam API не работает: {}", "Steam API doesn't work: {}", e),
         }));
     }
 
@@ -879,18 +952,19 @@ impl App {
         }
         if let Some(dll) = self.steam_paths.steam_dll_path.clone() {
             let id = item_id.to_string();
-            self.status_message = format!("Отправка запроса на подписку #{}...", id);
+            self.status_message = tr!("Отправка запроса на подписку #{}...", "Sending subscribe request #{}...", id);
             self.steam_rx = Some(self.spawn_task(move || match subscribe_workshop_item_native(&dll, &id) {
-                Ok(_) => format!(
+                Ok(_) => tr!(
                     "Запрос на подписку #{} отправлен в Steam — мод скачается в клиенте Steam",
+                    "Subscribe request #{} sent to Steam — the Steam client will download the mod",
                     id
                 ),
-                Err(e) => format!("Ошибка подписки: {}", e),
+                Err(e) => tr!("Ошибка подписки: {}", "Subscribe failed: {}", e),
             }));
         } else {
-            let url = format!("https://steamcommunity.com/sharedfiles/filedetails/?id={}", item_id);
-            let _ = open::that(url);
-            self.status_message = format!("Открыта страница Steam Workshop #{}", item_id);
+            crate::ui::components::open_external(crate::steam::workshop_url(item_id));
+            self.status_message =
+                tr!("Открыта страница Steam Workshop #{}", "Opened Steam Workshop page #{}", item_id);
         }
     }
 
@@ -937,12 +1011,17 @@ impl App {
         };
 
         if dirs.is_empty() {
-            self.status_message = "Нет выбранных модов для оптимизации текстур".to_string();
+            self.status_message =
+                tr!("Нет выбранных модов для оптимизации текстур", "No mods selected for texture optimization")
+                    .to_string();
             return;
         }
         if self.optimizer_blocked() {
-            self.status_message =
-                "RimWorld 1.7 сжимает текстуры сам — конвертация отключена (можно разрешить вручную)".to_string();
+            self.status_message = tr!(
+                "RimWorld 1.7 сжимает текстуры сам — конвертация отключена (можно разрешить вручную)",
+                "RimWorld 1.7 compresses textures itself — conversion is off (can be allowed manually)"
+            )
+            .to_string();
             return;
         }
 
@@ -964,7 +1043,11 @@ impl App {
             self.opt_stop_flag.clone(),
         );
 
-        self.status_message = "Запущена конвертация текстур (BC7 / BC1 с мипмапами)...".to_string();
+        self.status_message = tr!(
+            "Запущена конвертация текстур (BC7 / BC1 с мипмапами)...",
+            "Converting textures (BC7 / BC1 with mipmaps)..."
+        )
+        .to_string();
     }
 
     /// Conversion is blocked on 1.7 (the game compresses textures itself) unless explicitly allowed.
@@ -976,19 +1059,20 @@ impl App {
     pub fn clear_game_caches(&mut self) {
         let size_mb = crate::game_install::game_cache_size() as f64 / (1024.0 * 1024.0);
         self.status_message = match crate::game_install::clear_game_caches() {
-            Ok(cleared) if cleared.is_empty() => "Кэш игры уже пуст".to_string(),
-            Ok(cleared) => format!(
+            Ok(cleared) if cleared.is_empty() => tr!("Кэш игры уже пуст", "The game cache is already empty").to_string(),
+            Ok(cleared) => tr!(
                 "Кэш игры перемещён в Корзину ({}, {:.0} МБ). Игра пересоберёт его при следующем запуске.",
+                "Game cache moved to the Recycle Bin ({}, {:.0} MB). The game rebuilds it on the next start.",
                 cleared.join(", "),
                 size_mb
             ),
-            Err(e) => format!("Не удалось очистить кэш: {}", e),
+            Err(e) => tr!("Не удалось очистить кэш: {}", "Could not clear the cache: {}", e),
         };
     }
 
     pub fn cancel_texture_optimization(&mut self) {
         self.opt_stop_flag.store(true, Ordering::Relaxed);
-        self.status_message = "Отмена оптимизации...".to_string();
+        self.status_message = tr!("Отмена оптимизации...", "Cancelling optimization...").to_string();
     }
 
     /// Mods the optimizer may touch for "All mods": no Core/DLC, no blacklist, no user ignore list.
@@ -1010,7 +1094,7 @@ impl App {
         let (tx, rx) = channel();
         texture_summary_async(dirs, self.opt_force, tx);
         self.opt_scan_rx = Some(rx);
-        self.status_message = "Подсчёт текстур...".to_string();
+        self.status_message = tr!("Подсчёт текстур...", "Counting textures...").to_string();
     }
 
     /// Rolls back every mod except Core/DLC — including ignored/blacklisted ones,
@@ -1025,7 +1109,7 @@ impl App {
         let (tx, rx) = channel();
         rollback_dds_async(dirs_from_mods(&mods), tx);
         self.opt_rollback_rx = Some(rx);
-        self.status_message = "Откат текстур...".to_string();
+        self.status_message = tr!("Откат текстур...", "Rolling back textures...").to_string();
     }
 
     /// Whether a background optimizer task (scan, rollback, conversion) is running.
@@ -1036,18 +1120,24 @@ impl App {
     fn poll_optimizer_tasks(&mut self) {
         if let Some(rx) = &self.opt_scan_rx {
             if let Ok(s) = rx.try_recv() {
-                self.status_message = format!(
+                self.status_message = tr!(
                     "Будет сконвертировано: {} | уже готово: {} | чужих DDS (не трогаются): {}",
-                    s.to_convert, s.up_to_date, s.foreign_dds
+                    "To convert: {} | already done: {} | author DDS (left alone): {}",
+                    s.to_convert,
+                    s.up_to_date,
+                    s.foreign_dds
                 );
                 self.opt_scan_rx = None;
             }
         }
         if let Some(rx) = &self.opt_rollback_rx {
             if let Ok(res) = rx.try_recv() {
-                self.status_message = format!(
+                self.status_message = tr!(
                     "Откат: удалено .dds: {} | восстановлено исходников из бэкапа: {} | ошибок: {}",
-                    res.removed, res.restored, res.errors
+                    "Rollback: .dds removed: {} | sources restored from backup: {} | errors: {}",
+                    res.removed,
+                    res.restored,
+                    res.errors
                 );
                 self.opt_rollback_rx = None;
             }
@@ -1070,7 +1160,7 @@ impl App {
         if let Some(path) = log_target {
             // Matching stack frames to mods walks every mod folder: done in the background (S5).
             let mods = self.all_mods.clone();
-            self.status_message = format!("Анализ лога {}...", path.display());
+            self.status_message = tr!("Анализ лога {}...", "Analyzing log {}...", path.display());
             self.log_rx = Some(self.spawn_task(move || analyze_rimworld_log(&path, &mods)));
         } else {
             self.status_message = self.i18n.get(TranslationKey::CrashFileNotFound).to_string();
@@ -1093,10 +1183,10 @@ impl App {
         let args = self.launch_args();
         match launch_rimworld(&self.steam_paths, &args) {
             Ok(_) => {
-                self.status_message = "Процесс RimWorld запущен!".to_string();
+                self.status_message = tr!("RimWorld запущен", "RimWorld started").to_string();
             }
             Err(e) => {
-                self.status_message = format!("Ошибка запуска игры: {}", e);
+                self.status_message = tr!("Ошибка запуска игры: {}", "Could not start the game: {}", e);
             }
         }
     }
@@ -1106,7 +1196,8 @@ impl App {
         if self.rules_rx.is_some() {
             return;
         }
-        self.status_message = "Загрузка базы правил RimSort с GitHub...".to_string();
+        self.status_message =
+            tr!("Загрузка базы правил RimSort с GitHub...", "Downloading RimSort rules from GitHub...").to_string();
         self.rules_rx = Some(self.spawn_task(crate::community_rules::download_rules));
     }
 
@@ -1121,20 +1212,22 @@ impl App {
             Ok(imported) => {
                 self.community_db = crate::community_rules::load_effective_db();
                 self.community_db_rules_count = self.community_db.rules.len();
-                self.status_message = format!(
+                self.status_message = tr!(
                     "База правил обновлена: правил сообщества {}, всего с встроенными {}",
-                    imported, self.community_db_rules_count
+                    "Rules updated: {} community rules, {} including built-in ones",
+                    imported,
+                    self.community_db_rules_count
                 );
             }
-            Err(e) => self.status_message = format!("Не удалось обновить базу правил: {}", e),
+            Err(e) => {
+                self.status_message = tr!("Не удалось обновить базу правил: {}", "Could not update the rules: {}", e)
+            }
         }
     }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        apply_dark_theme(ctx);
-
         // Process loaded mod icons
         while let Ok((pkg_id, img)) = self.icon_rx.try_recv() {
             let handle = ctx.load_texture(
@@ -1170,21 +1263,31 @@ impl eframe::App for App {
                     }
                     OptimizationMsg::Done(s) => {
                         self.opt_is_running = false;
-                        let mut msg = format!(
+                        let mut msg = tr!(
                             "Готово: BC7 {}, BC1 {} | оставлено PNG (размер): {} | уже актуально: {} | ошибок: {}",
-                            s.bc7, s.bc1, s.skipped, s.up_to_date, s.errors
+                            "Done: BC7 {}, BC1 {} | kept as PNG (size): {} | up to date: {} | errors: {}",
+                            s.bc7,
+                            s.bc1,
+                            s.skipped,
+                            s.up_to_date,
+                            s.errors
                         );
                         if s.sources_backed_up > 0 {
-                            msg.push_str(&format!(" | исходников в бэкапе: {}", s.sources_backed_up));
+                            msg.push_str(&tr!(
+                                " | исходников в бэкапе: {}",
+                                " | sources backed up: {}",
+                                s.sources_backed_up
+                            ));
                         }
                         if s.foreign_dds > 0 {
-                            msg.push_str(&format!(" | чужих DDS не тронуто: {}", s.foreign_dds));
+                            msg.push_str(&tr!(" | чужих DDS не тронуто: {}", " | author DDS left alone: {}", s.foreign_dds));
                         }
                         self.status_message = msg;
                     }
                     OptimizationMsg::Cancelled => {
                         self.opt_is_running = false;
-                        self.status_message = "Оптимизация остановлена пользователем".to_string();
+                        self.status_message =
+                            tr!("Оптимизация остановлена", "Optimization stopped").to_string();
                     }
                 }
             }
@@ -1369,5 +1472,43 @@ mod tests {
         assert_eq!(lookup_mod(&index, &mods, "brrainz.harmony").map(|m| m.package_id.as_str()), Some("Brrainz.Harmony"));
         assert_eq!(lookup_mod(&index, &mods, "unlimitedhugs.hugslib_steam").map(|m| m.package_id.as_str()), Some("UnlimitedHugs.HugsLib"));
         assert!(lookup_mod(&index, &mods, "someone.missing").is_none());
+    }
+
+    fn with_deps(id: &str, deps: &[&str]) -> ModInfo {
+        ModInfo {
+            package_id: id.into(),
+            name: id.into(),
+            dependencies: deps.iter().map(|d| d.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn add_active_id_ignores_case_and_stores_lowercase() {
+        let mut active = vec!["ludeon.rimworld".to_string()];
+        assert!(!add_active_id(&mut active, "Ludeon.RimWorld"));
+        assert!(add_active_id(&mut active, "Author.CoolMod"));
+        assert!(!add_active_id(&mut active, "author.coolmod"));
+        assert_eq!(active, ["ludeon.rimworld", "author.coolmod"]);
+    }
+
+    #[test]
+    fn dependencies_are_enabled_on_every_level() {
+        // A needs B, B needs C, C needs D: enabling A's dependencies must bring all three.
+        let mods = vec![
+            with_deps("Test.A", &["Test.B"]),
+            with_deps("Test.B", &["Test.C"]),
+            with_deps("Test.C", &["Test.D"]),
+            with_deps("Test.D", &[]),
+            with_deps("Test.Unrelated", &[]),
+        ];
+        let mut active = vec!["test.a".to_string()];
+        assert_eq!(enable_dependencies_recursive(&mut active, &mods), 3);
+        for id in ["test.b", "test.c", "test.d"] {
+            assert!(active.iter().any(|a| a == id), "{id} not enabled: {active:?}");
+        }
+        assert!(!active.iter().any(|a| a == "test.unrelated"));
+        // Nothing left to enable: a second run adds nothing.
+        assert_eq!(enable_dependencies_recursive(&mut active, &mods), 0);
     }
 }

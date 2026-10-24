@@ -3,6 +3,8 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::time::Duration;
 
+use crate::i18n::tr;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkshopItemResult {
     pub id: String,
@@ -61,11 +63,11 @@ pub fn search_steam_workshop(query: &str) -> Result<Vec<WorkshopItemResult>, Str
         .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         .set("Accept-Language", "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7")
         .call()
-        .map_err(|e| format!("Ошибка подключения к Steam Workshop: {e}"))?;
+        .map_err(|e| tr!("Нет связи со Steam Workshop: {}", "Can't reach the Steam Workshop: {}", e))?;
 
-    let html = html_resp
-        .into_string()
-        .map_err(|e| format!("Ошибка чтения ответа Steam Workshop: {e}"))?;
+    let html = html_resp.into_string().map_err(|e| {
+        tr!("Ошибка чтения ответа Steam Workshop: {}", "Could not read the Steam Workshop response: {}", e)
+    })?;
 
     let mut ids = Vec::new();
     let mut seen = HashSet::new();
@@ -114,7 +116,7 @@ pub fn search_steam_workshop(query: &str) -> Result<Vec<WorkshopItemResult>, Str
                                 continue;
                             }
                             let id = item.publishedfileid.unwrap_or_default();
-                            let title = item.title.unwrap_or_else(|| "Без названия".to_string());
+                            let title = item.title.unwrap_or_else(|| tr!("Без названия", "Untitled").to_string());
                             let preview_url = item.preview_url;
                             let mut tags = Vec::new();
                             let mut is_translation = false;

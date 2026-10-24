@@ -1,4 +1,25 @@
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Current interface language for texts built outside the UI code (status lines,
+/// errors from background tasks). Set by `I18n::new` / `I18n::set_language`.
+static ENGLISH: AtomicBool = AtomicBool::new(false);
+
+pub fn is_english() -> bool {
+    ENGLISH.load(Ordering::Relaxed)
+}
+
+/// Russian or English text by the current interface language.
+/// With arguments it works like `format!`: `tr!("Найдено: {}", "Found: {}", n)`.
+macro_rules! tr {
+    ($ru:literal, $en:literal $(,)?) => {
+        if $crate::i18n::is_english() { $en } else { $ru }
+    };
+    ($ru:literal, $en:literal, $($arg:tt)+) => {
+        if $crate::i18n::is_english() { format!($en, $($arg)+) } else { format!($ru, $($arg)+) }
+    };
+}
+pub(crate) use tr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Language {
@@ -538,6 +559,7 @@ pub struct I18n {
 
 impl I18n {
     pub fn new(lang: Language) -> Self {
+        ENGLISH.store(lang == Language::English, Ordering::Relaxed);
         Self { lang }
     }
 
@@ -546,6 +568,7 @@ impl I18n {
     }
 
     pub fn set_language(&mut self, lang: Language) {
+        ENGLISH.store(lang == Language::English, Ordering::Relaxed);
         self.lang = lang;
     }
 
@@ -563,5 +586,16 @@ mod tests {
         assert_eq!(fmt("Всего: {} | Активно: {}", &["50", "7"]), "Всего: 50 | Активно: 7");
         assert_eq!(fmt("{} {} {}", &["a", "b"]), "a b {}");
         assert_eq!(fmt("no placeholders", &["x"]), "no placeholders");
+    }
+
+    #[test]
+    fn tr_follows_interface_language() {
+        let _ru = I18n::new(Language::Russian);
+        assert_eq!(tr!("Да", "Yes"), "Да");
+        assert_eq!(tr!("Найдено: {}", "Found: {}", 3), "Найдено: 3");
+        let _en = I18n::new(Language::English);
+        assert_eq!(tr!("Да", "Yes"), "Yes");
+        assert_eq!(tr!("Найдено: {}", "Found: {}", 3), "Found: 3");
+        ENGLISH.store(false, Ordering::Relaxed);
     }
 }

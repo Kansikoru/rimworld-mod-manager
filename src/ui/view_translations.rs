@@ -1,7 +1,7 @@
 use eframe::egui::{self, Rounding, Stroke, Ui};
 
 use crate::app::App;
-use crate::i18n::TranslationKey;
+use crate::i18n::{tr, TranslationKey};
 use crate::models::{ModInfo, TranslationTargetLang};
 use super::components::*;
 use super::icons::*;
@@ -143,7 +143,7 @@ fn render_installed_translations_column(app: &mut App, ui: &mut Ui) {
                             );
                             if let Some(ref parent_id) = m.parent_package_id {
                                 ui.label(
-                                    egui::RichText::new(format!("Перевод для: {}", parent_id))
+                                    egui::RichText::new(tr!("Перевод для: {}", "Translation of: {}", parent_id))
                                         .color(THEME.accent_cyan)
                                         .size(12.0),
                                 );
@@ -151,7 +151,7 @@ fn render_installed_translations_column(app: &mut App, ui: &mut Ui) {
                         });
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if icon_button(ui, ICON_TRASH, egui::vec2(14.0, 14.0), THEME.text_muted).on_hover_text("Удалить и отписаться").clicked() {
+                            if icon_button(ui, ICON_TRASH, egui::vec2(14.0, 14.0), THEME.text_muted).on_hover_text(tr!("Удалить и отписаться", "Delete and unsubscribe")).clicked() {
                                 to_delete_single = Some(m.package_id.clone());
                             }
                             if let Some(ref sid) = m.steam_item_id {
@@ -240,8 +240,7 @@ fn render_workshop_search_column(app: &mut App, ui: &mut Ui) {
                                 to_subscribe_id = Some(item.id.clone());
                             }
                             if secondary_button_icon(ui, ICON_STEAM, "Workshop").clicked() {
-                                let url = format!("https://steamcommunity.com/sharedfiles/filedetails/?id={}", item.id);
-                                let _ = open::that(url);
+                                open_external(crate::steam::workshop_url(&item.id));
                             }
                         });
                     });

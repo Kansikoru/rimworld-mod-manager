@@ -6,6 +6,7 @@
 //! `{"timestamp": .., "rules": {"<packageId>": {"loadBefore": {"<id>": {"name": [..]}},
 //!   "loadAfter": {..}, "loadBottom": {"value": true}}}}`
 
+use crate::i18n::tr;
 use crate::models::CommunityRule;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -57,7 +58,7 @@ fn ids_of(value: Option<&serde_json::Value>) -> Vec<String> {
 /// Parses the RimSort/RimPy format, or this app's own format (map of `CommunityRule`).
 pub fn parse_rules_json(text: &str) -> Result<HashMap<String, CommunityRule>, String> {
     let value: serde_json::Value =
-        serde_json::from_str(text.trim_start_matches('\u{feff}')).map_err(|e| format!("не JSON: {e}"))?;
+        serde_json::from_str(text.trim_start_matches('\u{feff}')).map_err(|e| tr!("не JSON: {}", "not JSON: {}", e))?;
 
     if let Some(rules) = value.get("rules").and_then(|r| r.as_object()) {
         let mut out = HashMap::with_capacity(rules.len());
@@ -81,7 +82,9 @@ pub fn parse_rules_json(text: &str) -> Result<HashMap<String, CommunityRule>, St
     }
 
     let own: HashMap<String, CommunityRule> = serde_json::from_value(value)
-        .map_err(|_| "неизвестный формат: нет ключа \"rules\"".to_string())?;
+        .map_err(|_| {
+            tr!("неизвестный формат: нет ключа \"rules\"", "unknown format: no \"rules\" key").to_string()
+        })?;
     Ok(own.into_iter().map(|(k, v)| (k.to_lowercase(), v)).collect())
 }
 
@@ -124,7 +127,7 @@ pub fn load_effective_db() -> CommunityDatabase {
 fn store_rules_text(text: &str, dest: &Path) -> Result<usize, String> {
     let count = parse_rules_json(text)?.len();
     if count == 0 {
-        return Err("файл не содержит правил".to_string());
+        return Err(tr!("файл не содержит правил", "the file has no rules").to_string());
     }
     let tmp = dest.with_extension("json.tmp");
     std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
@@ -143,7 +146,7 @@ pub fn download_rules() -> Result<usize, String> {
     let text = ureq::get(RIMSORT_RULES_URL)
         .timeout(Duration::from_secs(30))
         .call()
-        .map_err(|e| format!("нет связи с GitHub: {e}"))?
+        .map_err(|e| tr!("нет связи с GitHub: {}", "can't reach GitHub: {}", e))?
         .into_string()
         .map_err(|e| e.to_string())?;
     store_rules_text(&text, &local_rules_path())

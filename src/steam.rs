@@ -3,6 +3,7 @@ use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
 use winreg::RegKey;
 
 use crate::game_install::{self, GameEngine};
+use crate::i18n::tr;
 
 pub const RIMWORLD_APP_ID: u32 = 294100;
 
@@ -229,7 +230,12 @@ where
         if code != STEAM_INIT_OK {
             let len = err_buf.iter().position(|&b| b == 0).unwrap_or(err_buf.len());
             let msg = String::from_utf8_lossy(&err_buf[..len]).to_string();
-            return Err(format!("Steam API не запустился (код {code}): {msg}"));
+            return Err(tr!(
+                "Steam API не запустился (код {}): {}",
+                "Steam API failed to start (code {}): {}",
+                code,
+                msg
+            ));
         }
     } else {
         let init: libloading::Symbol<unsafe extern "C" fn() -> bool> = lib
@@ -237,9 +243,11 @@ where
             .or_else(|_| lib.get(b"SteamAPI_Init"))
             .map_err(|e| e.to_string())?;
         if !init() {
-            return Err(
-                "Не удалось запустить Steam API (возможно, клиент Steam закрыт)".to_string(),
-            );
+            return Err(tr!(
+                "Не удалось запустить Steam API (возможно, клиент Steam закрыт)",
+                "Could not start the Steam API (is the Steam client running?)"
+            )
+            .to_string());
         }
     }
 
@@ -259,7 +267,11 @@ where
         }
     }
     if ugc_ptr.is_null() {
-        return Err("Интерфейс Steam Workshop (UGC) недоступен в этой версии steam_api64.dll".to_string());
+        return Err(tr!(
+            "Интерфейс Steam Workshop (UGC) недоступен в этой версии steam_api64.dll",
+            "The Steam Workshop (UGC) interface is not available in this steam_api64.dll"
+        )
+        .to_string());
     }
 
     let result = action(ugc_ptr, &lib);
@@ -315,34 +327,43 @@ pub fn subscribe_workshop_items_batch_native(dll_path: &Path, item_ids: &[&str])
     ugc_batch(dll_path, b"SteamAPI_ISteamUGC_SubscribeItem\0", item_ids)
 }
 
-pub fn unsubscribe_workshop_item_native(dll_path: &Path, item_id_str: &str) -> Result<bool, String> {
+fn parse_item_id(item_id_str: &str) -> Result<u64, String> {
     item_id_str
         .parse::<u64>()
-        .map_err(|_| format!("Неверный Steam Item ID: {item_id_str}"))?;
+        .map_err(|_| tr!("Неверный Steam Item ID: {}", "Invalid Steam item ID: {}", item_id_str))
+}
+
+pub fn unsubscribe_workshop_item_native(dll_path: &Path, item_id_str: &str) -> Result<bool, String> {
+    parse_item_id(item_id_str)?;
     Ok(unsubscribe_workshop_items_batch_native(dll_path, &[item_id_str])? > 0)
 }
 
 pub fn subscribe_workshop_item_native(dll_path: &Path, item_id_str: &str) -> Result<bool, String> {
-    item_id_str
-        .parse::<u64>()
-        .map_err(|_| format!("Неверный Steam Item ID: {item_id_str}"))?;
+    parse_item_id(item_id_str)?;
     Ok(subscribe_workshop_items_batch_native(dll_path, &[item_id_str])? > 0)
 }
+
+/// Steam Workshop page of an item.
+pub fn workshop_url(item_id: &str) -> String {
+    format!("https://steamcommunity.com/sharedfiles/filedetails/?id={item_id}")
+}
+
 /// Starts the game executable that matches the installed engine
 /// (`RimWorldWin64.exe` for 1.6/Unity, `RimWorld.exe` for 1.7/Waylith).
 pub fn launch_rimworld(steam_paths: &SteamPaths, args: &[String]) -> Result<(), String> {
     let game_dir = steam_paths
         .game_path
         .as_ref()
-        .ok_or("Путь к игре (RimWorld) не найден")?;
+        .ok_or(tr!("Папка игры RimWorld не найдена", "RimWorld game folder not found"))?;
 
     let exe_path = steam_paths
         .exe_path
         .clone()
         .or_else(|| game_install::game_exe_path(game_dir, steam_paths.engine))
         .ok_or_else(|| {
-            format!(
+            tr!(
                 "Не найден исполняемый файл игры ({} или {}) в {}",
+                "Game executable ({} or {}) not found in {}",
                 game_install::WAYLITH_EXE,
                 game_install::UNITY_EXE,
                 game_dir.display()
@@ -355,7 +376,7 @@ pub fn launch_rimworld(steam_paths: &SteamPaths, args: &[String]) -> Result<(), 
 
     match cmd.spawn() {
         Ok(_) => Ok(()),
-        Err(e) => Err(format!("Не удалось запустить процесс: {}", e)),
+        Err(e) => Err(tr!("Не удалось запустить процесс: {}", "Could not start the process: {}", e)),
     }
 }
 

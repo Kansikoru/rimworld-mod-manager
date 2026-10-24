@@ -4,6 +4,8 @@ use quick_xml::writer::Writer;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
+use crate::i18n::tr;
+
 pub fn get_default_mods_config_path() -> Option<PathBuf> {
     if let Ok(appdata) = std::env::var("APPDATA") {
         let appdata_path = Path::new(&appdata);
@@ -92,12 +94,18 @@ pub fn load_active_mods(config_path: &Path) -> Vec<String> {
 
 pub fn save_active_mods(config_path: &Path, active_mods: &[String]) -> Result<(), String> {
     if !config_path.exists() {
-        return Err(format!("Файл конфига не найден: {:?}", config_path));
+        return Err(tr!("Файл не найден: {}", "File not found: {}", config_path.display()));
     }
 
     let backup_dir = crate::game_install::manager_data_dir().join("backups");
-    backup_config(config_path, &backup_dir, MAX_CONFIG_BACKUPS)
-        .map_err(|e| format!("Не удалось сделать бэкап ModsConfig.xml в {:?}: {}", backup_dir, e))?;
+    backup_config(config_path, &backup_dir, MAX_CONFIG_BACKUPS).map_err(|e| {
+        tr!(
+            "Не удалось сделать копию ModsConfig.xml в {}: {}",
+            "Could not back up ModsConfig.xml to {}: {}",
+            backup_dir.display(),
+            e
+        )
+    })?;
 
     let mut unique: Vec<String> = Vec::with_capacity(active_mods.len());
     for m in active_mods {
@@ -108,7 +116,7 @@ pub fn save_active_mods(config_path: &Path, active_mods: &[String]) -> Result<()
     let active_mods: &[String] = &unique;
 
     let content = std::fs::read_to_string(config_path)
-        .map_err(|e| format!("Ошибка чтения ModsConfig.xml: {}", e))?;
+        .map_err(|e| tr!("Ошибка чтения ModsConfig.xml: {}", "Could not read ModsConfig.xml: {}", e))?;
 
     let mut reader = Reader::from_str(&content);
     let mut writer = Writer::new(Cursor::new(Vec::new()));
@@ -204,7 +212,7 @@ pub fn save_active_mods(config_path: &Path, active_mods: &[String]) -> Result<()
                     writer.write_event(event).map_err(|e| e.to_string())?;
                 }
             }
-            Err(e) => return Err(format!("Ошибка парсинга XML: {}", e)),
+            Err(e) => return Err(tr!("Ошибка в XML: {}", "XML error: {}", e)),
         }
         buf.clear();
     }
@@ -212,10 +220,10 @@ pub fn save_active_mods(config_path: &Path, active_mods: &[String]) -> Result<()
     let result_bytes = writer.into_inner().into_inner();
     let tmp_path = config_path.with_extension("xml.tmp");
     std::fs::write(&tmp_path, result_bytes)
-        .map_err(|e| format!("Ошибка записи ModsConfig.xml: {}", e))?;
+        .map_err(|e| tr!("Ошибка записи ModsConfig.xml: {}", "Could not write ModsConfig.xml: {}", e))?;
     std::fs::rename(&tmp_path, config_path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp_path);
-        format!("Ошибка записи ModsConfig.xml: {}", e)
+        tr!("Ошибка записи ModsConfig.xml: {}", "Could not write ModsConfig.xml: {}", e)
     })?;
 
     Ok(())

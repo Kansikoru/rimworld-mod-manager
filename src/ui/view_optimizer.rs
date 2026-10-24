@@ -2,7 +2,7 @@ use eframe::egui::{self, ProgressBar, Ui};
 
 use crate::app::App;
 use crate::game_install::GameEngine;
-use crate::i18n::TranslationKey;
+use crate::i18n::{tr, TranslationKey};
 use crate::optimizer::OptimizeScope;
 use super::components::*;
 use super::icons::*;
@@ -86,7 +86,10 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
             });
             if app.opt_delete_source {
                 ui.label(
-                    egui::RichText::new("Исходники переносятся в %LOCALAPPDATA%\\RimWorldModManager\\texture_backup и возвращаются кнопкой «Откатить».\nОставьте выключенным, если у вас достаточно места на диске: некоторые моды читают PNG напрямую.")
+                    egui::RichText::new(tr!(
+                        "Исходники переносятся в %LOCALAPPDATA%\\RimWorldModManager\\texture_backup и возвращаются кнопкой «Откатить».\nОставьте выключенным, если у вас достаточно места на диске: некоторые моды читают PNG напрямую.",
+                        "Sources are moved to %LOCALAPPDATA%\\RimWorldModManager\\texture_backup and come back with \"Rollback\".\nLeave it off if you have enough disk space: some mods read PNG files directly."
+                    ))
                         .color(THEME.accent_rose)
                         .size(12.0)
                 );
@@ -154,9 +157,12 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
 
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new(format!(
+                        egui::RichText::new(tr!(
                             "Обработано: {} / {} ({}%)",
-                            app.opt_done, app.opt_total, progress_pct
+                            "Processed: {} / {} ({}%)",
+                            app.opt_done,
+                            app.opt_total,
+                            progress_pct
                         ))
                         .color(THEME.text_primary)
                         .strong(),
@@ -164,7 +170,7 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
                     if app.opt_errors > 0 {
                         badge(
                             ui,
-                            &format!("Ошибок: {}", app.opt_errors),
+                            &tr!("Ошибок: {}", "Errors: {}", app.opt_errors),
                             THEME.accent_rose.linear_multiply(0.2),
                             THEME.accent_rose,
                         );
@@ -182,7 +188,7 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
                 if !app.opt_current_file.is_empty() {
                     ui.add_space(4.0);
                     ui.label(
-                        egui::RichText::new(format!("Файл: {}", app.opt_current_file))
+                        egui::RichText::new(tr!("Файл: {}", "File: {}", app.opt_current_file))
                             .color(THEME.text_muted)
                             .size(12.0),
                     );

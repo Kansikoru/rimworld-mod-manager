@@ -7,6 +7,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::i18n::tr;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GameEngine {
     #[default]
@@ -165,9 +167,13 @@ pub fn game_cache_size() -> u64 {
 /// next start. Refuses while the game is running (it keeps the cache files open).
 pub fn clear_game_caches() -> Result<Vec<String>, String> {
     if is_game_running() {
-        return Err("Закройте RimWorld: игра держит файлы кэша открытыми".to_string());
+        return Err(tr!(
+            "Закройте RimWorld: игра держит файлы кэша открытыми",
+            "Close RimWorld first: the game keeps its cache files open"
+        )
+        .to_string());
     }
-    let base = user_data_dir().ok_or("Папка данных RimWorld не найдена")?;
+    let base = user_data_dir().ok_or(tr!("Папка данных RimWorld не найдена", "RimWorld data folder not found"))?;
     let mut cleared = Vec::new();
     for dir in GAME_CACHE_DIRS {
         let path = base.join(dir);

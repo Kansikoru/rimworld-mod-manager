@@ -8,6 +8,7 @@ use std::time::SystemTime;
 use rayon::prelude::*;
 use walkdir::WalkDir;
 
+use crate::i18n::tr;
 use crate::models::ModInfo;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -540,8 +541,9 @@ pub fn run_optimization(
                                     backup = Some(target);
                                 }
                                 Err(e) => {
-                                    let _ = tx_clone.send(OptimizationMsg::FileError(format!(
+                                    let _ = tx_clone.send(OptimizationMsg::FileError(tr!(
                                         "{}: не удалось перенести исходник в бэкап: {}",
+                                        "{}: could not move the source to the backup: {}",
                                         path.display(),
                                         e
                                     )));
@@ -563,8 +565,9 @@ pub fn run_optimization(
                     }
                     Err(_panic) => {
                         error_count.fetch_add(1, Ordering::Relaxed);
-                        let _ = tx_clone.send(OptimizationMsg::FileError(format!(
+                        let _ = tx_clone.send(OptimizationMsg::FileError(tr!(
                             "{}: сбой при конвертации (panic)",
+                            "{}: conversion crashed (panic)",
                             path.display()
                         )));
                     }
@@ -592,8 +595,9 @@ pub fn run_optimization(
         // Record every created DDS (also after cancel) so rollback can find all of them.
         if let Ok(list) = created.lock() {
             if let Err(e) = merge_manifest(&manifest_path(), &list) {
-                let _ = tx.send(OptimizationMsg::FileError(format!(
+                let _ = tx.send(OptimizationMsg::FileError(tr!(
                     "Не удалось записать журнал DDS {}: {}",
+                    "Could not write the DDS log {}: {}",
                     manifest_path().display(),
                     e
                 )));

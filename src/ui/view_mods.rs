@@ -7,6 +7,7 @@ use crate::dependencies::DependencyProblem;
 use crate::i18n::{fmt, TranslationKey};
 use crate::models::{is_protected_package_id, ModInfo, ModOrigin};
 use crate::sorter::ModTier;
+use crate::steam::workshop_url;
 use super::components::*;
 use super::icons::*;
 use super::theme::THEME;
@@ -135,7 +136,7 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
                             .link(egui::RichText::new(dir.display().to_string()).size(12.0))
                             .clicked()
                         {
-                            let _ = open::that(dir);
+                            open_external(dir);
                         }
                     });
                 }
@@ -552,24 +553,21 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // Move Down (frameless button)
+            // The selection may come from the left list, where IDs keep the case of
+            // About.xml, while ModsConfig stores them in lower case: compare ignoring case.
+            let selected_pos = app.selected_mod_id.as_deref().and_then(|sel| {
+                app.active_mods.iter().position(|id| id.eq_ignore_ascii_case(sel))
+            });
             if ui.add(egui::Button::new(egui::RichText::new("▼").size(12.0).color(THEME.text_secondary)).frame(false)).clicked() {
-                if let Some(ref sel) = app.selected_mod_id {
-                    if let Some(pos) = app.active_mods.iter().position(|id| id == sel) {
-                        if pos + 1 < app.active_mods.len() {
-                            app.active_mods.swap(pos, pos + 1);
-                        }
-                    }
+                if let Some(pos) = selected_pos.filter(|&p| p + 1 < app.active_mods.len()) {
+                    app.active_mods.swap(pos, pos + 1);
                 }
             }
 
             // Move Up (frameless button)
             if ui.add(egui::Button::new(egui::RichText::new("▲").size(12.0).color(THEME.text_secondary)).frame(false)).clicked() {
-                if let Some(ref sel) = app.selected_mod_id {
-                    if let Some(pos) = app.active_mods.iter().position(|id| id == sel) {
-                        if pos > 0 {
-                            app.active_mods.swap(pos, pos - 1);
-                        }
-                    }
+                if let Some(pos) = selected_pos.filter(|&p| p > 0) {
+                    app.active_mods.swap(pos, pos - 1);
                 }
             }
         });
@@ -636,7 +634,8 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                     .map(|m| m.name.as_str())
                     .unwrap_or(pkg_id.as_str());
 
-                let is_selected = app.selected_mod_ids.contains(pkg_id) || app.selected_mod_id.as_deref() == Some(pkg_id);
+                let is_selected = app.selected_mod_ids.iter().any(|s| s.eq_ignore_ascii_case(pkg_id))
+                    || app.selected_mod_id.as_deref().is_some_and(|s| s.eq_ignore_ascii_case(pkg_id));
                 let is_protected = is_protected_package_id(pkg_id);
 
                 // Dependency warning for this mod
@@ -782,14 +781,13 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                             ui.separator();
                             if let Some(ref dir) = dir_path_ctx {
                                 if ui.button(app.i18n.get(TranslationKey::ModsCtxOpenFolder)).clicked() {
-                                    let _ = std::process::Command::new("explorer").arg(dir).spawn();
+                                    open_external(dir);
                                     ui.close_menu();
                                 }
                             }
                             if let Some(ref steam_id) = steam_id_ctx {
                                 if ui.button(app.i18n.get(TranslationKey::ModsCtxOpenWorkshop)).clicked() {
-                                    let url = format!("https://steamcommunity.com/sharedfiles/filedetails/?id={}", steam_id);
-                                    let _ = std::process::Command::new("cmd").args(["/C", "start", &url]).spawn();
+                                    open_external(workshop_url(steam_id));
                                     ui.close_menu();
                                 }
                             }
@@ -909,9 +907,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     apply_category_actions(app, cat_toggle, cat_reset);
 
     if let Some(req_id) = enable_dep_id {
-        if !app.active_mods.iter().any(|id| id.eq_ignore_ascii_case(&req_id)) {
-            app.active_mods.push(req_id);
-        }
+        app.activate_mod(&req_id);
     }
     if let Some(idx) = move_up_idx {
         if idx > 0 {
@@ -1123,13 +1119,12 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                                 }
                             ui.separator();
                             if ui.button(app.i18n.get(TranslationKey::ModsCtxOpenFolder)).clicked() {
-                                let _ = std::process::Command::new("explorer").arg(&dir_path_ctx).spawn();
+                                open_external(&dir_path_ctx);
                                 ui.close_menu();
                             }
                             if let Some(ref steam_id) = steam_id_ctx {
                                 if ui.button(app.i18n.get(TranslationKey::ModsCtxOpenWorkshop)).clicked() {
-                                    let url = format!("https://steamcommunity.com/sharedfiles/filedetails/?id={}", steam_id);
-                                    let _ = std::process::Command::new("cmd").args(["/C", "start", &url]).spawn();
+                                    open_external(workshop_url(steam_id));
                                     ui.close_menu();
                                 }
                             }
@@ -1197,15 +1192,12 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
 
     // Activate all selected (from context menu)
     if activate_selected {
-        let active_set_lower: HashSet<String> = app.active_mods.iter().map(|s| s.to_lowercase()).collect();
-        for id in &app.selected_mod_ids {
-            if !active_set_lower.contains(&id.to_lowercase()) {
-                app.active_mods.push(id.clone());
-            }
+        let ids: Vec<String> = app.selected_mod_ids.drain().collect();
+        for id in ids {
+            app.activate_mod(&id);
         }
-        app.selected_mod_ids.clear();
     } else if let Some(pkg_id) = activate_id {
-        app.active_mods.push(pkg_id);
+        app.activate_mod(&pkg_id);
     }
 }
 
@@ -1318,12 +1310,11 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(ref steam_id) = m.steam_item_id {
                         if ui.small_button("Steam").clicked() {
-                            let url = format!("https://steamcommunity.com/sharedfiles/filedetails/?id={}", steam_id);
-                            let _ = open::that(url);
+                            open_external(workshop_url(steam_id));
                         }
                     }
                     if secondary_button_icon(ui, ICON_FOLDER, app.i18n.get(TranslationKey::ModsBtnFolder)).clicked() {
-                        let _ = open::that(&m.dir_path);
+                        open_external(&m.dir_path);
                     }
                 });
             });

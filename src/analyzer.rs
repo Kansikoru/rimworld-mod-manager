@@ -1,3 +1,4 @@
+use crate::i18n::tr;
 use crate::models::ModInfo;
 use regex::Regex;
 use std::collections::HashMap;
@@ -195,7 +196,8 @@ impl<'a> ModMatcher<'a> {
     }
 }
 
-/// Summary line in the requested language (the report's own summary_text is Russian).
+/// Summary line in the requested language (the report's own summary_text uses the
+/// interface language at the time of the analysis).
 pub fn summary_for(report: &LogReport, is_ru: bool) -> String {
     let n = report.culprits.len();
     let e = report.total_errors;
@@ -222,10 +224,19 @@ pub fn detect_rimworld_log_paths() -> Vec<(String, PathBuf)> {
 
 fn log_paths_in(base: &Path) -> Vec<(String, PathBuf)> {
     let candidates = [
-        ("Logs/Player.log (1.7+, последний запуск)", base.join("Logs").join("Player.log")),
-        ("Logs/Player-prev.log (1.7+, предыдущий запуск)", base.join("Logs").join("Player-prev.log")),
-        ("Player.log (1.6, последний запуск)", base.join("Player.log")),
-        ("Player-prev.log (1.6, предыдущий запуск)", base.join("Player-prev.log")),
+        (
+            tr!("Logs/Player.log (1.7+, последний запуск)", "Logs/Player.log (1.7+, last run)"),
+            base.join("Logs").join("Player.log"),
+        ),
+        (
+            tr!("Logs/Player-prev.log (1.7+, предыдущий запуск)", "Logs/Player-prev.log (1.7+, previous run)"),
+            base.join("Logs").join("Player-prev.log"),
+        ),
+        (tr!("Player.log (1.6, последний запуск)", "Player.log (1.6, last run)"), base.join("Player.log")),
+        (
+            tr!("Player-prev.log (1.6, предыдущий запуск)", "Player-prev.log (1.6, previous run)"),
+            base.join("Player-prev.log"),
+        ),
     ];
 
     let mut found: Vec<(String, PathBuf, std::time::SystemTime)> = candidates
@@ -367,9 +378,11 @@ fn analyze_waylith_entries<'a>(
             mod_dir: Some(matched_mod.dir_path.clone()),
             severity,
             headline: format!("[{}] {}", entry.category, message),
-            explanation: format!(
+            explanation: tr!(
                 "Ошибка возникла в коде мода: `{}` (уровень {}).",
-                frame, entry.level
+                "The error came from the mod's code: `{}` (level {}).",
+                frame,
+                entry.level
             ),
             stack_trace_excerpt: excerpt,
             occurrences: 0,
@@ -395,7 +408,7 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
     let metadata = match fs::metadata(log_path) {
         Ok(m) => m,
         Err(_) => {
-            report.summary_text = "Не удалось прочитать файл лога.".to_string();
+            report.summary_text = tr!("Не удалось прочитать файл лога.", "Could not read the log file.").to_string();
             return report;
         }
     };
@@ -481,13 +494,16 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
                                 package_id: Some(matched_mod.package_id.clone()),
                                 mod_dir: Some(matched_mod.dir_path.clone()),
                                 severity: ErrorSeverity::HardCrash,
-                                headline: format!(
-                                    "Вызов метода `{}` привел к фатальному сбою игры (CTD)",
+                                headline: tr!(
+                                    "Вызов метода `{}` привёл к вылету игры (CTD)",
+                                    "Calling `{}` crashed the game (CTD)",
                                     method
                                 ),
-                                explanation: format!(
-                                    "Метод `{}:{}` выполнялся непосредственно перед крашем игрового движка Unity.",
-                                    full_class, method
+                                explanation: tr!(
+                                    "Метод `{}:{}` выполнялся прямо перед сбоем движка Unity.",
+                                    "`{}:{}` was running right before the Unity engine crashed.",
+                                    full_class,
+                                    method
                                 ),
                                 stack_trace_excerpt: excerpt,
                                 occurrences: 1,
@@ -524,13 +540,16 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
                                     package_id: Some(matched_mod.package_id.clone()),
                                     mod_dir: Some(matched_mod.dir_path.clone()),
                                     severity: ErrorSeverity::HardCrash,
-                                    headline: format!(
-                                        "Фатальный сбой в модуле `{}`",
+                                    headline: tr!(
+                                        "Вылет игры в моде `{}`",
+                                        "Game crash in mod `{}`",
                                         matched_mod.name
                                     ),
-                                    explanation: format!(
-                                        "Исключение в методе `{}:{}` привело к аварийному завершению процесса.",
-                                        full_class, method
+                                    explanation: tr!(
+                                        "Исключение в методе `{}:{}` завершило процесс игры.",
+                                        "An exception in `{}:{}` ended the game process.",
+                                        full_class,
+                                        method
                                     ),
                                     stack_trace_excerpt: stack_text.clone(),
                                     occurrences: 1,
@@ -570,12 +589,14 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
                             package_id: Some(matched_mod.package_id.clone()),
                             mod_dir: Some(matched_mod.dir_path.clone()),
                             severity: ErrorSeverity::PrepatcherHarmonyError,
-                            headline: format!(
-                                "Ошибка препатчера Prepatcher в моде `{}`",
+                            headline: tr!(
+                                "Ошибка Prepatcher в моде `{}`",
+                                "Prepatcher error in mod `{}`",
                                 matched_mod.name
                             ),
-                            explanation: format!(
-                                "Патч `{}` не смог инъецироваться в сборку. Это часто вызывает черный экран или зависание загрузки.",
+                            explanation: tr!(
+                                "Патч `{}` не смог встроиться в сборку. Это часто даёт чёрный экран или зависание загрузки.",
+                                "Patch `{}` could not be applied to the assembly. This often causes a black screen or a stuck loading screen.",
                                 patch_class
                             ),
                             stack_trace_excerpt: excerpt.clone(),
@@ -612,10 +633,16 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
                         package_id: matched_mod.map(|m| m.package_id.clone()),
                         mod_dir: matched_mod.map(|m| m.dir_path.clone()),
                         severity: ErrorSeverity::MissingDependency,
-                        headline: format!("Отсутствует или не загружена зависимость `{}`", dep_id),
-                        explanation: format!(
-                            "Мод `{}` требует наличие активного мода с Package ID `{}`.",
-                            target_name, dep_id
+                        headline: tr!(
+                            "Нет или не загружена зависимость `{}`",
+                            "Dependency `{}` is missing or not loaded",
+                            dep_id
+                        ),
+                        explanation: tr!(
+                            "Мод `{}` требует включённый мод с Package ID `{}`.",
+                            "Mod `{}` needs an enabled mod with Package ID `{}`.",
+                            target_name,
+                            dep_id
                         ),
                         stack_trace_excerpt: line.to_string(),
                         occurrences: 0,
@@ -648,13 +675,16 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
                             package_id: Some(m.package_id.clone()),
                             mod_dir: Some(m.dir_path.clone()),
                             severity: ErrorSeverity::DefException,
-                            headline: format!(
+                            headline: tr!(
                                 "Ошибка DefDatabase / NullReference в объекте `{}`",
+                                "DefDatabase / NullReference error in `{}`",
                                 def_name
                             ),
-                            explanation: format!(
-                                "Критическая ошибка конфигурации объекта `{}` в моде `{}`.",
-                                def_name, m.name
+                            explanation: tr!(
+                                "Ошибка в настройках объекта `{}` в моде `{}`.",
+                                "Broken definition of `{}` in mod `{}`.",
+                                def_name,
+                                m.name
                             ),
                             stack_trace_excerpt: excerpt.clone(),
                             occurrences: 0,
@@ -681,25 +711,7 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
 
     report.culprits = culprits;
 
-    if report.has_hard_crash {
-        report.summary_text = format!(
-            "В логе зафиксирован фатальный краш процесса (CTD). Найдено виновников: {}.",
-            report.culprits.len()
-        );
-    } else if !report.culprits.is_empty() {
-        report.summary_text = format!(
-            "Обнаружены критические ошибки инициализации. Найдено проблемных модов: {}.",
-            report.culprits.len()
-        );
-    } else if report.total_errors > 0 {
-        report.summary_text = format!(
-            "В логе найдено {} ошибок, но прямых виновников фатального сбоя не выявлено.",
-            report.total_errors
-        );
-    } else {
-        report.summary_text = "Лог чист. Критических ошибок и вылетов не обнаружено.".to_string();
-    }
-
+    report.summary_text = summary_for(&report, !crate::i18n::is_english());
     report
 }
 

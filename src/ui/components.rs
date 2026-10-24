@@ -1,6 +1,12 @@
 use eframe::egui::{self, Color32, Pos2, Response, Rounding, Sense, Stroke, Ui, Vec2};
 use super::theme::THEME;
 
+/// Opens a folder in Explorer or a link in the default browser. One way for the
+/// whole app; doesn't wait for the program it starts.
+pub fn open_external(target: impl AsRef<std::ffi::OsStr>) {
+    let _ = open::that_detached(target);
+}
+
 /// Renders a modern badge pill (e.g. "Workshop", "DLC", "RU", "Tier 2")
 pub fn badge(ui: &mut Ui, text: &str, bg: Color32, fg: Color32) -> Response {
     let padding = Vec2::new(7.0, 3.0);

@@ -73,7 +73,11 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
             if app.ui_prefs != before {
                 crate::fonts::setup_custom_fonts(ui.ctx(), &app.ui_prefs);
                 if let Err(e) = app.ui_prefs.save() {
-                    app.status_message = format!("Не удалось сохранить настройки шрифта: {}", e);
+                    app.status_message = crate::i18n::tr!(
+                        "Не удалось сохранить настройки шрифта: {}",
+                        "Could not save font settings: {}",
+                        e
+                    );
                 }
             }
         });
