@@ -2,6 +2,14 @@
 
 Менеджер модов и порядка загрузки для RimWorld 1.6 (Unity) и 1.7 (Waylith). Написан на Rust, интерфейс на egui. Работает под Windows.
 
+*Mod and load order manager for RimWorld 1.6 and 1.7 (Windows): load order sorting with RimSort community rules, mod categories, dependency checks, translation search on Steam Workshop, DDS texture optimizer, Player.log analyzer. The interface is available in Russian and English.*
+
+![Главное окно](docs/screenshot.png)
+
+## Скачать
+
+Готовая программа лежит в разделе **Releases** этого репозитория. Скачайте `rimworld-mod-manager.exe` и запустите — установка не нужна.
+
 ## Что умеет
 
 - **Список модов.** Включение и выключение, перемещение, поиск, категории по содержимому мода (расы, фракции, постройки, оружие, QoL и т.д.) с фильтром. Предупреждения о зависимостях, несовместимостях, копиях одного мода и модах без поддержки текущей версии игры.

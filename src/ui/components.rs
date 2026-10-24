@@ -297,11 +297,27 @@ pub fn success_button_icon(ui: &mut Ui, icon: ImageSource<'static>, text: &str) 
     ui.add(btn)
 }
 
-/// Small icon-only button
+/// Small icon-only button. Allocates exactly `size` + padding and draws the icon 1:1 on whole
+/// pixels (egui's own image button shrinks the image to the row height, which loses thin lines).
 pub fn icon_button(ui: &mut Ui, icon: ImageSource<'static>, size: Vec2, tint: Color32) -> Response {
-    let btn = egui::Button::image(svg_icon(icon, size, tint))
-        .fill(Color32::TRANSPARENT)
-        .stroke(Stroke::NONE)
-        .rounding(Rounding::same(4.0));
-    ui.add(btn)
+    let pad = 3.0;
+    let size = size.round();
+    let (rect, response) = ui.allocate_exact_size(size + Vec2::splat(pad * 2.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let hovered = response.hovered();
+        if hovered {
+            ui.painter().rect_filled(rect, Rounding::same(4.0), THEME.bg_surface_hover);
+        }
+        let ppp = ui.ctx().pixels_per_point();
+        let snap = |v: f32| (v * ppp).round() / ppp;
+        let icon_rect = egui::Rect::from_min_size(
+            Pos2::new(snap(rect.min.x + pad), snap(rect.min.y + pad)),
+            size,
+        );
+        egui::Image::new(icon)
+            .texture_options(egui::TextureOptions::NEAREST)
+            .tint(if hovered { THEME.text_primary } else { tint })
+            .paint_at(ui, icon_rect);
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }

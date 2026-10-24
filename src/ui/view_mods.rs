@@ -153,7 +153,8 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
     // Left: Available Mods (Доступные моды)
     // Right: active mods + mod details panel
     let available_width = ui.available_width();
-    let col_width = ((available_width - 12.0) / 2.0).max(280.0);
+    // Leave room for the separator and item spacing so the right column never overflows the window.
+    let col_width = ((available_width - 2.0 * ui.spacing().item_spacing.x - 12.0) / 2.0).max(280.0);
     let total_height = ui.available_height();
 
     ui.horizontal_top(|ui| {
