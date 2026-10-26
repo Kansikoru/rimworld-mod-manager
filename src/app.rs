@@ -2133,7 +2133,11 @@ impl App {
                                             .strong(),
                                     );
                                     ui.label(
-                                        egui::RichText::new(tr!("модов: {}", "{} mods", b.mods.len()))
+                                        egui::RichText::new(if b.mods.len() == 1 {
+                                            tr!("модов: 1", "1 mod").to_string()
+                                        } else {
+                                            tr!("модов: {}", "{} mods", b.mods.len())
+                                        })
                                             .color(THEME.text_secondary)
                                             .size(12.0),
                                     );
