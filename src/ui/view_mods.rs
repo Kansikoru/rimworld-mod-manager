@@ -1,7 +1,7 @@
 use eframe::egui::{self, Color32, Rounding, Stroke, Ui, Vec2};
 use std::collections::HashSet;
 
-use crate::app::{lookup_mod, passes_category_filter, App, DropTarget, ModDrag};
+use crate::app::{is_official_content, lookup_mod, passes_category_filter, App, DropTarget, ModDrag};
 use crate::categories::ModCategory;
 use crate::dependencies::DependencyProblem;
 use crate::i18n::{fmt, tr, TranslationKey};
@@ -655,6 +655,15 @@ fn origin_badge(ui: &mut Ui, origin: ModOrigin) {
     icon_badge(ui, icon, text, crate::ui::theme::tint(color), color);
 }
 
+/// Small icon before a mod name: Steam Workshop or the game's Mods folder (hover says which).
+fn origin_icon(ui: &mut Ui, origin: ModOrigin, t: crate::i18n::I18n) {
+    let (icon, color, key) = match origin {
+        ModOrigin::Workshop => (ICON_STATUS_WORKSHOP, THEME.accent_info, TranslationKey::ModsOriginSteam),
+        ModOrigin::Local => (ICON_STATUS_LOCAL, THEME.text_muted, TranslationKey::ModsOriginLocal),
+    };
+    ui.add(svg_icon(icon, Vec2::splat(14.0), color)).on_hover_text(t.get(key));
+}
+
 /// Icon, background and foreground for a mod without a preview image:
 /// shield for protected content, otherwise the icon of its strongest category.
 fn mod_fallback_icon(
@@ -701,6 +710,7 @@ fn render_mod_icon_pill(
 fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
     let game_mm = app.steam_paths.game_major_minor();
+    let game_data = app.steam_paths.game_data_path.clone();
 
     // Header: title, count; on the right — search and move up / down for the selected mod.
     let active_count = app.active_mods.len();
@@ -854,6 +864,9 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                             is_protected,
                             texture,
                         );
+                        if let Some(m) = mod_info_opt.filter(|m| !is_official_content(m, game_data.as_deref())) {
+                            origin_icon(ui, m.origin, t);
+                        }
 
                         // Mod Name (selectable)
                         let name_text = egui::RichText::new(display_name)
@@ -1168,6 +1181,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
 /// Renders the Left Column: Inactive / Available Mods
 fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
+    let game_data = app.steam_paths.game_data_path.clone();
     // Whole panel: drop zone for disabling dragged active mods.
     let panel_rect = ui.max_rect();
     let game_mm = app.steam_paths.game_major_minor();
@@ -1254,6 +1268,9 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                         }
                         let texture = tex_opt.and_then(|t| t.as_ref());
                         render_mod_icon_pill(ui, m.categories.first().copied(), false, texture);
+                        if !is_official_content(m, game_data.as_deref()) {
+                            origin_icon(ui, m.origin, t);
+                        }
 
                         let name_text = egui::RichText::new(&m.name).color(THEME.text_primary).size(13.0);
                         let label_resp = mod_name_label(ui, if is_selected { name_text.strong() } else { name_text });
@@ -1345,9 +1362,6 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
 
                         category_badges(ui, &m.categories, t, 2);
                         version_badge(ui, m, game_mm.as_deref(), t);
-                        if m.origin == ModOrigin::Workshop {
-                            tag_if_fits(ui, "Steam", THEME.accent_info);
-                        }
                         }
                         let right_rect = finish_row(ui, &left_ui, &split);
 

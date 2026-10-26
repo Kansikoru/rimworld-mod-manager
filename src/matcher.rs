@@ -314,6 +314,10 @@ pub fn is_translation_title(title: &str) -> bool {
         || lower.contains("übersetzung")
         || lower.contains("traduction")
         || crate::models::contains_cyrillic(title)
+        // A language marker of any language on offer ("日本語", "[PL]", "Português").
+        || crate::models::TranslationTargetLang::POPULAR
+            .iter()
+            .any(|lang| lang.matches_workshop_item(title, &[]))
 }
 
 /// Stricter name check for the modpack-wide search: the whole mod name is in the title
@@ -580,6 +584,44 @@ mod tests {
                 println!("    {}  ({})", k.title, k.id);
             }
         }
+    }
+
+    #[test]
+    fn languages_are_told_apart() {
+        use crate::models::TranslationTargetLang as L;
+        let is = |lang: L, title: &str| lang.matches_workshop_item(title, &[]);
+        // Japanese uses Chinese characters too: kana decides.
+        assert!(is(L::Ja, "Dubs Bad Hygiene 日本語化パッチ"));
+        assert!(!is(L::Zh, "Dubs Bad Hygiene 日本語化パッチ"));
+        assert!(is(L::Zh, "Dubs Bad Hygiene 简体中文汉化"));
+        // Cyrillic alone is not Russian.
+        assert!(is(L::Uk, "Dubs Bad Hygiene - Українська локалізація"));
+        assert!(!is(L::Ru, "Dubs Bad Hygiene - Українська локалізація"));
+        assert!(is(L::Ru, "Dubs Bad Hygiene - Русский перевод"));
+        // Short codes count only as tags, not as English words.
+        assert!(is(L::It, "Dubs Bad Hygiene [IT]"));
+        assert!(!is(L::It, "Make it work: Dubs Bad Hygiene"));
+        assert!(is(L::PtBr, "Dubs Bad Hygiene - Tradução PT-BR"));
+        assert!(is(L::Pl, "Dubs Bad Hygiene - spolszczenie"));
+        assert!(is(L::Ko, "Dubs Bad Hygiene 한국어 번역"));
+        assert!(!is(L::Ko, "Dubs Bad Hygiene Russian"));
+    }
+
+    #[test]
+    fn new_languages_find_their_translations() {
+        use crate::models::TranslationTargetLang as L;
+        let found = vec![
+            item("1", "Vanilla Expanded Framework - Japanese Translation", &["Translation"]),
+            item("2", "Vanilla Expanded Framework 日本語化", &[]),
+            item("3", "Vanilla Expanded Framework - Russian", &["Translation"]),
+        ];
+        let none = std::collections::HashSet::new();
+        let ids: Vec<String> = translations_for_mod(found, "Vanilla Expanded Framework", None, L::Ja, &none)
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
+        assert_eq!(ids.len(), 2, "{ids:?}");
+        assert!(!ids.contains(&"3".to_string()));
     }
 
     #[test]

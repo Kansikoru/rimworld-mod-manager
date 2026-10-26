@@ -27,25 +27,25 @@ pub fn render_translations_view(app: &mut App, ui: &mut Ui) {
                 .strong(),
         );
 
-        let langs = [
-            (TranslationTargetLang::Ru, "Русский (RU)"),
-            (TranslationTargetLang::Zh, "中文 (ZH)"),
-            (TranslationTargetLang::De, "Deutsch (DE)"),
-            (TranslationTargetLang::Fr, "Français (FR)"),
-        ];
-
+        // Dropdown of the most common languages, most popular first.
         // The language can't change under a running modpack search.
+        let lang_text = |l: TranslationTargetLang| format!("{} ({})", l.label(), l.code());
+        let before = app.trans_target_lang;
         ui.add_enabled_ui(!app.is_batch_searching(), |ui| {
-            for (lang_val, label) in langs {
-                let is_sel = app.trans_target_lang == lang_val;
-                if ui.selectable_label(is_sel, label).clicked() && !is_sel {
-                    app.trans_target_lang = lang_val;
-                    // Results of another language would only confuse.
-                    app.batch_results.clear();
-                    app.batch_checked.clear();
-                }
-            }
+            egui::ComboBox::from_id_salt("translation_target_language")
+                .selected_text(lang_text(app.trans_target_lang))
+                .width(200.0)
+                .show_ui(ui, |ui| {
+                    for lang in TranslationTargetLang::POPULAR {
+                        ui.selectable_value(&mut app.trans_target_lang, lang, lang_text(lang));
+                    }
+                });
         });
+        if app.trans_target_lang != before {
+            // Results of another language would only confuse.
+            app.batch_results.clear();
+            app.batch_checked.clear();
+        }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if danger_button_icon(ui, ICON_TRASH, t.get(TranslationKey::TransBtnDeleteAll)).clicked() {

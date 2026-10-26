@@ -118,10 +118,92 @@ pub enum TranslationTargetLang {
     Zh,
     De,
     Fr,
+    Ja,
+    Ko,
+    Es,
+    PtBr,
+    Pl,
+    It,
+    Tr,
+    Uk,
+    Cs,
     All,
 }
 
+/// How a language shows up in mod folders and Workshop titles (languages without
+/// hand-written rules below).
+struct LangSpec {
+    /// Lower-case pieces of RimWorld `Languages` folder names ("japanese", "日本語").
+    folders: &'static [&'static str],
+    /// Lower-case words in titles ("japanese", "日本語", "tłumaczenie").
+    words: &'static [&'static str],
+    /// Short codes, counted only as tags: "[jp]", "(jp)", "_jp", "... jp" at the end.
+    codes: &'static [&'static str],
+    /// Letters only this language uses (kana, Hangul, Ukrainian і ї є ґ).
+    script: Option<fn(&str) -> bool>,
+}
+
+impl LangSpec {
+    fn title_matches(&self, title: &str) -> bool {
+        let lower = title.to_lowercase();
+        self.words.iter().any(|w| lower.contains(w))
+            || self.codes.iter().any(|c| has_code_tag(&lower, c))
+            || self.script.is_some_and(|f| f(title))
+    }
+
+    fn folder_matches(&self, folder: &str) -> bool {
+        let lower = folder.to_lowercase();
+        self.folders.iter().any(|f| lower.contains(f))
+    }
+}
+
+/// "[jp]", "(jp)", "_jp" or " jp" at the end: a code used as a tag, not a word inside a sentence.
+fn has_code_tag(lower: &str, code: &str) -> bool {
+    lower.contains(&format!("[{code}]"))
+        || lower.contains(&format!("({code})"))
+        || lower.contains(&format!("_{code}"))
+        || lower.ends_with(&format!(" {code}"))
+}
+
+pub fn contains_kana(s: &str) -> bool {
+    s.chars().any(|c| ('\u{3040}'..='\u{30FF}').contains(&c))
+}
+
+pub fn contains_hangul(s: &str) -> bool {
+    s.chars().any(|c| {
+        ('\u{AC00}'..='\u{D7AF}').contains(&c) || ('\u{1100}'..='\u{11FF}').contains(&c) || ('\u{3130}'..='\u{318F}').contains(&c)
+    })
+}
+
+/// Letters Ukrainian has and Russian doesn't.
+pub fn contains_ukrainian_letters(s: &str) -> bool {
+    s.chars().any(|c| matches!(c, 'і' | 'ї' | 'є' | 'ґ' | 'І' | 'Ї' | 'Є' | 'Ґ'))
+}
+
+fn has_uk_marker(title: &str) -> bool {
+    let lower = title.to_lowercase();
+    contains_ukrainian_letters(title) || lower.contains("ukrain") || lower.contains("україн") || has_code_tag(&lower, "ua")
+}
+
 impl TranslationTargetLang {
+    /// Languages offered for translation search, most common on the Workshop first.
+    pub const POPULAR: [TranslationTargetLang; 13] = [
+        Self::Ru,
+        Self::Zh,
+        Self::Ja,
+        Self::Ko,
+        Self::De,
+        Self::Fr,
+        Self::Es,
+        Self::PtBr,
+        Self::Pl,
+        Self::It,
+        Self::Tr,
+        Self::Uk,
+        Self::Cs,
+    ];
+
+    /// The language's own name.
     pub fn label(&self) -> &'static str {
         match self {
             Self::Ru => "Русский",
@@ -129,10 +211,40 @@ impl TranslationTargetLang {
             Self::Zh => "中文",
             Self::De => "Deutsch",
             Self::Fr => "Français",
-            Self::All => "Все",
+            Self::Ja => "日本語",
+            Self::Ko => "한국어",
+            Self::Es => "Español",
+            Self::PtBr => "Português (BR)",
+            Self::Pl => "Polski",
+            Self::It => "Italiano",
+            Self::Tr => "Türkçe",
+            Self::Uk => "Українська",
+            Self::Cs => "Čeština",
+            Self::All => "All",
         }
     }
 
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Ru => "RU",
+            Self::En => "EN",
+            Self::Zh => "ZH",
+            Self::De => "DE",
+            Self::Fr => "FR",
+            Self::Ja => "JA",
+            Self::Ko => "KO",
+            Self::Es => "ES",
+            Self::PtBr => "PT-BR",
+            Self::Pl => "PL",
+            Self::It => "IT",
+            Self::Tr => "TR",
+            Self::Uk => "UK",
+            Self::Cs => "CS",
+            Self::All => "",
+        }
+    }
+
+    /// English name, added to Workshop searches ("Dubs Bad Hygiene Japanese").
     pub fn search_suffix(&self) -> &'static str {
         match self {
             Self::Ru => "Russian",
@@ -140,19 +252,92 @@ impl TranslationTargetLang {
             Self::Zh => "Chinese",
             Self::De => "German",
             Self::Fr => "French",
+            Self::Ja => "Japanese",
+            Self::Ko => "Korean",
+            Self::Es => "Spanish",
+            Self::PtBr => "Portuguese",
+            Self::Pl => "Polish",
+            Self::It => "Italian",
+            Self::Tr => "Turkish",
+            Self::Uk => "Ukrainian",
+            Self::Cs => "Czech",
             Self::All => "",
         }
     }
 
+    fn spec(&self) -> Option<LangSpec> {
+        let s = match self {
+            Self::Ja => LangSpec {
+                folders: &["japanese", "日本語"],
+                words: &["japanese", "日本語"],
+                codes: &["jp", "ja", "jpn"],
+                script: Some(contains_kana),
+            },
+            Self::Ko => LangSpec {
+                folders: &["korean", "한국어"],
+                words: &["korean", "한국어", "한글"],
+                codes: &["kr", "ko", "kor"],
+                script: Some(contains_hangul),
+            },
+            Self::Es => LangSpec {
+                folders: &["spanish", "español"],
+                words: &["spanish", "español", "espanol", "castellano", "traducción", "traduccion"],
+                codes: &["es", "esp", "spa"],
+                script: None,
+            },
+            Self::PtBr => LangSpec {
+                folders: &["portuguese", "português"],
+                words: &["portuguese", "português", "portugues", "brasileiro", "tradução", "traducao"],
+                codes: &["pt", "br", "ptbr", "pt-br"],
+                script: None,
+            },
+            Self::Pl => LangSpec {
+                folders: &["polish", "polski"],
+                words: &["polish", "polski", "spolszczenie", "tłumaczenie", "tlumaczenie"],
+                codes: &["pl", "pol"],
+                script: None,
+            },
+            Self::It => LangSpec {
+                folders: &["italian", "italiano"],
+                words: &["italian", "italiano", "traduzione"],
+                codes: &["it", "ita"],
+                script: None,
+            },
+            Self::Tr => LangSpec {
+                folders: &["turkish", "türkçe"],
+                words: &["turkish", "türkçe", "turkce", "çeviri", "ceviri"],
+                codes: &["tr", "tur"],
+                script: None,
+            },
+            Self::Uk => LangSpec {
+                folders: &["ukrainian", "українськ"],
+                words: &["ukrainian", "україн"],
+                codes: &["ua", "ukr"],
+                script: Some(contains_ukrainian_letters),
+            },
+            Self::Cs => LangSpec {
+                folders: &["czech", "čeština"],
+                words: &["czech", "čeština", "cestina", "česk", "překlad", "preklad"],
+                codes: &["cz", "cs", "cze"],
+                script: None,
+            },
+            _ => return None,
+        };
+        Some(s)
+    }
+
     /// The mod itself ships this language (a folder in its Languages): no translation needed.
     pub fn is_built_into(&self, m: &ModInfo) -> bool {
+        if let Some(spec) = self.spec() {
+            return m.languages.iter().any(|l| spec.folder_matches(l));
+        }
         let words: &[&str] = match self {
             Self::Ru => &["russian", "русский"],
             Self::En => &["english"],
             Self::Zh => &["chinese"],
             Self::De => &["german", "deutsch"],
             Self::Fr => &["french", "français"],
-            Self::All => return false,
+            _ => return false,
         };
         m.languages.iter().any(|l| {
             let lower = l.to_lowercase();
@@ -162,6 +347,9 @@ impl TranslationTargetLang {
 
     /// Checks if a local mod on disk matches this target language.
     pub fn matches_mod_info(&self, m: &ModInfo) -> bool {
+        if let Some(spec) = self.spec() {
+            return m.languages.iter().any(|l| spec.folder_matches(l)) || spec.title_matches(&m.name);
+        }
         match self {
             Self::All => true,
             Self::Ru => {
@@ -206,11 +394,17 @@ impl TranslationTargetLang {
                     || m.name.to_lowercase().contains("francais")
                     || m.name.to_lowercase().contains("traduction")
             }
+            // Languages with a LangSpec are handled above.
+            _ => false,
         }
     }
 
     /// Checks if a Workshop item matches this target language based on title and tags.
     pub fn matches_workshop_item(&self, title: &str, tags: &[String]) -> bool {
+        if let Some(spec) = self.spec() {
+            let tag_name = self.search_suffix();
+            return spec.title_matches(title) || tags.iter().any(|t| t.eq_ignore_ascii_case(tag_name));
+        }
         let title_low = title.to_lowercase();
 
         let is_cyr = contains_cyrillic(title);
@@ -239,6 +433,10 @@ impl TranslationTargetLang {
                 if !has_ru {
                     return false;
                 }
+                // Cyrillic alone isn't Russian: a Ukrainian translation without a Russian marker is not it.
+                if has_uk_marker(title) && !title_low.contains("russian") && !title_low.contains("рус") && !title_low.contains("[ru]") {
+                    return false;
+                }
                 // If it contains strong Chinese/French/German markers without Cyrillic/Russian, reject
                 if (has_zh || has_fr || has_de)
                     && !is_cyr
@@ -249,7 +447,8 @@ impl TranslationTargetLang {
                 }
                 true
             }
-            Self::Zh => has_zh && !has_ru,
+            // Japanese titles use Chinese characters too; kana means Japanese.
+            Self::Zh => has_zh && !has_ru && !contains_kana(title),
             Self::Fr => has_fr && !has_ru && !has_zh,
             Self::De => has_de && !has_ru && !has_zh,
             Self::En => {
@@ -260,6 +459,8 @@ impl TranslationTargetLang {
                     && !has_de
             }
             Self::All => true,
+            // Languages with a LangSpec are handled above.
+            _ => false,
         }
     }
 }

@@ -640,6 +640,15 @@ pub fn active_after_rescan(unsaved: bool, force_reload: bool, on_disk: &[String]
     (force_reload || !unsaved).then(|| on_disk.to_vec())
 }
 
+/// Core and DLC: Ludeon package IDs or anything in the game's Data folder.
+pub fn is_official_content(m: &ModInfo, game_data: Option<&std::path::Path>) -> bool {
+    let id = m.package_id.to_lowercase();
+    if is_protected_package_id(&id) || id.starts_with("ludeon.rimworld") {
+        return true;
+    }
+    game_data.is_some_and(|data| m.dir_path.starts_with(data))
+}
+
 /// Adds `id` (lower case) unless the list already has it in any letter case.
 pub fn add_active_id(active: &mut Vec<String>, id: &str) -> bool {
     if active.iter().any(|a| a.eq_ignore_ascii_case(id)) {
@@ -740,15 +749,7 @@ impl App {
 
     /// Official content (Core/DLC in the game's Data folder) — never touched by the optimizer or deletion.
     pub fn is_official_mod(&self, m: &ModInfo) -> bool {
-        let id = m.package_id.to_lowercase();
-        if is_protected_package_id(&id) || id.starts_with("ludeon.rimworld") {
-            return true;
-        }
-        self.steam_paths
-            .game_data_path
-            .as_ref()
-            .map(|data| m.dir_path.starts_with(data))
-            .unwrap_or(false)
+        is_official_content(m, self.steam_paths.game_data_path.as_deref())
     }
 
     /// Whether a mod passes the category filter of the mod list.
