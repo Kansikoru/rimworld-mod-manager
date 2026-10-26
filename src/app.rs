@@ -175,10 +175,11 @@ pub struct App {
     pub opt_stop_flag: Arc<AtomicBool>,
     pub opt_rx: Option<Receiver<OptimizationMsg>>,
     pub opt_ignore_list: std::collections::HashSet<String>,
-    /// Flip textures vertically before encoding (RimPy style). Off by default.
-    pub opt_flip: bool,
-    /// On RimWorld 1.7 conversion is blocked unless the user explicitly allows it.
-    pub opt_allow_on_waylith: bool,
+    /// Optimizer DDS on disk stored the wrong way up for the installed game (counted on every
+    /// rescan): made for 1.6 and now played on 1.7, or the other way round.
+    pub opt_wrong_orientation: usize,
+    /// Background "Flip textures" run.
+    pub opt_orient_rx: Option<Receiver<crate::optimizer::OrientationMsg>>,
     /// Background "Scan" result.
     pub opt_scan_rx: Option<Receiver<TextureSummary>>,
     /// Background "Rollback" result.
@@ -410,8 +411,8 @@ impl App {
             opt_stop_flag: Arc::new(AtomicBool::new(false)),
             opt_rx: None,
             opt_ignore_list,
-            opt_flip: false,
-            opt_allow_on_waylith: false,
+            opt_wrong_orientation: 0,
+            opt_orient_rx: None,
             opt_scan_rx: None,
             opt_rollback_rx: None,
 
@@ -615,6 +616,8 @@ pub type WorkshopSearchOutcome = Result<(Vec<WorkshopItemResult>, String), Strin
 pub struct RescanResult {
     pub mods: Vec<ModInfo>,
     pub duplicates: Vec<crate::scanner::DuplicateModEntry>,
+    /// Optimizer DDS on disk stored the wrong way up for the installed game.
+    pub optimizer_dds: usize,
 }
 
 /// Index-based lookup (M1); understands the `_steam` suffix like `find_mod_in`.
@@ -893,6 +896,7 @@ impl App {
         let data = self.steam_paths.game_data_path.clone();
         let overrides = self.category_overrides.clone();
         let game_mm = self.steam_paths.game_major_minor();
+        let want_flipped = crate::optimizer::engine_wants_flipped(self.steam_paths.engine);
         self.rescan_rx = Some(self.spawn_task(move || {
             let scanned = scan_mods(workshop.as_deref(), local.as_deref(), data.as_deref());
             // Two copies with the same packageId show up twice in the game's mod list: keep one, warn about it.
@@ -901,7 +905,8 @@ impl App {
             crate::scanner::resolve_versioned_fields(&mut unique, game_mm.as_deref());
             classify_and_link_translations(&mut unique);
             crate::categories::assign_categories(&mut unique, &overrides);
-            RescanResult { mods: unique, duplicates }
+            let optimizer_dds = crate::optimizer::count_wrong_orientation(&crate::optimizer::manifest_path(), want_flipped);
+            RescanResult { mods: unique, duplicates, optimizer_dds }
         }));
     }
 
@@ -911,6 +916,7 @@ impl App {
         crate::categories::assign_categories(&mut mods, &self.category_overrides);
         self.all_mods = mods;
         self.duplicate_mods = res.duplicates;
+        self.opt_wrong_orientation = res.optimizer_dds;
         self.rebuild_mod_index();
 
         // Drop cached thumbnails of mods that are gone (the cache folder doesn't grow forever).
@@ -1484,14 +1490,6 @@ impl App {
                     .to_string();
             return;
         }
-        if self.optimizer_blocked() {
-            self.status_message = tr!(
-                "RimWorld 1.7 сжимает текстуры сам — конвертация отключена (можно разрешить вручную)",
-                "RimWorld 1.7 compresses textures itself — conversion is off (can be allowed manually)"
-            )
-            .to_string();
-            return;
-        }
 
         let (tx, rx) = channel();
         self.opt_rx = Some(rx);
@@ -1505,7 +1503,8 @@ impl App {
             dirs,
             self.opt_force,
             self.opt_delete_source,
-            ConvertOptions { flip_vertical: self.opt_flip },
+            // The side the installed game needs: flipped on 1.7, as the PNG on 1.6.
+            ConvertOptions { flip_vertical: crate::optimizer::engine_wants_flipped(self.steam_paths.engine) },
             self.opt_threads,
             tx,
             self.opt_stop_flag.clone(),
@@ -1516,11 +1515,6 @@ impl App {
             "Converting textures (BC7 / BC1 with mipmaps)..."
         )
         .to_string();
-    }
-
-    /// Conversion is blocked on 1.7 (the game compresses textures itself) unless explicitly allowed.
-    pub fn optimizer_blocked(&self) -> bool {
-        self.steam_paths.engine == crate::game_install::GameEngine::Waylith && !self.opt_allow_on_waylith
     }
 
     /// RimWorld 1.7: moves TextureCache and ShaderCache to the Recycle Bin (game rebuilds them).
@@ -1547,6 +1541,51 @@ impl App {
         }));
     }
 
+    /// "Flip textures": compares every optimizer DDS that may be the wrong way up for the
+    /// installed game with its source and re-encodes the ones that are. Background, cancellable.
+    pub fn fix_texture_orientation(&mut self) {
+        if self.optimizer_busy() {
+            return;
+        }
+        let want_flipped = crate::optimizer::engine_wants_flipped(self.steam_paths.engine);
+        let (tx, rx) = channel();
+        self.opt_orient_rx = Some(rx);
+        self.opt_is_running = true;
+        self.opt_stop_flag.store(false, Ordering::Relaxed);
+        self.opt_done = 0;
+        self.opt_total = 0;
+        self.opt_errors = 0;
+        self.opt_current_file.clear();
+        crate::optimizer::fix_orientation_async(want_flipped, self.opt_threads, tx, self.opt_stop_flag.clone());
+        self.status_message = self.i18n.get(TranslationKey::OptFlipRunning).to_string();
+    }
+
+    fn poll_orientation_fix(&mut self) {
+        let Some(rx) = &self.opt_orient_rx else { return };
+        let mut finished = None;
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                crate::optimizer::OrientationMsg::Progress { done, total, current_file } => {
+                    self.opt_done = done;
+                    self.opt_total = total;
+                    self.opt_current_file = current_file;
+                }
+                crate::optimizer::OrientationMsg::Done(summary) => finished = Some(summary),
+            }
+        }
+        if let Some(s) = finished {
+            self.opt_orient_rx = None;
+            self.opt_is_running = false;
+            self.opt_errors = s.errors;
+            let key = if s.cancelled { TranslationKey::OptFlipStopped } else { TranslationKey::OptFlipDone };
+            self.status_message = fmt(
+                self.i18n.get(key),
+                &[&s.fixed.to_string(), &s.already_ok.to_string(), &s.errors.to_string()],
+            );
+            self.rescan_mods_keep_status();
+        }
+    }
+
     pub fn cancel_texture_optimization(&mut self) {
         self.opt_stop_flag.store(true, Ordering::Relaxed);
         self.status_message = tr!("Отмена оптимизации...", "Cancelling optimization...").to_string();
@@ -1569,7 +1608,7 @@ impl App {
     pub fn scan_texture_counts(&mut self) {
         let dirs = self.optimizer_target_dirs();
         let (tx, rx) = channel();
-        texture_summary_async(dirs, self.opt_force, tx);
+        texture_summary_async(dirs, self.opt_force, crate::optimizer::engine_wants_flipped(self.steam_paths.engine), tx);
         self.opt_scan_rx = Some(rx);
         self.status_message = tr!("Подсчёт текстур...", "Counting textures...").to_string();
     }
@@ -1599,6 +1638,7 @@ impl App {
     }
 
     fn poll_optimizer_tasks(&mut self) {
+        self.poll_orientation_fix();
         if let Some(rx) = &self.opt_scan_rx {
             if let Ok(s) = rx.try_recv() {
                 self.status_message = tr!(
@@ -1621,6 +1661,8 @@ impl App {
                     res.errors
                 );
                 self.opt_rollback_rx = None;
+                // Count again what is left on disk (normally nothing).
+                self.rescan_mods_keep_status();
                 if !res.unlogged.is_empty() {
                     self.pending_question = Some(PendingQuestion::LegacyDds(res.unlogged));
                 }

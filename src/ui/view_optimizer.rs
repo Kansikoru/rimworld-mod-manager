@@ -2,7 +2,7 @@ use eframe::egui::{self, ProgressBar, Ui};
 
 use crate::app::App;
 use crate::game_install::GameEngine;
-use crate::i18n::{tr, TranslationKey};
+use crate::i18n::{fmt, tr, TranslationKey};
 use crate::optimizer::OptimizeScope;
 use super::components::*;
 use super::icons::*;
@@ -44,7 +44,44 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
                             .size(12.0),
                     );
                 });
-                ui.checkbox(&mut app.opt_allow_on_waylith, t.get(TranslationKey::OptAllowOnWaylith));
+            });
+        });
+        ui.add_space(8.0);
+    }
+
+    // Optimizer DDS stored the wrong way up for this game version (1.6 and 1.7 read DDS
+    // differently): flip them or roll them back.
+    if app.opt_wrong_orientation > 0 {
+        let version = app.steam_paths.game_major_minor().unwrap_or_else(|| "?".into());
+        card_container(ui, |ui| {
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.add(svg_icon(ICON_STATUS_ERROR, egui::Vec2::splat(18.0), THEME.accent_rose));
+                    ui.label(
+                        egui::RichText::new(fmt(
+                            t.get(TranslationKey::OptLeftoverDds),
+                            &[&version, &app.opt_wrong_orientation.to_string()],
+                        ))
+                        .color(THEME.accent_rose)
+                        .strong(),
+                    );
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.add_enabled_ui(!app.optimizer_busy(), |ui| {
+                        if primary_button_icon(ui, ICON_REFRESH, t.get(TranslationKey::OptBtnFixOrientation)).clicked() {
+                            app.fix_texture_orientation();
+                        }
+                        if secondary_button_icon(ui, ICON_UNDO, t.get(TranslationKey::OptBtnRollback)).clicked() {
+                            app.rollback_textures();
+                        }
+                    });
+                });
+                ui.label(
+                    egui::RichText::new(t.get(TranslationKey::OptLeftoverHint))
+                        .color(THEME.text_muted)
+                        .size(12.0),
+                );
             });
         });
         ui.add_space(8.0);
@@ -80,9 +117,6 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
                 ui.checkbox(&mut app.opt_force, t.get(TranslationKey::OptForceReencode));
                 ui.add_space(12.0);
                 ui.checkbox(&mut app.opt_delete_source, t.get(TranslationKey::OptDeleteSource));
-                ui.add_space(12.0);
-                ui.checkbox(&mut app.opt_flip, t.get(TranslationKey::OptFlip))
-                    .on_hover_text(t.get(TranslationKey::OptFlipHint));
             });
             if app.opt_delete_source {
                 ui.label(
@@ -116,7 +150,7 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
                 if !app.opt_is_running {
                     // Buttons are disabled while a scan/rollback runs in the background.
                     let idle = !app.optimizer_busy();
-                    ui.add_enabled_ui(idle && !app.optimizer_blocked(), |ui| {
+                    ui.add_enabled_ui(idle, |ui| {
                         if primary_button_icon(ui, ICON_ROCKET, t.get(TranslationKey::OptBtnStart)).clicked() {
                             app.start_texture_optimization();
                         }

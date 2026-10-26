@@ -126,8 +126,8 @@ fn walk_mod_textures(mod_dir: &Path) -> impl Iterator<Item = PathBuf> {
 /// Options for converting one texture.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ConvertOptions {
-    /// Flip the image vertically before encoding (what RimPy does). Off by default:
-    /// ToDDS — the converter that works on RimWorld 1.6 — does not flip.
+    /// Store the picture flipped vertically: needed on RimWorld 1.7, which draws DDS upside
+    /// down; not on 1.6 (like ToDDS). Chosen from the game version, see `engine_wants_flipped`.
     pub flip_vertical: bool,
 }
 
@@ -172,6 +172,12 @@ fn legacy_dxt1_header(mut dds_bytes: Vec<u8>) -> Vec<u8> {
 /// Converts one PNG/JPG to DDS next to it, the way ToDDS does it:
 /// BC7 (with alpha) or BC1 (opaque), full mipmap chain, original size, no flip unless asked.
 pub fn optimize_single_texture(source: &Path, opts: ConvertOptions) -> Result<ConvertOutcome, String> {
+    encode_texture(source, &source.with_extension("dds"), opts)
+}
+
+/// Encodes `source` into `dds_path` (which may live elsewhere, e.g. when the source was moved
+/// to the backup folder).
+pub fn encode_texture(source: &Path, dds_path: &Path, opts: ConvertOptions) -> Result<ConvertOutcome, String> {
     let mut img = image::open(source).map_err(|e| format!("{}: {}", source.display(), e))?;
     if opts.flip_vertical {
         img = img.flipv();
@@ -209,8 +215,7 @@ pub fn optimize_single_texture(source: &Path, opts: ConvertOptions) -> Result<Co
 
     // Write to a temp file and rename: a cancelled or crashed run never leaves a truncated .dds
     // (a truncated file would look "newer than the PNG" and be loaded by the game).
-    let dds_path = source.with_extension("dds");
-    let tmp_path = source.with_extension("dds.tmp");
+    let tmp_path = dds_path.with_extension("dds.tmp");
     let write_res = (|| -> std::io::Result<()> {
         let mut file = std::fs::File::create(&tmp_path)?;
         std::io::Write::write_all(&mut file, &dds_bytes)?;
@@ -221,7 +226,7 @@ pub fn optimize_single_texture(source: &Path, opts: ConvertOptions) -> Result<Co
         let _ = std::fs::remove_file(&tmp_path);
         return Err(format!("{}: write error: {}", dds_path.display(), e));
     }
-    std::fs::rename(&tmp_path, &dds_path).map_err(|e| {
+    std::fs::rename(&tmp_path, dds_path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp_path);
         format!("{}: rename error: {}", dds_path.display(), e)
     })?;
@@ -239,6 +244,22 @@ pub struct ManifestEntry {
     pub source: PathBuf,
     pub backup: Option<PathBuf>,
     pub source_fp: Option<String>,
+    /// The picture is stored flipped vertically. `None`: written before this was logged
+    /// (those were made without flipping).
+    pub flipped: Option<bool>,
+}
+
+impl ManifestEntry {
+    /// The DDS is stored the other way up than the installed game expects.
+    pub fn wrong_orientation(&self, want_flipped: bool) -> bool {
+        self.flipped.unwrap_or(false) != want_flipped
+    }
+}
+
+/// RimWorld 1.6 reads DDS the same way up as the PNG; 1.7 (Waylith) draws them upside down,
+/// so on 1.7 the picture has to be stored flipped.
+pub fn engine_wants_flipped(engine: crate::game_install::GameEngine) -> bool {
+    engine == crate::game_install::GameEngine::Waylith
 }
 
 /// "size:mtime_secs" of a file.
@@ -293,9 +314,12 @@ pub struct TexturePlan {
     pub foreign_dds: usize,
 }
 
+/// `want_flipped`: the way up the installed game needs (see `engine_wants_flipped`); our DDS
+/// stored the other way up are re-encoded like stale ones.
 pub fn plan_textures(
     mod_dirs: &[PathBuf],
     force: bool,
+    want_flipped: bool,
     manifest: &HashMap<String, ManifestEntry>,
 ) -> TexturePlan {
     let mut plan = TexturePlan::default();
@@ -308,7 +332,9 @@ pub fn plan_textures(
             }
             match manifest.get(&path_key(&dds)) {
                 Some(entry) => {
-                    let fresh = entry.source_fp.is_some() && entry.source_fp == source_fingerprint(&path);
+                    let fresh = entry.source_fp.is_some()
+                        && entry.source_fp == source_fingerprint(&path)
+                        && !entry.wrong_orientation(want_flipped);
                     if force || !fresh {
                         plan.to_convert.push(path);
                     } else {
@@ -320,6 +346,167 @@ pub fn plan_textures(
         }
     }
     plan
+}
+
+/// How many DDS files from the manifest are on disk and stored the wrong way up for the
+/// installed game (e.g. made for 1.6, now played on 1.7).
+pub fn count_wrong_orientation(manifest: &Path, want_flipped: bool) -> usize {
+    read_manifest(manifest)
+        .iter()
+        .filter(|e| e.wrong_orientation(want_flipped) && e.dds.is_file())
+        .count()
+}
+
+/// Which way up a DDS stores its picture compared with the source image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orientation {
+    AsSource,
+    Flipped,
+    /// The image looks the same both ways (symmetric or flat): orientation doesn't matter.
+    Unclear,
+}
+
+fn mean_abs_diff(a: &image::RgbaImage, b: &image::RgbaImage) -> f64 {
+    let mut sum = 0u64;
+    for (p, q) in a.pixels().zip(b.pixels()) {
+        for c in 0..3 {
+            sum += (p[c] as i32 - q[c] as i32).unsigned_abs() as u64;
+        }
+    }
+    sum as f64 / (a.width() as f64 * a.height() as f64 * 3.0).max(1.0)
+}
+
+/// Compares a decoded DDS with its source: same way up, flipped, or no telling.
+pub fn compare_orientation(decoded: &image::RgbaImage, source: &image::RgbaImage) -> Orientation {
+    let same = mean_abs_diff(decoded, source);
+    let flipped = mean_abs_diff(decoded, &image::imageops::flip_vertical(source));
+    if same * 2.0 < flipped {
+        Orientation::AsSource
+    } else if flipped * 2.0 < same {
+        Orientation::Flipped
+    } else {
+        Orientation::Unclear
+    }
+}
+
+/// Decodes the top mip of `dds` and compares it with `source`.
+pub fn detect_orientation(dds: &Path, source: &Path) -> Result<Orientation, String> {
+    let file = std::fs::File::open(dds).map_err(|e| format!("{}: {}", dds.display(), e))?;
+    let dds_file = image_dds::ddsfile::Dds::read(file).map_err(|e| format!("{}: {}", dds.display(), e))?;
+    let decoded = image_dds::image_from_dds(&dds_file, 0).map_err(|e| format!("{}: {}", dds.display(), e))?;
+    let src = image::open(source).map_err(|e| format!("{}: {}", source.display(), e))?.to_rgba8();
+    if src.dimensions() != decoded.dimensions() {
+        return Err(format!("{}: size differs from {}", dds.display(), source.display()));
+    }
+    Ok(compare_orientation(&decoded, &src))
+}
+
+/// Result of "Flip textures".
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct OrientationSummary {
+    /// Re-encoded the other way up.
+    pub fixed: usize,
+    /// Already the right way up (only the log was updated).
+    pub already_ok: usize,
+    pub errors: usize,
+    pub cancelled: bool,
+}
+
+pub enum OrientationMsg {
+    Progress { done: usize, total: usize, current_file: String },
+    Done(OrientationSummary),
+}
+
+/// "Flip textures": for every logged DDS not known to be the right way up for the game,
+/// compares it with its source and re-encodes it the right way up if needed. Background.
+pub fn fix_orientation_async(
+    want_flipped: bool,
+    max_threads: usize,
+    tx: mpsc::Sender<OrientationMsg>,
+    stop: Arc<AtomicBool>,
+) {
+    std::thread::spawn(move || {
+        let summary = fix_orientation_with_manifest(&manifest_path(), want_flipped, max_threads, &tx, &stop);
+        let _ = tx.send(OrientationMsg::Done(summary));
+    });
+}
+
+pub fn fix_orientation_with_manifest(
+    manifest: &Path,
+    want_flipped: bool,
+    max_threads: usize,
+    tx: &mpsc::Sender<OrientationMsg>,
+    stop: &AtomicBool,
+) -> OrientationSummary {
+    use std::sync::atomic::AtomicUsize;
+    let todo: Vec<ManifestEntry> = read_manifest(manifest)
+        .into_iter()
+        .filter(|e| e.flipped != Some(want_flipped) && e.dds.is_file())
+        .collect();
+    let total = todo.len();
+    let done = AtomicUsize::new(0);
+    let fixed = AtomicUsize::new(0);
+    let already_ok = AtomicUsize::new(0);
+    let errors = AtomicUsize::new(0);
+    let updated = std::sync::Mutex::new(Vec::new());
+
+    let work = || {
+        todo.par_iter().for_each(|e| {
+            if stop.load(Ordering::Relaxed) {
+                return;
+            }
+            // The source is next to the DDS, or in the backup folder if it was moved there.
+            let source = if e.source.is_file() {
+                Some(e.source.clone())
+            } else {
+                e.backup.clone().filter(|b| b.is_file())
+            };
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<bool, String> {
+                let source = source.ok_or_else(|| format!("{}: source image not found", e.dds.display()))?;
+                let is_flipped = match detect_orientation(&e.dds, &source)? {
+                    Orientation::AsSource => false,
+                    Orientation::Flipped => true,
+                    Orientation::Unclear => want_flipped,
+                };
+                if is_flipped == want_flipped {
+                    return Ok(false);
+                }
+                encode_texture(&source, &e.dds, ConvertOptions { flip_vertical: want_flipped })?;
+                Ok(true)
+            }));
+            match result {
+                Ok(Ok(changed)) => {
+                    if changed { &fixed } else { &already_ok }.fetch_add(1, Ordering::Relaxed);
+                    if let Ok(mut list) = updated.lock() {
+                        list.push(ManifestEntry { flipped: Some(want_flipped), ..e.clone() });
+                    }
+                }
+                _ => {
+                    errors.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+            if n.is_multiple_of(10) || n == total {
+                let current_file = e.dds.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+                let _ = tx.send(OrientationMsg::Progress { done: n, total, current_file });
+            }
+        });
+    };
+    match rayon::ThreadPoolBuilder::new().num_threads(max_threads.clamp(1, total_system_threads())).build() {
+        Ok(pool) => pool.install(work),
+        Err(_) => work(),
+    }
+
+    // Record the new orientation, also after a cancel (what was done stays done).
+    if let Ok(list) = updated.lock() {
+        let _ = merge_manifest(manifest, &list);
+    }
+    OrientationSummary {
+        fixed: fixed.load(Ordering::Relaxed),
+        already_ok: already_ok.load(Ordering::Relaxed),
+        errors: errors.load(Ordering::Relaxed),
+        cancelled: stop.load(Ordering::Relaxed),
+    }
 }
 
 /// `%LOCALAPPDATA%\RimWorldModManager\dds_manifest.tsv`: every DDS this tool created.
@@ -338,6 +525,11 @@ pub fn read_manifest(path: &Path) -> Vec<ManifestEntry> {
             let source = parts.next()?.trim();
             let backup = parts.next().map(str::trim).filter(|s| !s.is_empty());
             let source_fp = parts.next().map(str::trim).filter(|s| !s.is_empty());
+            let flipped = match parts.next().map(str::trim) {
+                Some("1") => Some(true),
+                Some("0") => Some(false),
+                _ => None,
+            };
             if dds.is_empty() || source.is_empty() {
                 return None;
             }
@@ -346,6 +538,7 @@ pub fn read_manifest(path: &Path) -> Vec<ManifestEntry> {
                 source: PathBuf::from(source),
                 backup: backup.map(PathBuf::from),
                 source_fp: source_fp.map(str::to_string),
+                flipped,
             })
         })
         .collect()
@@ -353,11 +546,16 @@ pub fn read_manifest(path: &Path) -> Vec<ManifestEntry> {
 
 fn manifest_line(e: &ManifestEntry) -> String {
     format!(
-        "{}\t{}\t{}\t{}\n",
+        "{}\t{}\t{}\t{}\t{}\n",
         e.dds.display(),
         e.source.display(),
         e.backup.as_ref().map(|b| b.display().to_string()).unwrap_or_default(),
-        e.source_fp.clone().unwrap_or_default()
+        e.source_fp.clone().unwrap_or_default(),
+        match e.flipped {
+            Some(true) => "1",
+            Some(false) => "0",
+            None => "",
+        }
     )
 }
 
@@ -461,7 +659,7 @@ pub fn run_optimization(
 ) {
     std::thread::spawn(move || {
         let manifest = manifest_index(read_manifest(&manifest_path()));
-        let plan = plan_textures(&mod_dirs, force, &manifest);
+        let plan = plan_textures(&mod_dirs, force, opts.flip_vertical, &manifest);
         let textures = plan.to_convert;
         let total = textures.len();
 
@@ -544,6 +742,7 @@ pub fn run_optimization(
                                 source: path.clone(),
                                 backup: backup_target.clone(),
                                 source_fp: source_fp.clone(),
+                                flipped: Some(opts.flip_vertical),
                             };
                             if let Err(e) = append_manifest(&log_path, &[entry]) {
                                 let _ = tx_clone.send(OptimizationMsg::FileError(tr!(
@@ -578,6 +777,7 @@ pub fn run_optimization(
                                 source: path.clone(),
                                 backup,
                                 source_fp,
+                                flipped: Some(opts.flip_vertical),
                             });
                         }
                     }
@@ -652,9 +852,9 @@ pub struct TextureSummary {
     pub foreign_dds: usize,
 }
 
-pub fn texture_summary(mod_dirs: &[PathBuf], force: bool) -> TextureSummary {
+pub fn texture_summary(mod_dirs: &[PathBuf], force: bool, want_flipped: bool) -> TextureSummary {
     let manifest = manifest_index(read_manifest(&manifest_path()));
-    let plan = plan_textures(mod_dirs, force, &manifest);
+    let plan = plan_textures(mod_dirs, force, want_flipped, &manifest);
     TextureSummary {
         to_convert: plan.to_convert.len(),
         up_to_date: plan.up_to_date,
@@ -663,9 +863,9 @@ pub fn texture_summary(mod_dirs: &[PathBuf], force: bool) -> TextureSummary {
 }
 
 /// Runs `texture_summary` in a background thread (walking big mod folders takes a while).
-pub fn texture_summary_async(mod_dirs: Vec<PathBuf>, force: bool, tx: mpsc::Sender<TextureSummary>) {
+pub fn texture_summary_async(mod_dirs: Vec<PathBuf>, force: bool, want_flipped: bool, tx: mpsc::Sender<TextureSummary>) {
     std::thread::spawn(move || {
-        let _ = tx.send(texture_summary(&mod_dirs, force));
+        let _ = tx.send(texture_summary(&mod_dirs, force, want_flipped));
     });
 }
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -771,6 +971,119 @@ mod tests {
         dir
     }
 
+    /// Live check of the user's optimizer DDS against their PNG sources:
+    /// `cargo test --lib live_dds_orientation -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn live_dds_orientation() {
+        let entries = read_manifest(&manifest_path());
+        let step = (entries.len() / 40).max(1);
+        let mut counts = [0usize; 3];
+        for e in entries.iter().step_by(step).take(40) {
+            match detect_orientation(&e.dds, &e.source) {
+                Ok(o) => {
+                    counts[o as usize] += 1;
+                    println!("{o:?}  {}", e.dds.display());
+                }
+                Err(err) => println!("skip: {err}"),
+            }
+        }
+        println!("--- as source: {}, flipped: {}, unclear: {}", counts[0], counts[1], counts[2]);
+    }
+
+    /// Runs the flip pass on copies of real optimizer DDS (originals untouched):
+    /// `cargo test --release --lib live_flip_on_copies -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn live_flip_on_copies() {
+        let dir = temp_dir("live_flip");
+        let entries = read_manifest(&manifest_path());
+        let step = (entries.len() / 30).max(1);
+        let mut copies = Vec::new();
+        for (i, e) in entries.iter().step_by(step).take(30).enumerate() {
+            let (dds, png) = (dir.join(format!("{i}.dds")), dir.join(format!("{i}.png")));
+            if std::fs::copy(&e.dds, &dds).is_ok() && std::fs::copy(&e.source, &png).is_ok() {
+                copies.push(ManifestEntry { dds, source: png, backup: None, source_fp: None, flipped: e.flipped });
+            }
+        }
+        let manifest = dir.join("dds_manifest.tsv");
+        append_manifest(&manifest, &copies).unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let s = fix_orientation_with_manifest(&manifest, true, 8, &tx, &AtomicBool::new(false));
+        println!("copies: {}, flipped: {}, already right: {}, errors: {}", copies.len(), s.fixed, s.already_ok, s.errors);
+        let mut wrong = 0;
+        for c in &copies {
+            match detect_orientation(&c.dds, &c.source) {
+                Ok(Orientation::AsSource) => wrong += 1,
+                Ok(_) => {}
+                Err(e) => println!("check failed: {e}"),
+            }
+        }
+        println!("still the PNG way up after the pass: {wrong}");
+        assert_eq!(wrong, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn counts_logged_dds_stored_the_wrong_way_up() {
+        let dir = temp_dir("leftover");
+        let kept = dir.join("a.dds");
+        let flipped = dir.join("b.dds");
+        std::fs::write(&kept, b"DDS ").unwrap();
+        std::fs::write(&flipped, b"DDS ").unwrap();
+        let entry = |dds: PathBuf, f: Option<bool>| ManifestEntry {
+            source: dds.with_extension("png"),
+            dds,
+            backup: None,
+            source_fp: None,
+            flipped: f,
+        };
+        let manifest = dir.join("dds_manifest.tsv");
+        append_manifest(
+            &manifest,
+            &[entry(kept, None), entry(flipped, Some(true)), entry(dir.join("gone.dds"), None)],
+        )
+        .unwrap();
+        // On 1.7 the old (unflipped) one is wrong, on 1.6 the flipped one; missing files don't count.
+        assert_eq!(count_wrong_orientation(&manifest, true), 1);
+        assert_eq!(count_wrong_orientation(&manifest, false), 1);
+        assert_eq!(count_wrong_orientation(&dir.join("missing.tsv"), true), 0);
+        assert_eq!(read_manifest(&manifest)[1].flipped, Some(true), "orientation survives a save/load");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn flip_pass_turns_only_wrong_textures_and_is_repeatable() {
+        let dir = temp_dir("flip");
+        let png = dir.join("Textures").join("tex.png");
+        std::fs::create_dir_all(png.parent().unwrap()).unwrap();
+        write_png(&png, 64, 64, 255);
+        optimize_single_texture(&png, ConvertOptions::default()).unwrap();
+        let dds = png.with_extension("dds");
+        assert_eq!(detect_orientation(&dds, &png).unwrap(), Orientation::AsSource);
+
+        let manifest = dir.join("dds_manifest.tsv");
+        let entry = ManifestEntry { dds: dds.clone(), source: png.clone(), backup: None, source_fp: None, flipped: None };
+        append_manifest(&manifest, &[entry]).unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let stop = AtomicBool::new(false);
+
+        // For 1.7: the DDS gets the picture upside down, the log remembers it.
+        let first = fix_orientation_with_manifest(&manifest, true, 2, &tx, &stop);
+        assert_eq!((first.fixed, first.already_ok, first.errors), (1, 0, 0));
+        assert_eq!(detect_orientation(&dds, &png).unwrap(), Orientation::Flipped);
+        assert_eq!(read_manifest(&manifest)[0].flipped, Some(true));
+        assert_eq!(count_wrong_orientation(&manifest, true), 0);
+
+        // Pressing again does nothing; switching back to 1.6 turns it back.
+        let again = fix_orientation_with_manifest(&manifest, true, 2, &tx, &stop);
+        assert_eq!(again.fixed + again.already_ok, 0);
+        let back = fix_orientation_with_manifest(&manifest, false, 2, &tx, &stop);
+        assert_eq!(back.fixed, 1);
+        assert_eq!(detect_orientation(&dds, &png).unwrap(), Orientation::AsSource);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn write_png(path: &Path, w: u32, h: u32, alpha: u8) {
         let img = image::RgbaImage::from_fn(w, h, |x, y| image::Rgba([(x * 4) as u8, (y * 4) as u8, 120, alpha]));
         img.save(path).unwrap();
@@ -831,19 +1144,24 @@ mod tests {
             std::fs::write(p.with_extension("dds"), b"dds").unwrap();
         }
         let entries = vec![
-            ManifestEntry { dds: ours_fresh.with_extension("dds"), source: ours_fresh.clone(), backup: None, source_fp: source_fingerprint(&ours_fresh) },
-            ManifestEntry { dds: ours_stale.with_extension("dds"), source: ours_stale.clone(), backup: None, source_fp: Some("1:1".into()) },
+            ManifestEntry { dds: ours_fresh.with_extension("dds"), source: ours_fresh.clone(), backup: None, source_fp: source_fingerprint(&ours_fresh), flipped: None },
+            ManifestEntry { dds: ours_stale.with_extension("dds"), source: ours_stale.clone(), backup: None, source_fp: Some("1:1".into()), flipped: None },
         ];
         let manifest = manifest_index(entries);
 
-        let plan = plan_textures(&[dir.join("Mod")], false, &manifest);
+        let plan = plan_textures(&[dir.join("Mod")], false, false, &manifest);
         let mut names: Vec<String> = plan.to_convert.iter().map(|p| p.file_name().unwrap().to_string_lossy().to_string()).collect();
         names.sort();
         assert_eq!(names, vec!["b.png", "d.png"], "stale ours + brand new; fresh ours and foreign skipped");
         assert_eq!((plan.up_to_date, plan.foreign_dds), (1, 1));
 
-        let forced = plan_textures(&[dir.join("Mod")], true, &manifest);
+        let forced = plan_textures(&[dir.join("Mod")], true, false, &manifest);
         assert_eq!(forced.to_convert.len(), 3, "force re-encodes ours, never the author's DDS");
+
+        // On 1.7 the fresh but unflipped DDS is the wrong way up: re-encoded too.
+        let on_waylith = plan_textures(&[dir.join("Mod")], false, true, &manifest);
+        assert_eq!(on_waylith.to_convert.len(), 3, "wrong-way-up ours are redone, the author's DDS still never");
+        assert_eq!(on_waylith.up_to_date, 0);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -876,7 +1194,7 @@ mod tests {
         let manifest = dir.join("manifest.tsv");
         append_manifest(
             &manifest,
-            &[ManifestEntry { dds: dds.clone(), source: source.clone(), backup: Some(backup.clone()), source_fp: None }],
+            &[ManifestEntry { dds: dds.clone(), source: source.clone(), backup: Some(backup.clone()), source_fp: None, flipped: None }],
         )
         .unwrap();
 

@@ -441,7 +441,7 @@ fn measure_row_height(ui: &Ui, rows_top: f32, rows_count: usize) -> Option<f32> 
 
 /// Hard problems of the active list for the installed game (Prepatcher / old Harmony on 1.7)
 /// plus a calm one-line summary of mods that don't declare the current version.
-fn render_version_issues(app: &App, ui: &mut Ui) {
+fn render_version_issues(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
     let game_mm = app.steam_paths.game_major_minor();
     let issues = crate::version_check::active_list_issues(
@@ -456,6 +456,30 @@ fn render_version_issues(app: &App, ui: &mut Ui) {
         .filter_map(|id| lookup_mod(&app.mod_index, &app.all_mods, id))
         .filter(|m| crate::version_check::supports_version(m, game_mm.as_deref()) == Some(false))
         .count();
+
+    // Optimizer DDS stored the wrong way up for this game version: upside down in the game
+    // until flipped or rolled back on the Optimizer tab.
+    let leftover = app.opt_wrong_orientation;
+    if leftover > 0 {
+        let mut open = false;
+        card_container(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.add(svg_icon(ICON_STATUS_ERROR, Vec2::splat(18.0), THEME.accent_rose));
+                ui.label(
+                    egui::RichText::new(t.get(TranslationKey::ModsLeftoverDds).replace("{}", &leftover.to_string()))
+                        .color(THEME.accent_rose)
+                        .strong(),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    open = secondary_button(ui, t.get(TranslationKey::ModsOpenOptimizer)).clicked();
+                });
+            });
+        });
+        ui.add_space(4.0);
+        if open {
+            app.current_tab = crate::app::AppTab::Optimizer;
+        }
+    }
 
     if !issues.is_empty() {
         card_container(ui, |ui| {
