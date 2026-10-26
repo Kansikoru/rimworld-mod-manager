@@ -19,6 +19,11 @@ enum SetAction {
     Duplicate(String),
     Dialog(ModListDialog),
     OpenFolder,
+    SubscribeMissing(String),
+    Rescan,
+    Import(std::path::PathBuf),
+    Export { name: String, target: std::path::PathBuf },
+    Copied(String),
 }
 
 const CARD_SIZE: Vec2 = Vec2::new(168.0, 132.0);
@@ -62,6 +67,11 @@ pub fn render_sets_view(app: &mut App, ui: &mut Ui) {
             SetAction::SaveHere(name) => app.overwrite_modlist(&name),
             SetAction::Duplicate(name) => app.duplicate_modlist(&name),
             SetAction::Dialog(dialog) => app.modlist_dialog = Some(dialog),
+            SetAction::SubscribeMissing(name) => app.subscribe_modlist_missing(&name),
+            SetAction::Rescan => app.rescan_mods(),
+            SetAction::Import(file) => app.import_modlist(&file),
+            SetAction::Export { name, target } => app.export_modlist(&name, &target),
+            SetAction::Copied(name) => app.status_message = fmt(t.get(TranslationKey::SetsCopied), &[&name]),
             SetAction::OpenFolder => {
                 if let Some(dir) = app.modlists_folder() {
                     let _ = std::fs::create_dir_all(&dir);
@@ -91,12 +101,24 @@ fn render_cards(app: &mut App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         let new_label = t.get(TranslationKey::SetsNewFromCurrent);
-        let button_w = styled_button_width(ui, true, new_label);
-        let search_w = (ui.available_width() - button_w - 8.0).max(140.0);
+        let import_label = t.get(TranslationKey::SetsBtnImport);
+        let buttons_w = styled_button_width(ui, true, new_label) + styled_button_width(ui, true, import_label) + 16.0;
+        let search_w = (ui.available_width() - buttons_w).max(140.0);
         search_input_width(ui, &mut app.sets_search, t.get(TranslationKey::SetsSearch), search_w);
         if primary_button_icon(ui, ICON_PLUS, new_label).clicked() {
             let default = fmt(t.get(TranslationKey::SetsDefaultName), &[&(app.modlists.len() + 1).to_string()]);
             actions.push(SetAction::Dialog(ModListDialog::SaveAs { name: default, error: None }));
+        }
+        if secondary_button_icon(ui, ICON_FOLDER, import_label)
+            .on_hover_text(t.get(TranslationKey::SetsImportHint))
+            .clicked()
+        {
+            if let Some(file) = rfd::FileDialog::new()
+                .add_filter(t.get(TranslationKey::SetsImportFilter), &["rml", "xml"])
+                .pick_file()
+            {
+                actions.push(SetAction::Import(file));
+            }
         }
     });
     ui.add_space(10.0);
@@ -239,6 +261,26 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
         if secondary_button(ui, t.get(TranslationKey::SetsBtnRename)).clicked() {
             actions.push(SetAction::Dialog(ModListDialog::Rename { from: name.clone(), name: name.clone(), error: None }));
         }
+        if secondary_button_icon(ui, ICON_SAVE, t.get(TranslationKey::SetsBtnExport))
+            .on_hover_text(t.get(TranslationKey::SetsExportHint))
+            .clicked()
+        {
+            if let Some(target) = rfd::FileDialog::new()
+                .set_file_name(format!("{name}.rml"))
+                .add_filter("RimWorld mod list", &["rml"])
+                .save_file()
+            {
+                actions.push(SetAction::Export { name: name.clone(), target });
+            }
+        }
+        if secondary_button_icon(ui, ICON_COPY, t.get(TranslationKey::SetsBtnCopyText))
+            .on_hover_text(t.get(TranslationKey::SetsCopyTextHint))
+            .clicked()
+        {
+            let text = app.modlist_share_text(list);
+            ui.output_mut(|o| o.copied_text = text);
+            actions.push(SetAction::Copied(name.clone()));
+        }
         if secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::ModsBtnFolder)).clicked() {
             actions.push(SetAction::OpenFolder);
         }
@@ -294,6 +336,50 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
         });
     });
 
+    // F6: mods of the set that are not installed
+    if missing > 0 {
+        let workshop = app.modlist_missing_workshop_ids(list).len();
+        let manual = missing.saturating_sub(workshop);
+        card_container(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(
+                egui::RichText::new(fmt(t.get(TranslationKey::SetsMissingTitle), &[&missing.to_string()]))
+                    .color(THEME.accent_rose)
+                    .strong(),
+            );
+            ui.add(
+                egui::Label::new(egui::RichText::new(t.get(TranslationKey::SetsMissingHint)).color(THEME.text_muted).size(12.0))
+                    .wrap(),
+            );
+            if manual > 0 {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(fmt(t.get(TranslationKey::SetsMissingManual), &[&manual.to_string()]))
+                            .color(THEME.accent_amber)
+                            .size(12.0),
+                    )
+                    .wrap(),
+                );
+            }
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+                let busy = app.steam_busy();
+                let label = fmt(t.get(TranslationKey::SetsBtnSubscribeMissing), &[&workshop.to_string()]);
+                let subscribe = ui.add_enabled_ui(workshop > 0 && !busy, |ui| primary_button_icon(ui, ICON_STEAM, &label)).inner;
+                if subscribe.clicked() {
+                    actions.push(SetAction::SubscribeMissing(name.clone()));
+                }
+                if secondary_button_icon(ui, ICON_REFRESH, t.get(TranslationKey::BtnRescanMods)).clicked() {
+                    actions.push(SetAction::Rescan);
+                }
+                if busy {
+                    ui.spinner();
+                }
+            });
+        });
+    }
+
     // Mods of the set
     card_container(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -329,6 +415,14 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
                         ui.add(egui::Label::new(egui::RichText::new(name).color(THEME.text_primary).size(12.0)).truncate());
                         if found.is_none() {
                             tag(ui, t.get(TranslationKey::ModsNotOnDisk), THEME.accent_rose);
+                            if let Some(steam_id) = list.steam_id(id) {
+                                if icon_button(ui, ICON_STEAM, Vec2::splat(14.0), THEME.text_muted)
+                                    .on_hover_text(t.get(TranslationKey::SetsOpenWorkshop))
+                                    .clicked()
+                                {
+                                    open_external(crate::steam::workshop_url(steam_id));
+                                }
+                            }
                         }
                     });
                 }

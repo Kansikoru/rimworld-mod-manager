@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
@@ -462,7 +462,8 @@ impl App {
             history: None,
             modlists: Vec::new(),
             current_modlist: None,
-            selected_modlist: None,
+            // RWMM_SET=<name> opens that modpack on the Modpacks tab (screenshots).
+            selected_modlist: std::env::var("RWMM_SET").ok().filter(|s| !s.is_empty()),
             sets_search: String::new(),
             modlist_dialog: None,
             check_updates: last_check_updates,
@@ -1069,6 +1070,126 @@ impl App {
         list.ids.iter().filter(|id| self.find_mod(id).is_none()).count()
     }
 
+    /// Workshop IDs of the set's mods that are not on disk (local mods and DLC have none).
+    pub fn modlist_missing_workshop_ids(&self, list: &crate::modlists::ModList) -> Vec<String> {
+        let mut ids: Vec<String> = list
+            .ids
+            .iter()
+            .filter(|id| self.find_mod(id).is_none())
+            .filter_map(|id| list.steam_id(id).map(str::to_string))
+            .collect();
+        ids.dedup();
+        ids
+    }
+
+    /// F6: subscribes to every missing mod of the set that has a Workshop ID, in one
+    /// Steam session in the background. Steam downloads them; then the user rescans.
+    pub fn subscribe_modlist_missing(&mut self, name: &str) {
+        if self.steam_rx.is_some() {
+            return;
+        }
+        let Some(list) = self.modlists.iter().find(|l| l.name == name) else { return };
+        let ids = self.modlist_missing_workshop_ids(list);
+        if ids.is_empty() {
+            return;
+        }
+        let t = self.i18n;
+        let Some(dll) = self.steam_paths.steam_dll_path.clone() else {
+            self.status_message = t.get(TranslationKey::SetsNoSteamDll).to_string();
+            return;
+        };
+        self.status_message = fmt(t.get(TranslationKey::SetsSubscribing), &[&ids.len().to_string()]);
+        self.steam_rx = Some(self.spawn_task(move || {
+            let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+            match crate::steam::subscribe_workshop_items_batch_native(&dll, &refs) {
+                Ok(n) => fmt(t.get(TranslationKey::SetsSubscribed), &[&n.to_string()]),
+                Err(e) => fmt(t.get(TranslationKey::SetsSubscribeError), &[&e]),
+            }
+        }));
+    }
+
+    /// F5: adds a shared `.rml` or `ModsConfig.xml` as a new set (a free name is picked)
+    /// and selects it. Names and Workshop IDs come from the file, else from installed mods.
+    pub fn import_modlist(&mut self, file: &Path) {
+        let t = self.i18n;
+        let Some(dir) = self.modlists_folder() else {
+            self.status_message = t.get(TranslationKey::SetsNoFolder).to_string();
+            return;
+        };
+        let file_name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let Some(list) = crate::modlists::read_shared(file) else {
+            self.status_message = fmt(t.get(TranslationKey::SetsImportBad), &[&file_name]);
+            return;
+        };
+        let base = crate::modlists::check_name(&list.name).unwrap_or_else(|_| t.get(TranslationKey::SetsImportedName).to_string());
+        let name = crate::modlists::unique_name(&dir, &base);
+        let entries: Vec<crate::modlists::ModListEntry> = list
+            .ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| {
+                let m = self.find_mod(id);
+                crate::modlists::ModListEntry {
+                    id: id.to_lowercase(),
+                    name: m
+                        .map(|m| m.name.clone())
+                        .or_else(|| list.names.get(i).cloned())
+                        .unwrap_or_else(|| id.clone()),
+                    steam_id: list
+                        .steam_id(id)
+                        .map(str::to_string)
+                        .or_else(|| m.and_then(|m| m.steam_item_id.clone())),
+                }
+            })
+            .collect();
+        let version = list.game_version.clone().unwrap_or_else(|| self.game_version_for_sets());
+        match crate::modlists::write_rml(&crate::modlists::path_for(&dir, &name), &version, &entries) {
+            Ok(()) => {
+                self.refresh_modlists();
+                self.selected_modlist = Some(name.clone());
+                self.status_message = fmt(t.get(TranslationKey::SetsImported), &[&name, &entries.len().to_string()]);
+            }
+            Err(e) => self.status_message = fmt(t.get(TranslationKey::SetsWriteError), &[&e.to_string()]),
+        }
+    }
+
+    /// F5: copies the set's `.rml` file to where the user chose.
+    pub fn export_modlist(&mut self, name: &str, target: &Path) {
+        let t = self.i18n;
+        let Some(list) = self.modlists.iter().find(|l| l.name == name) else { return };
+        self.status_message = match std::fs::copy(&list.path, target) {
+            Ok(_) => fmt(t.get(TranslationKey::SetsExported), &[name, &target.display().to_string()]),
+            Err(e) => fmt(t.get(TranslationKey::SetsWriteError), &[&e.to_string()]),
+        };
+    }
+
+    /// F5: the set as text with Workshop links, for a chat or forum.
+    pub fn modlist_share_text(&self, list: &crate::modlists::ModList) -> String {
+        let mods: Vec<(String, Option<String>)> = list
+            .ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| {
+                let m = self.find_mod(id);
+                let name = m
+                    .map(|m| m.name.clone())
+                    .or_else(|| list.names.get(i).cloned())
+                    .unwrap_or_else(|| id.clone());
+                let steam = list
+                    .steam_id(id)
+                    .map(str::to_string)
+                    .or_else(|| m.and_then(|m| m.steam_item_id.clone()));
+                (name, steam)
+            })
+            .collect();
+        crate::modlists::share_text(&list.name, &mods)
+    }
+
+    /// Whether a Steam request (subscribe, check) is running now.
+    pub fn steam_busy(&self) -> bool {
+        self.steam_rx.is_some()
+    }
+
     /// "Enable": writes the set to ModsConfig.xml (a backup of the old order is made),
     /// and starts the game too if asked.
     pub fn apply_modlist(&mut self, name: &str, launch: bool) {
@@ -1101,10 +1222,15 @@ impl App {
             .iter()
             .map(|id| {
                 let m = self.find_mod(id);
+                // A mod not on disk keeps the Workshop ID a set remembers for it,
+                // so "subscribe to missing" still works for the new file.
+                let steam_id = m
+                    .and_then(|m| m.steam_item_id.clone())
+                    .or_else(|| self.modlists.iter().find_map(|l| l.steam_id(id).map(str::to_string)));
                 crate::modlists::ModListEntry {
                     id: id.to_lowercase(),
                     name: m.map(|m| m.name.clone()).unwrap_or_else(|| id.clone()),
-                    steam_id: m.and_then(|m| m.steam_item_id.clone()),
+                    steam_id,
                 }
             })
             .collect()
