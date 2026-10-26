@@ -35,6 +35,11 @@ cargo build --release
 
 Готовая программа: `target/release/rimworld-mod-manager.exe`.
 
+## Авторы
+
+- [Kansikoru](https://github.com/Kansikoru)
+- [Anry2323](https://github.com/Anry2323)
+
 ## Лицензия
 
 MIT — см. [LICENSE](LICENSE).
