@@ -85,6 +85,38 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
 
     ui.add_space(8.0);
 
+    // Update check (F2): a badge next to the version, never an automatic download.
+    card_container(ui, |ui| {
+        ui.vertical(|ui| {
+            let mut on = app.check_updates;
+            let label = crate::i18n::tr!(
+                "Сообщать о новой версии программы",
+                "Tell me when a new version is out"
+            );
+            if ui.checkbox(&mut on, label).changed() {
+                app.check_updates = on;
+                if on {
+                    app.start_update_check();
+                } else {
+                    app.update_available = None;
+                }
+            }
+            ui.label(
+                egui::RichText::new(fmt(
+                    crate::i18n::tr!(
+                        "Раз в день программа спрашивает GitHub о последнем релизе и показывает плашку рядом с версией (сейчас v{}). Ничего не скачивается само.",
+                        "Once a day the app asks GitHub for the latest release and shows a badge next to the version (now v{}). Nothing is downloaded automatically."
+                    ),
+                    &[crate::update_check::current_version()],
+                ))
+                .color(THEME.text_muted)
+                .size(12.0),
+            );
+        });
+    });
+
+    ui.add_space(8.0);
+
     // Paths Configuration Card
     card_container(ui, |ui| {
         ui.vertical(|ui| {

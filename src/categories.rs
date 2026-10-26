@@ -73,7 +73,7 @@ impl ModCategory {
 
     /// (background, foreground) RGB for the badge.
     /// (background, text) of the category badge: a soft pastel text color on the same
-    /// color at 18% over a list row (`#1B1530`), as in the lavender design.
+    /// color at 18% over a list row (`#1B1530`), like the other badges.
     pub fn colors(&self) -> ([u8; 3], [u8; 3]) {
         let fg: [u8; 3] = match self {
             ModCategory::Framework => [0xB6, 0x9C, 0xFF],

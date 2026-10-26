@@ -30,6 +30,7 @@ pub const ICON_UNDO: ImageSource<'static> = egui::include_image!("../../assets/i
 pub const ICON_STOP: ImageSource<'static> = egui::include_image!("../../assets/icons/stop.svg");
 pub const ICON_COPY: ImageSource<'static> = egui::include_image!("../../assets/icons/copy.svg");
 pub const ICON_TRASH: ImageSource<'static> = egui::include_image!("../../assets/icons/trash.svg");
+pub const ICON_HISTORY: ImageSource<'static> = egui::include_image!("../../assets/icons/history.svg");
 
 // Status
 pub const ICON_STATUS_WARNING: ImageSource<'static> = egui::include_image!("../../assets/icons/status_warning.svg");

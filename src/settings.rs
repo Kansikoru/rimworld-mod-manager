@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::i18n::Language;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppSettings {
     /// Game folder picked by hand (None = auto-detect via Steam).
     #[serde(default)]
@@ -26,6 +26,28 @@ pub struct AppSettings {
     pub launch_extra_args: String,
     #[serde(default)]
     pub opt_threads: Option<usize>,
+    /// Look for a new version on GitHub once a day (on unless turned off).
+    #[serde(default = "default_true")]
+    pub check_updates: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            game_path: None,
+            workshop_path: None,
+            mods_config_path: None,
+            language: Language::default(),
+            launch_flags: Vec::new(),
+            launch_extra_args: String::new(),
+            opt_threads: None,
+            check_updates: true,
+        }
+    }
 }
 
 impl AppSettings {
@@ -67,6 +89,9 @@ mod tests {
         s.save_to(&path).unwrap();
         assert_eq!(AppSettings::load_from(&path), Some(s));
         assert!(AppSettings::load_from(&dir.join("missing.json")).is_none());
+        // Settings saved by an older version have no "check_updates": it is on.
+        std::fs::write(&path, r#"{"language":"English"}"#).unwrap();
+        assert!(AppSettings::load_from(&path).unwrap().check_updates);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

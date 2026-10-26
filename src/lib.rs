@@ -20,4 +20,5 @@ pub mod dependencies;
 
 pub mod ui;
 pub mod ui_prefs;
+pub mod update_check;
 pub mod version_check;

@@ -34,25 +34,22 @@ pub fn render_translations_view(app: &mut App, ui: &mut Ui) {
             (TranslationTargetLang::Fr, "Français (FR)"),
         ];
 
-        for (lang_val, label) in langs {
-            let is_sel = app.trans_target_lang == lang_val;
-            if ui.selectable_label(is_sel, label).clicked() {
-                app.trans_target_lang = lang_val;
+        // The language can't change under a running modpack search.
+        ui.add_enabled_ui(!app.is_batch_searching(), |ui| {
+            for (lang_val, label) in langs {
+                let is_sel = app.trans_target_lang == lang_val;
+                if ui.selectable_label(is_sel, label).clicked() && !is_sel {
+                    app.trans_target_lang = lang_val;
+                    // Results of another language would only confuse.
+                    app.batch_results.clear();
+                    app.batch_checked.clear();
+                }
             }
-        }
+        });
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if danger_button_icon(ui, ICON_TRASH, t.get(TranslationKey::TransBtnDeleteAll)).clicked() {
                 app.request_delete_translations();
-            }
-            let searching = app.workshop_rx.is_some();
-            ui.add_enabled_ui(!searching, |ui| {
-                if secondary_button_icon(ui, ICON_SEARCH, t.get(TranslationKey::TransBtnFindWorkshop)).clicked() {
-                    app.search_workshop_translations_for_selected();
-                }
-            });
-            if searching {
-                ui.spinner();
             }
         });
     });
@@ -173,17 +170,66 @@ fn render_workshop_search_column(app: &mut App, ui: &mut Ui) {
 
     ui.horizontal(|ui| {
         ui.heading(
-            egui::RichText::new(format!(
-                "{} ({})",
-                t.get(TranslationKey::TransWorkshopResultsTitle),
-                app.workshop_search_results.len()
-            ))
-            .color(THEME.accent_cyan)
-            .size(15.0),
+            egui::RichText::new(t.get(TranslationKey::TransWorkshopResultsTitle))
+                .color(THEME.accent_cyan)
+                .size(15.0),
         );
     });
 
     ui.add_space(4.0);
+
+    // Modpack-wide search (main way) and search for the mod selected in the list.
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        if app.is_batch_searching() {
+            if danger_button_icon(ui, ICON_STOP, tr!("Остановить", "Stop")).clicked() {
+                app.stop_batch_translation_search();
+            }
+            let (done, total) = app.batch_progress;
+            ui.add(
+                egui::ProgressBar::new(if total > 0 { done as f32 / total as f32 } else { 0.0 })
+                    .desired_width(240.0)
+                    .fill(THEME.accent_purple)
+                    .text(format!("{done} / {total}")),
+            );
+        } else {
+            let lang = app.trans_target_lang.label();
+            if primary_button_icon(ui, ICON_SEARCH, tr!("Найти переводы для сборки", "Find translations for my mods"))
+                .on_hover_text(tr!(
+                    "Ищет перевод на {} для каждого активного мода. Показывает только переводы, в названии которых есть название мода. Моды, где этот язык уже есть, пропускаются.",
+                    "Looks for a {} translation of every active mod. Shows only translations whose title has the mod's name. Mods that already have this language are skipped.",
+                    lang
+                ))
+                .clicked()
+            {
+                app.start_batch_translation_search();
+            }
+            let selected_name = app
+                .selected_mod_id
+                .as_deref()
+                .and_then(|id| app.find_mod(id))
+                .map(|m| m.name.clone());
+            let hint = match &selected_name {
+                Some(name) => tr!("Искать перевод только для «{}» (выбран на вкладке «Моды»)", "Search only for \"{}\" (selected on the Mods tab)", name),
+                None => tr!("Сначала выберите мод на вкладке «Моды»", "Select a mod on the Mods tab first").to_string(),
+            };
+            let searching = app.workshop_rx.is_some();
+            ui.add_enabled_ui(!searching && selected_name.is_some(), |ui| {
+                if secondary_button(ui, tr!("Для выбранного мода", "For the selected mod"))
+                    .on_hover_text(&hint)
+                    .on_disabled_hover_text(&hint)
+                    .clicked()
+                {
+                    app.search_workshop_translations_for_selected();
+                }
+            });
+            if searching {
+                ui.spinner();
+            }
+        }
+    });
+
+    ui.add_space(6.0);
 
     // Search bar for workshop
     ui.horizontal(|ui| {
@@ -201,6 +247,14 @@ fn render_workshop_search_column(app: &mut App, ui: &mut Ui) {
     });
 
     ui.add_space(6.0);
+
+    if app.show_batch_results {
+        render_batch_results(app, ui);
+        return;
+    }
+    if !app.batch_results.is_empty() && ui.link(tr!("← Показать переводы для сборки", "← Back to translations for my mods")).clicked() {
+        app.show_batch_results = true;
+    }
 
     let mut to_subscribe_id = None;
 
@@ -251,4 +305,103 @@ fn render_workshop_search_column(app: &mut App, ui: &mut Ui) {
     if let Some(item_id) = to_subscribe_id {
         app.subscribe_steam_mod(&item_id);
     }
+}
+
+/// Results of the modpack-wide search: each mod with its translations, ticked ones get
+/// subscribed with one button.
+fn render_batch_results(app: &mut App, ui: &mut Ui) {
+    let lang = app.batch_lang.label();
+    let (done, total) = app.batch_progress;
+    let found_items: usize = app.batch_results.iter().map(|r| r.items.len()).sum();
+
+    let mut summary = tr!(
+        "Модов с переводом на {}: {} (проверено {} из {})",
+        "Mods with a {} translation: {} (checked {} of {})",
+        lang,
+        app.batch_results.len(),
+        done,
+        total
+    );
+    if app.batch_skipped > 0 {
+        summary.push_str(&tr!(
+            " · пропущено {}: язык уже есть",
+            " · {} skipped: language already there",
+            app.batch_skipped
+        ));
+    }
+    ui.label(egui::RichText::new(summary).color(THEME.text_secondary).size(12.0));
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        let n = app.batch_checked.len();
+        ui.add_enabled_ui(n > 0 && app.steam_rx.is_none(), |ui| {
+            if success_button_icon(ui, ICON_PLUS, &tr!("Подписаться на отмеченные ({})", "Subscribe to ticked ({})", n)).clicked() {
+                app.subscribe_checked_translations();
+            }
+        });
+        if found_items > 0 && !app.is_batch_searching() {
+            if small_button(ui, tr!("Отметить все", "Tick all"), ButtonStyle::Secondary).clicked() {
+                for r in &app.batch_results {
+                    for item in &r.items {
+                        if !app.batch_subscribed.contains(&item.id) {
+                            app.batch_checked.insert(item.id.clone());
+                        }
+                    }
+                }
+            }
+            if small_button(ui, tr!("Снять все", "Untick all"), ButtonStyle::Secondary).clicked() {
+                app.batch_checked.clear();
+            }
+        }
+    });
+    ui.add_space(4.0);
+
+    egui::ScrollArea::vertical()
+        .id_salt("batch_translations_scroll")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            if app.batch_results.is_empty() {
+                card_container(ui, |ui| {
+                    let text = if app.is_batch_searching() {
+                        tr!("Ищу... Найденные переводы появятся здесь сразу.", "Searching... Found translations show up here right away.")
+                    } else if total == 0 {
+                        tr!("Искать нечего: у всех активных модов этот язык уже есть.", "Nothing to search: every active mod already has this language.")
+                    } else {
+                        tr!("Подходящих переводов не нашлось.", "No matching translations found.")
+                    };
+                    ui.label(egui::RichText::new(text).color(THEME.text_muted).size(13.0));
+                });
+                return;
+            }
+            for r in &app.batch_results {
+                card_container(ui, |ui| {
+                    ui.label(egui::RichText::new(&r.mod_name).color(THEME.accent_cyan).strong());
+                    for item in &r.items {
+                        ui.horizontal(|ui| {
+                            if app.batch_subscribed.contains(&item.id) {
+                                tag(ui, tr!("подписка отправлена", "subscribed"), THEME.accent_emerald);
+                            } else {
+                                let mut on = app.batch_checked.contains(&item.id);
+                                if ui.checkbox(&mut on, "").changed() {
+                                    if on {
+                                        app.batch_checked.insert(item.id.clone());
+                                    } else {
+                                        app.batch_checked.remove(&item.id);
+                                    }
+                                }
+                            }
+                            ui.add(egui::Label::new(egui::RichText::new(&item.title).color(THEME.text_primary)).truncate());
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if icon_button(ui, ICON_STEAM, egui::vec2(14.0, 14.0), THEME.text_muted)
+                                    .on_hover_text(tr!("Открыть в Мастерской", "Open on the Workshop"))
+                                    .clicked()
+                                {
+                                    open_external(crate::steam::workshop_url(&item.id));
+                                }
+                            });
+                        });
+                    }
+                });
+            }
+        });
 }

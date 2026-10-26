@@ -93,8 +93,76 @@ pub fn load_active_mods(config_path: &Path) -> Vec<String> {
 }
 
 pub fn save_active_mods(config_path: &Path, active_mods: &[String]) -> Result<(), String> {
-    let backup_dir = crate::game_install::manager_data_dir().join("backups");
-    save_active_mods_with_backup(config_path, active_mods, &backup_dir)
+    save_active_mods_with_backup(config_path, active_mods, &backups_dir())
+}
+
+/// Folder with copies of ModsConfig.xml made before each save.
+pub fn backups_dir() -> PathBuf {
+    crate::game_install::manager_data_dir().join("backups")
+}
+
+/// A copy of ModsConfig.xml made right before the manager saved a new order.
+#[derive(Debug, Clone)]
+pub struct ConfigBackup {
+    pub path: PathBuf,
+    /// Unix time of the save that replaced this list (from the file name).
+    pub saved_at: u64,
+    pub mods: Vec<String>,
+}
+
+/// Backups in `dir`, newest first.
+pub fn list_backups(dir: &Path) -> Vec<ConfigBackup> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut list: Vec<ConfigBackup> = entries
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            let saved_at = backup_time(path.file_name()?.to_str()?)?;
+            Some(ConfigBackup { mods: load_active_mods(&path), path, saved_at })
+        })
+        .collect();
+    // Zero-padded names: sorting by name is sorting by time.
+    list.sort_by(|a, b| b.path.cmp(&a.path));
+    list
+}
+
+/// "ModsConfig.00000000001761480000-000.xml" -> 1761480000
+fn backup_time(file_name: &str) -> Option<u64> {
+    let rest = file_name.strip_prefix("ModsConfig.")?.strip_suffix(".xml")?;
+    rest.split('-').next()?.parse().ok()
+}
+
+/// What changes when `current` is replaced by `other`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ListDiff {
+    /// Mods in `other` that `current` doesn't have.
+    pub added: usize,
+    /// Mods in `current` that `other` doesn't have.
+    pub removed: usize,
+    /// The mods both lists have are in a different order.
+    pub reordered: bool,
+}
+
+impl ListDiff {
+    pub fn is_same(&self) -> bool {
+        self.added == 0 && self.removed == 0 && !self.reordered
+    }
+}
+
+pub fn diff_lists(current: &[String], other: &[String]) -> ListDiff {
+    let cur: Vec<String> = current.iter().map(|s| s.to_lowercase()).collect();
+    let oth: Vec<String> = other.iter().map(|s| s.to_lowercase()).collect();
+    let cur_set: std::collections::HashSet<&String> = cur.iter().collect();
+    let oth_set: std::collections::HashSet<&String> = oth.iter().collect();
+    let common_cur: Vec<&String> = cur.iter().filter(|id| oth_set.contains(id)).collect();
+    let common_oth: Vec<&String> = oth.iter().filter(|id| cur_set.contains(id)).collect();
+    ListDiff {
+        added: oth.iter().filter(|id| !cur_set.contains(id)).count(),
+        removed: cur.iter().filter(|id| !oth_set.contains(id)).count(),
+        reordered: common_cur != common_oth,
+    }
 }
 
 /// Writes the active list. IDs are written in lower case, the way RimWorld itself writes
@@ -238,7 +306,8 @@ pub fn save_active_mods_with_backup(config_path: &Path, active_mods: &[String], 
     Ok(())
 }
 
-const MAX_CONFIG_BACKUPS: usize = 10;
+/// Copies are a few KB each, so a long history costs nothing.
+const MAX_CONFIG_BACKUPS: usize = 30;
 
 /// Copies ModsConfig.xml to `<backup_dir>/ModsConfig.<unix time>.xml` and keeps the newest `keep` copies.
 pub fn backup_config(config_path: &Path, backup_dir: &Path, keep: usize) -> std::io::Result<PathBuf> {
@@ -351,5 +420,38 @@ mod tests {
         }
         assert_eq!(std::fs::read_dir(&bdir).unwrap().count(), 3);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn backups_are_listed_newest_first() {
+        let dir = temp_dir("list");
+        let one = "<ModsConfigData><activeMods><li>a.one</li></activeMods></ModsConfigData>";
+        let two = "<ModsConfigData><activeMods><li>a.one</li><li>a.two</li></activeMods></ModsConfigData>";
+        std::fs::write(dir.join("ModsConfig.00000000001700000000-000.xml"), one).unwrap();
+        std::fs::write(dir.join("ModsConfig.00000000001800000000-000.xml"), two).unwrap();
+        std::fs::write(dir.join("notes.txt"), "not a backup").unwrap();
+
+        let list = list_backups(&dir);
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].saved_at, 1_800_000_000);
+        assert_eq!(list[0].mods, ["a.one", "a.two"]);
+        assert_eq!(list[1].saved_at, 1_700_000_000);
+        assert!(list_backups(&dir.join("missing")).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn diff_counts_added_removed_and_order() {
+        let v = |ids: &[&str]| ids.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let current = v(&["core", "a", "b", "c"]);
+        assert!(diff_lists(&current, &v(&["Core", "A", "B", "C"])).is_same(), "case doesn't matter");
+        assert_eq!(
+            diff_lists(&current, &v(&["core", "a", "b", "d", "e"])),
+            ListDiff { added: 2, removed: 1, reordered: false }
+        );
+        assert_eq!(
+            diff_lists(&current, &v(&["core", "b", "a", "c"])),
+            ListDiff { added: 0, removed: 0, reordered: true }
+        );
     }
 }

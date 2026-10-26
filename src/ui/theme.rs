@@ -1,6 +1,6 @@
 use eframe::egui::{self, Color32, Rounding, Stroke, Visuals};
 
-/// Interface colors (soft lavender on deep violet-black, from the Figma design).
+/// Interface colors (soft lavender on deep violet-black).
 /// Field names are kept from the old theme so every screen picks up the new palette:
 /// `accent_cyan` is the main accent (lavender), `accent_purple` the filled primary button.
 pub struct ThemeColors {
@@ -64,7 +64,7 @@ pub fn mix(base: Color32, color: Color32, amount: f32) -> Color32 {
     Color32::from_rgb(m(base.r(), color.r()), m(base.g(), color.g()), m(base.b(), color.b()))
 }
 
-/// Badge / chip background: the color at 18% over a card (as in the design).
+/// Badge / chip background: the color at 18% over a card.
 pub fn tint(color: Color32) -> Color32 {
     mix(THEME.bg_card, color, 0.18)
 }
@@ -87,8 +87,9 @@ pub fn apply_dark_theme(ctx: &egui::Context) {
     visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, THEME.text_secondary);
     visuals.widgets.noninteractive.rounding = Rounding::same(6.0);
 
-    // Inactive buttons / inputs
-    visuals.widgets.inactive.bg_fill = THEME.bg_card;
+    // Inactive buttons / inputs. `bg_fill` also paints slider tracks, checkbox boxes and
+    // scrollbar handles: they need a visible color on a card (buttons use `weak_bg_fill`).
+    visuals.widgets.inactive.bg_fill = THEME.border_strong;
     visuals.widgets.inactive.weak_bg_fill = THEME.bg_card;
     visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, THEME.border_strong);
     visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, THEME.text_secondary);

@@ -9,6 +9,15 @@ pub fn open_external(target: impl AsRef<std::ffi::OsStr>) {
     let _ = open::that_detached(target);
 }
 
+/// Unix time as a local date and time: "26.10.2026 14:32" (Russian) or "2026-10-26 14:32".
+pub fn local_date_time(unix_secs: u64) -> String {
+    let Some(utc) = chrono::DateTime::from_timestamp(unix_secs as i64, 0) else {
+        return String::new();
+    };
+    let format = crate::i18n::tr!("%d.%m.%Y %H:%M", "%Y-%m-%d %H:%M");
+    utc.with_timezone(&chrono::Local).format(format).to_string()
+}
+
 /// Snaps a coordinate to whole physical pixels: thin icon lines stay sharp.
 fn snap(ui: &Ui, v: f32) -> f32 {
     let ppp = ui.ctx().pixels_per_point();
@@ -43,7 +52,7 @@ pub fn badge(ui: &mut Ui, text: &str, bg: Color32, fg: Color32) -> Response {
     response
 }
 
-/// Badge in the design style: `color` text on the same color at 18%.
+/// Badge: `color` text on the same color at 18%.
 pub fn tag(ui: &mut Ui, text: &str, color: Color32) -> Response {
     badge(ui, text, tint(color), color)
 }
@@ -91,7 +100,7 @@ pub fn icon_badge_if_fits(
     fits(ui, icon_badge_width(ui, text)).then(|| icon_badge(ui, icon, text, bg, fg))
 }
 
-/// `icon_badge` in the design style (`color` on 18% of it), only if it fits.
+/// `icon_badge` with `color` on 18% of it, only if it fits.
 pub fn icon_tag_if_fits(ui: &mut Ui, icon: ImageSource<'static>, text: &str, color: Color32) -> Option<Response> {
     icon_badge_if_fits(ui, icon, text, tint(color), color)
 }
@@ -115,7 +124,7 @@ pub fn icon_badge(ui: &mut Ui, icon: ImageSource<'static>, text: &str, bg: Color
 
 // ---------------------------------------------------------------- buttons
 
-/// Button styles from the design.
+/// Button styles.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ButtonStyle {
     /// Filled deep violet (the main action, e.g. "Save Order").
@@ -131,6 +140,20 @@ pub enum ButtonStyle {
 /// One painter for every button: 32 px tall, 12 px side padding, 16 px icon, 12 px semibold text.
 pub fn styled_button(ui: &mut Ui, icon: Option<ImageSource<'static>>, text: &str, style: ButtonStyle) -> Response {
     styled_button_sized(ui, icon, text, style, 32.0, 12.0)
+}
+
+/// Width a `styled_button` takes (icon-only when `text` is empty).
+pub fn styled_button_width(ui: &Ui, has_icon: bool, text: &str) -> f32 {
+    let text_w = if text.is_empty() {
+        0.0
+    } else {
+        ui.painter()
+            .layout_no_wrap(text.to_string(), egui::FontId::proportional(12.0), Color32::WHITE)
+            .size()
+            .x
+    };
+    let icon_w = if has_icon { 16.0 + if text.is_empty() { 0.0 } else { 8.0 } } else { 0.0 };
+    12.0 * 2.0 + icon_w + text_w
 }
 
 /// Compact 24 px button for list rows ("Enable" next to a missing dependency).
@@ -237,7 +260,7 @@ pub fn icon_button(ui: &mut Ui, icon: ImageSource<'static>, size: Vec2, tint_col
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// 24×24 square button with a border and a 16 px icon (row actions in the design: ↑ ↓ ✕ +).
+/// 24×24 square button with a border and a 16 px icon (row actions: ↑ ↓ ✕ +).
 pub fn boxed_icon_button(ui: &mut Ui, icon: ImageSource<'static>) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::click());
     if ui.is_rect_visible(rect) {
@@ -308,7 +331,7 @@ pub fn chip(ui: &mut Ui, icon: Option<(ImageSource<'static>, Color32)>, label: &
 
 // ---------------------------------------------------------------- inputs and containers
 
-/// Search field from the design: dark field, border, search icon, clear button.
+/// Search field: dark field, border, search icon, clear button.
 pub fn search_input(ui: &mut Ui, query: &mut String, placeholder: &str) {
     search_input_width(ui, query, placeholder, ui.available_width().min(320.0));
 }
@@ -326,7 +349,9 @@ pub fn search_input_width(ui: &mut Ui, query: &mut String, placeholder: &str, wi
     .show(ui, |ui| {
         ui.set_width((width - 16.0).max(80.0));
         ui.set_height(30.0);
-        ui.horizontal_centered(|ui| {
+        // Always icon → text → clear button, even inside a right-to-left row
+        // (a plain `horizontal` would inherit that order and put "×" on the left).
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             ui.add(svg_icon(ICON_SEARCH, Vec2::splat(16.0), THEME.text_muted));
             let clear_w = if query.is_empty() { 0.0 } else { 26.0 };

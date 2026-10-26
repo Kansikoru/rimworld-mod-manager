@@ -1,7 +1,7 @@
 use eframe::egui::{self, Color32, Rounding, Stroke, Ui, Vec2};
 use std::collections::HashSet;
 
-use crate::app::{lookup_mod, passes_category_filter, App};
+use crate::app::{lookup_mod, passes_category_filter, App, DropTarget, ModDrag};
 use crate::categories::ModCategory;
 use crate::dependencies::DependencyProblem;
 use crate::i18n::{fmt, tr, TranslationKey};
@@ -16,19 +16,127 @@ pub fn render_mods_view(app: &mut App, ui: &mut Ui) {
     // Any manual change to the active list (enable, disable, move) re-runs the dependency check,
     // so the "not in list" / "order" badges never show stale results.
     let active_before = app.active_mods.clone();
+    // The lists set the drop target again every frame while something is dragged.
+    app.drop_target = None;
     render_mods_view_inner(app, ui);
+    handle_mod_drag(app, ui.ctx());
     if app.active_mods != active_before {
         app.validate_deps();
     }
 }
 
+/// Drag and drop of mods (F1): the label at the cursor, Esc to cancel, drop on release.
+fn handle_mod_drag(app: &mut App, ctx: &egui::Context) {
+    if app.mod_drag.is_none() {
+        return;
+    }
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        app.mod_drag = None;
+        app.drop_target = None;
+        return;
+    }
+    if ctx.input(|i| !i.pointer.primary_down()) {
+        app.finish_mod_drag();
+        return;
+    }
+    let Some(drag) = app.mod_drag.as_ref() else {
+        return;
+    };
+
+    ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+    if let Some(pos) = ctx.pointer_interact_pos() {
+        let hint = match app.drop_target {
+            Some(DropTarget::Available) => Some(tr!("отпустите, чтобы отключить", "release to disable")),
+            Some(DropTarget::Active(_)) if !drag.from_active => Some(tr!("отпустите, чтобы включить сюда", "release to enable here")),
+            None => Some(tr!("Esc — отмена", "Esc to cancel")),
+            _ => None,
+        };
+        egui::Area::new(egui::Id::new("mod_drag_label"))
+            .order(egui::Order::Tooltip)
+            .fixed_pos(pos + Vec2::new(16.0, 12.0))
+            .interactable(false)
+            .show(ctx, |ui| {
+                egui::Frame {
+                    inner_margin: egui::Margin::symmetric(10.0, 6.0),
+                    rounding: Rounding::same(6.0),
+                    fill: THEME.bg_surface_hover,
+                    stroke: Stroke::new(1.0_f32, THEME.accent_cyan),
+                    ..Default::default()
+                }
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new(&drag.label).color(THEME.text_primary).size(13.0).strong());
+                    if let Some(hint) = hint {
+                        ui.label(egui::RichText::new(hint).color(THEME.text_muted).size(11.0));
+                    }
+                });
+            });
+    }
+    ctx.request_repaint();
+}
+
+/// Label that follows the cursor: "Harmony", or "Harmony +2" for a group.
+fn drag_label(first_name: &str, count: usize) -> String {
+    if count > 1 {
+        format!("{first_name} +{}", count - 1)
+    } else {
+        first_name.to_string()
+    }
+}
+
+/// Invisible drag handle over a whole row. Registered before the row content, so the name
+/// (click, double click, menu) and the buttons stay on top and keep working.
+fn row_drag_handle(ui: &mut Ui, id: egui::Id, row_height: f32) -> egui::Response {
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(ui.max_rect().left(), ui.cursor().top()),
+        Vec2::new(ui.available_width(), row_height),
+    );
+    ui.interact(rect, id, egui::Sense::drag())
+}
+
+/// Dragged rows are drawn faded, so it is clear what is being moved.
+fn fade_row(ui: &Ui, rect: egui::Rect) {
+    ui.painter().rect_filled(rect, Rounding::same(6.0), THEME.bg_surface.gamma_multiply(0.65));
+}
+
 fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
 
-    // Toolbar (design: secondary "Auto-Sort", primary "Save Order", amber "● unsaved", library actions, search)
+    // Toolbar: secondary "Auto-Sort", primary "Save Order", amber "● unsaved", library actions, search.
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
+        const GAP: f32 = 8.0;
+        const SEARCH_MIN: f32 = 160.0;
+        ui.spacing_mut().item_spacing.x = GAP;
+
+        // What fits in a narrow window: first the library buttons lose their labels
+        // (the label stays as a tooltip), then the search field becomes a magnifier button.
+        let unsaved = app.has_unsaved_changes();
+        let unsaved_text = crate::i18n::tr!("● не сохранено", "● unsaved");
+        let scanning = app.is_rescanning();
+        let mut library: Vec<(egui::ImageSource<'static>, &str)> = vec![
+            (ICON_REFRESH, t.get(TranslationKey::BtnRescanMods)),
+            (ICON_CHECK_ALL, t.get(TranslationKey::BtnEnableAll)),
+            (ICON_X_ALL, t.get(TranslationKey::BtnDisableAll)),
+        ];
+        if !app.is_details_panel_visible {
+            library.push((ICON_INFO, t.get(TranslationKey::ModsBtnInfoPanel)));
+        }
+        let mut fixed = styled_button_width(ui, true, t.get(TranslationKey::BtnAutoSort))
+            + styled_button_width(ui, true, t.get(TranslationKey::BtnSaveConfig))
+            + 2.0 * GAP;
+        if unsaved {
+            fixed += ui.painter().layout_no_wrap(unsaved_text.to_string(), egui::FontId::proportional(12.0), Color32::WHITE).size().x + GAP;
+        }
+        if scanning {
+            fixed += 16.0 + GAP;
+        }
+        let full: f32 = library.iter().map(|(_, text)| styled_button_width(ui, true, text) + GAP).sum();
+        let icons_only = library.len() as f32 * (styled_button_width(ui, true, "") + GAP);
+        let avail = ui.available_width();
+        let compact = fixed + full + SEARCH_MIN > avail;
+        let used = fixed + if compact { icons_only } else { full };
+        let search_as_button = avail - used < SEARCH_MIN;
+
         if secondary_button_icon(ui, ICON_SORT, t.get(TranslationKey::BtnAutoSort)).clicked() {
             app.sort_active_mods();
         }
@@ -36,46 +144,56 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
         if primary_button_icon(ui, ICON_SAVE, t.get(TranslationKey::BtnSaveConfig)).clicked() {
             app.save_config();
         }
-        if app.has_unsaved_changes() {
-            ui.label(
-                egui::RichText::new(crate::i18n::tr!("● не сохранено", "● unsaved"))
-                    .color(THEME.accent_amber)
-                    .size(12.0),
-            )
-            .on_hover_text(crate::i18n::tr!(
-                "Порядок модов отличается от ModsConfig.xml. Нажмите «Сохранить порядок», чтобы игра его увидела.",
-                "The load order differs from ModsConfig.xml. Press \"Save Order\" so the game sees it."
-            ));
+        if unsaved {
+            ui.label(egui::RichText::new(unsaved_text).color(THEME.accent_amber).size(12.0))
+                .on_hover_text(crate::i18n::tr!(
+                    "Порядок модов отличается от ModsConfig.xml. Нажмите «Сохранить порядок», чтобы игра его увидела.",
+                    "The load order differs from ModsConfig.xml. Press \"Save Order\" so the game sees it."
+                ));
         }
 
-        let scanning = app.is_rescanning();
-        ui.add_enabled_ui(!scanning, |ui| {
-            if secondary_button_icon(ui, ICON_REFRESH, t.get(TranslationKey::BtnRescanMods)).clicked() {
-                app.rescan_mods();
+        for (i, (icon, text)) in library.iter().enumerate() {
+            let label = if compact { "" } else { *text };
+            let clicked = ui
+                .add_enabled_ui(!(i == 0 && scanning), |ui| {
+                    let resp = secondary_button_icon(ui, icon.clone(), label);
+                    if compact { resp.on_hover_text(*text) } else { resp }.clicked()
+                })
+                .inner;
+            if i == 0 && scanning {
+                ui.spinner();
             }
-        });
-        if scanning {
-            ui.spinner();
-        }
-
-        if secondary_button_icon(ui, ICON_CHECK_ALL, t.get(TranslationKey::BtnEnableAll)).clicked() {
-            app.activate_all_mods();
-        }
-
-        if secondary_button_icon(ui, ICON_X_ALL, t.get(TranslationKey::BtnDisableAll)).clicked() {
-            app.deactivate_all_mods();
-        }
-
-        // Toggle button for Mod Info panel if closed
-        if !app.is_details_panel_visible
-            && secondary_button_icon(ui, ICON_INFO, app.i18n.get(TranslationKey::ModsBtnInfoPanel)).clicked() {
-                app.is_details_panel_visible = true;
-                app.is_details_panel_collapsed = false;
+            if clicked {
+                match i {
+                    0 => app.rescan_mods(),
+                    1 => app.activate_all_mods(),
+                    2 => app.deactivate_all_mods(),
+                    _ => {
+                        app.is_details_panel_visible = true;
+                        app.is_details_panel_collapsed = false;
+                    }
+                }
             }
+        }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let w = ui.available_width().clamp(160.0, 264.0);
-            search_input_width(ui, &mut app.mod_search_query, t.get(TranslationKey::SearchPlaceholder), w);
+            let placeholder = t.get(TranslationKey::SearchPlaceholder);
+            if !search_as_button {
+                let w = ui.available_width().clamp(SEARCH_MIN, 264.0);
+                search_input_width(ui, &mut app.mod_search_query, placeholder, w);
+                return;
+            }
+            // Narrow window: a magnifier opens the search field below it; lit while a search is active.
+            let popup_id = ui.make_persistent_id("mods_search_popup");
+            let style = if app.mod_search_query.trim().is_empty() { ButtonStyle::Secondary } else { ButtonStyle::Primary };
+            let resp = styled_button(ui, Some(ICON_SEARCH), "", style).on_hover_text(placeholder);
+            if resp.clicked() {
+                ui.memory_mut(|m| m.toggle_popup(popup_id));
+            }
+            egui::popup_below_widget(ui, popup_id, &resp, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+                ui.set_min_width(240.0);
+                search_input_width(ui, &mut app.mod_search_query, placeholder, 240.0);
+            });
         });
     });
 
@@ -186,7 +304,7 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
     });
 }
 
-/// Panel card of the design: panel color, subtle border, 6 px corners, fixed size.
+/// Panel card: panel color, subtle border, 6 px corners, fixed size.
 fn panel_card(ui: &mut Ui, width: f32, height: f32, add_contents: impl FnOnce(&mut Ui)) {
     ui.allocate_ui_with_layout(Vec2::new(width, height), egui::Layout::top_down(egui::Align::Min), |ui| {
         egui::Frame {
@@ -242,7 +360,7 @@ fn panel_footer(ui: &mut Ui, top_border: bool, icon: Option<egui::ImageSource<'s
     });
 }
 
-/// Mod row frame of the design: 34 px card, the selected one lighter with a lavender bar at the left.
+/// Mod row frame: 34 px card, the selected one lighter with a lavender bar at the left.
 fn mod_row_frame(selected: bool) -> egui::Frame {
     egui::Frame {
         inner_margin: egui::Margin::symmetric(8.0, 5.0),
@@ -556,6 +674,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     // Header: title, count; on the right — search and move up / down for the selected mod.
     let active_count = app.active_mods.len();
     let mut move_selected: i32 = 0;
+    let mut open_history = false;
     let search_hint = app.i18n.get(TranslationKey::ModsSearchActive);
     panel_header(ui, t.get(TranslationKey::ActiveModsTitle), active_count, |ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
@@ -566,7 +685,19 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
         if boxed_icon_button(ui, ICON_ARROW_UP).on_hover_text(t.get(TranslationKey::ModsCtxMoveUp)).clicked() {
             move_selected = -1;
         }
+        if boxed_icon_button(ui, ICON_HISTORY)
+            .on_hover_text(tr!(
+                "История: вернуть порядок модов из прошлых сохранений",
+                "History: bring back the load order from earlier saves"
+            ))
+            .clicked()
+        {
+            open_history = true;
+        }
     });
+    if open_history {
+        app.open_history();
+    }
     if move_selected != 0 {
         // The selection may come from the left list, where IDs keep the case of
         // About.xml, while ModsConfig stores them in lower case: compare ignoring case.
@@ -625,18 +756,33 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     let mut shown_range = 0..0;
     let list_height = (ui.available_height() - 28.0).max(60.0);
 
-    // Only rows inside the visible area are built (M1): big modpacks stay smooth.
-    egui::Frame::none().inner_margin(egui::Margin::symmetric(8.0, 0.0)).show(ui, |ui| {
-    egui::ScrollArea::vertical()
+    // Drag and drop (F1): rows drawn this frame (index in active_mods, rect) and a drag that starts now.
+    let mut drawn_rows: Vec<(usize, egui::Rect)> = Vec::new();
+    let mut start_drag: Option<ModDrag> = None;
+    let mut scroll = egui::ScrollArea::vertical()
         .id_salt("active_mods_scroll_right")
         .auto_shrink([false, false])
         .max_height(list_height)
+        .drag_to_scroll(false);
+    if let Some(offset) = app.active_scroll_to.take() {
+        scroll = scroll.vertical_scroll_offset(offset);
+    }
+    let mut scroll_offset = app.active_scroll_offset;
+
+    // Only rows inside the visible area are built (M1): big modpacks stay smooth.
+    egui::Frame::none().inner_margin(egui::Margin::symmetric(8.0, 0.0)).show(ui, |ui| {
+    let output = scroll
         .show_rows(ui, row_height, visible_rows.len(), |ui, row_range| {
             let rows_top = ui.cursor().top();
             let rows_count = row_range.len();
             shown_range = row_range.clone();
             for &idx in &visible_rows[row_range] {
                 let pkg_id = &app.active_mods[idx];
+                let drag_resp = row_drag_handle(ui, egui::Id::new(("active_row_drag", pkg_id.to_lowercase())), row_height);
+                let is_dragged = app
+                    .mod_drag
+                    .as_ref()
+                    .is_some_and(|d| d.from_active && d.ids.iter().any(|id| id.eq_ignore_ascii_case(pkg_id)));
                 let mod_info_opt = lookup_mod(&app.mod_index, &app.all_mods, pkg_id);
                 let display_name = mod_info_opt
                     .map(|m| m.name.as_str())
@@ -865,12 +1011,75 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                 if is_selected {
                     paint_selection_bar(ui, row.response.rect);
                 }
+                if is_dragged {
+                    fade_row(ui, row.response.rect);
+                }
+                drawn_rows.push((idx, row.response.rect));
+
+                if drag_resp.drag_started() {
+                    // A selected row drags the whole selection (in load order), any other row only itself.
+                    let in_selection = app.selected_mod_ids.iter().any(|s| s.eq_ignore_ascii_case(pkg_id));
+                    let ids: Vec<String> = if in_selection && app.selected_mod_ids.len() > 1 {
+                        app.active_mods
+                            .iter()
+                            .filter(|a| app.selected_mod_ids.iter().any(|s| s.eq_ignore_ascii_case(a)))
+                            .cloned()
+                            .collect()
+                    } else {
+                        vec![pkg_id.clone()]
+                    };
+                    start_drag = Some(ModDrag {
+                        label: drag_label(display_name, ids.len()),
+                        ids,
+                        from_active: true,
+                    });
+                }
             }
             measured_row_height = measure_row_height(ui, rows_top, rows_count);
+
+            if app.mod_drag.is_some() {
+                let view = ui.clip_rect();
+                if let Some(pos) = ui.ctx().pointer_interact_pos() {
+                    let over_x = pos.x >= view.left() && pos.x <= view.right();
+                    if over_x && pos.y >= view.top() && pos.y <= view.bottom() {
+                        // Insert before the first row whose middle is below the cursor.
+                        let (to, line_y) = drawn_rows
+                            .iter()
+                            .find(|(_, r)| pos.y < r.center().y)
+                            .map(|(i, r)| (*i, r.top()))
+                            .or_else(|| drawn_rows.last().map(|(i, r)| (i + 1, r.bottom())))
+                            .unwrap_or((app.active_mods.len(), view.top() + 2.0));
+                        app.drop_target = Some(DropTarget::Active(to));
+                        let x = view.x_range().shrink(4.0);
+                        let painter = ui.painter().with_clip_rect(view);
+                        painter.hline(x, line_y, Stroke::new(2.0_f32, THEME.accent_cyan));
+                        painter.circle_filled(egui::pos2(x.min + 3.0, line_y), 4.0, THEME.accent_cyan);
+                    }
+                    // Near the top or bottom edge the list scrolls by itself, faster the closer the cursor.
+                    const EDGE: f32 = 36.0;
+                    let speed = if pos.y < view.top() + EDGE {
+                        -(view.top() + EDGE - pos.y)
+                    } else if pos.y > view.bottom() - EDGE {
+                        pos.y - (view.bottom() - EDGE)
+                    } else {
+                        0.0
+                    };
+                    let near = pos.y > view.top() - 80.0 && pos.y < view.bottom() + 80.0;
+                    if over_x && near && speed != 0.0 {
+                        let step = (speed * 0.4).clamp(-20.0, 20.0);
+                        app.active_scroll_to = Some((app.active_scroll_offset + step).max(0.0));
+                    }
+                }
+            }
         });
+    scroll_offset = output.state.offset.y;
     });
+    app.active_scroll_offset = scroll_offset;
     if let Some(h) = measured_row_height {
         app.active_row_height = h;
+    }
+    if start_drag.is_some() {
+        app.mod_drag = start_drag;
     }
 
     // Footer: visible range and a reminder of how the order works.
@@ -928,6 +1137,8 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
 /// Renders the Left Column: Inactive / Available Mods
 fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
+    // Whole panel: drop zone for disabling dragged active mods.
+    let panel_rect = ui.max_rect();
     let game_mm = app.steam_paths.game_major_minor();
     // "x_steam" in ModsConfig refers to the Workshop copy of "x": it is active too.
     let active_set: HashSet<String> = app
@@ -976,19 +1187,25 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     let row_height = app.inactive_row_height;
     let mut measured_row_height: Option<f32> = None;
     let list_height = (ui.available_height() - 48.0).max(60.0);
+    let mut start_drag: Option<ModDrag> = None;
 
     // Only rows inside the visible area are built (M1).
     egui::Frame::none().inner_margin(egui::Margin::symmetric(8.0, 0.0)).show(ui, |ui| {
     egui::ScrollArea::vertical()
         .id_salt("inactive_mods_scroll_left")
         .auto_shrink([false, false])
+        .drag_to_scroll(false)
         .max_height(list_height)
         .min_scrolled_height(list_height)
         .show_rows(ui, row_height, visible_mods.len(), |ui, row_range| {
             let rows_top = ui.cursor().top();
             let rows_count = row_range.len();
             for m in visible_mods.iter().skip(row_range.start).take(rows_count) {
-
+                let drag_resp = row_drag_handle(ui, egui::Id::new(("inactive_row_drag", m.package_id.to_lowercase())), row_height);
+                let is_dragged = app
+                    .mod_drag
+                    .as_ref()
+                    .is_some_and(|d| !d.from_active && d.ids.iter().any(|id| id.eq_ignore_ascii_case(&m.package_id)));
                 let is_selected = app.selected_mod_ids.contains(&m.package_id) || app.selected_mod_id.as_deref() == Some(&m.package_id);
 
                 let row = mod_row_frame(is_selected).show(ui, |ui| {
@@ -1118,6 +1335,21 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                 if is_selected {
                     paint_selection_bar(ui, row.response.rect);
                 }
+                if is_dragged {
+                    fade_row(ui, row.response.rect);
+                }
+                if drag_resp.drag_started() {
+                    let ids: Vec<String> = if app.selected_mod_ids.contains(&m.package_id) && app.selected_mod_ids.len() > 1 {
+                        visible_inactive_ids
+                            .iter()
+                            .filter(|id| app.selected_mod_ids.contains(*id))
+                            .cloned()
+                            .collect()
+                    } else {
+                        vec![m.package_id.clone()]
+                    };
+                    start_drag = Some(ModDrag { label: drag_label(&m.name, ids.len()), ids, from_active: false });
+                }
             }
             measured_row_height = measure_row_height(ui, rows_top, rows_count);
         });
@@ -1125,17 +1357,30 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     if let Some(h) = measured_row_height {
         app.inactive_row_height = h;
     }
+    if start_drag.is_some() {
+        app.mod_drag = start_drag;
+    }
 
     panel_footer(
         ui,
         true,
         Some(ICON_PLUS),
         tr!(
-            "Нажмите +, чтобы добавить мод в порядок загрузки.",
-            "Use + to add a mod to the active load order."
+            "Нажмите + или перетащите мод вправо, чтобы включить его.",
+            "Use + or drag a mod to the right to enable it."
         ),
         None,
     );
+
+    // Active mods dragged over this panel: dropping them here disables them.
+    if app.mod_drag.as_ref().is_some_and(|d| d.from_active) {
+        if let Some(pos) = ui.ctx().pointer_interact_pos() {
+            if panel_rect.contains(pos) {
+                app.drop_target = Some(DropTarget::Available);
+                ui.painter().rect_stroke(panel_rect.shrink(1.0), Rounding::same(6.0), Stroke::new(2.0_f32, THEME.accent_cyan));
+            }
+        }
+    }
 
     for (pkg_id, preview_opt) in missing_icons {
         app.mod_textures.insert(pkg_id.clone(), None);
@@ -1254,37 +1499,29 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
                     });
                 }
 
-                // Vertical column for text details
-                ui.vertical(|ui| {
-                    // Mod Title + Badges
-                    ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(&m.name)
-                        .color(THEME.text_primary)
-                        .size(14.0)
-                        .strong(),
-                );
+                // Text column: exactly the width left of the card, so every line wraps
+                // inside it instead of running past the edge in a narrow window.
+                let text_width = ui.available_width().max(120.0);
+                ui.allocate_ui_with_layout(
+                    Vec2::new(text_width, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                    ui.set_max_width(text_width);
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&m.name).color(THEME.text_primary).size(14.0).strong(),
+                        )
+                        .wrap(),
+                    );
 
+            // Badges, categories and the Folder / Steam buttons: one row that wraps when narrow.
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
                 if is_protected {
                     icon_badge(ui, ICON_SHIELD, app.i18n.get(TranslationKey::ModsBadgeProtected), Color32::from_rgb(107, 33, 168).linear_multiply(0.4), Color32::from_rgb(192, 132, 252));
                 }
                 origin_badge(ui, m.origin);
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let Some(ref steam_id) = m.steam_item_id {
-                        if ui.small_button("Steam").clicked() {
-                            open_external(workshop_url(steam_id));
-                        }
-                    }
-                    if secondary_button_icon(ui, ICON_FOLDER, app.i18n.get(TranslationKey::ModsBtnFolder)).clicked() {
-                        open_external(&m.dir_path);
-                    }
-                });
-            });
-
-            // All categories of the mod
-            if !m.package_id.to_lowercase().starts_with("ludeon.rimworld") {
-                ui.horizontal_wrapped(|ui| {
+                if !m.package_id.to_lowercase().starts_with("ludeon.rimworld") {
                     if m.categories.is_empty() {
                         ui.label(
                             egui::RichText::new(app.i18n.get(TranslationKey::CategoriesNone))
@@ -1301,26 +1538,37 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
                                 .size(12.0),
                         );
                     }
-                });
-            }
+                }
+                if small_button(ui, app.i18n.get(TranslationKey::ModsBtnFolder), ButtonStyle::Secondary).clicked() {
+                    open_external(&m.dir_path);
+                }
+                if let Some(ref steam_id) = m.steam_item_id {
+                    if small_button(ui, "Steam", ButtonStyle::Secondary).clicked() {
+                        open_external(workshop_url(steam_id));
+                    }
+                }
+            });
 
-            // Package ID & Author
-            ui.horizontal(|ui| {
-                ui.label(
+            // Package ID and author, each on its own line (a long author list wraps on its own).
+            ui.add(
+                egui::Label::new(
                     egui::RichText::new(format!("Package ID: {}", m.package_id))
                         .color(Color32::from_rgb(245, 158, 11))
                         .monospace()
                         .size(12.0),
-                );
-
-                if !m.author.is_empty() {
-                    ui.label(
+                )
+                .wrap(),
+            );
+            if !m.author.is_empty() {
+                ui.add(
+                    egui::Label::new(
                         egui::RichText::new(app.i18n.get(TranslationKey::ModsAuthor).replace("{}", &m.author))
                             .color(THEME.text_muted)
                             .size(12.0),
-                    );
-                }
-            });
+                    )
+                    .wrap(),
+                );
+            }
 
             // Dependencies list
             if !m.dependencies.is_empty() {
@@ -1345,10 +1593,10 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
                         );
                     });
             }
-                }); // close vertical
+                }); // close text column
             }); // close horizontal
         } else {
-            // No mod selected: counts + reminder (design "Mod list summary")
+            // No mod selected: counts + reminder ("Mod list summary")
             let available = app.all_mods.len().saturating_sub(app.active_mods.len());
             let incompatible = app.dependency_report.incompatible_count();
             ui.horizontal(|ui| {

@@ -181,6 +181,7 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
 
                 ui.add(
                     ProgressBar::new(progress)
+                        .fill(THEME.accent_purple)
                         .show_percentage()
                         .animate(app.opt_is_running),
                 );

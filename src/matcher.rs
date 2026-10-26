@@ -316,6 +316,48 @@ pub fn is_translation_title(title: &str) -> bool {
         || crate::models::contains_cyrillic(title)
 }
 
+/// Stricter name check for the modpack-wide search: the whole mod name is in the title
+/// ("Vanilla Expanded Framework" in "Vanilla Expanded Framework - Russian"), or every
+/// meaningful word of it is. Partial overlaps like "Alpha Beta Gamma" vs "Alpha Delta" don't count.
+pub fn title_names_mod(base_mod_name: &str, candidate_title: &str) -> bool {
+    let base = clean_name(base_mod_name);
+    if base.len() >= 3 && clean_name(candidate_title).contains(&base) {
+        return true;
+    }
+    // Every word counts here ("Expanded", "Framework" tell mods apart), only function words are skipped.
+    const SKIP: &[&str] = &["the", "a", "an", "and", "or", "of", "for", "in", "on", "at", "to", "by"];
+    let tokens: Vec<String> = BRACKET_STRIP_RE
+        .replace_all(base_mod_name, " ")
+        .split(|c: char| !c.is_alphanumeric())
+        .map(str::to_lowercase)
+        .filter(|w| !w.is_empty() && !SKIP.contains(&w.as_str()))
+        .collect();
+    if tokens.is_empty() {
+        return false;
+    }
+    let cand: std::collections::HashSet<String> = candidate_title
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_lowercase())
+        .collect();
+    tokens.iter().all(|t| cand.contains(t))
+}
+
+/// Translations of one mod for the modpack-wide search: the usual language and translation
+/// checks, a strict name match, and nothing the user is already subscribed to.
+pub fn translations_for_mod(
+    items: Vec<crate::workshop_search::WorkshopItemResult>,
+    base_name: &str,
+    base_steam_id: Option<&str>,
+    target_lang: crate::models::TranslationTargetLang,
+    installed_steam_ids: &std::collections::HashSet<String>,
+) -> Vec<crate::workshop_search::WorkshopItemResult> {
+    filter_and_rank_workshop_translations(items, base_name, base_steam_id, target_lang)
+        .into_iter()
+        .filter(|item| title_names_mod(base_name, &item.title) && !installed_steam_ids.contains(&item.id))
+        .collect()
+}
+
 /// Strictly filters and ranks Workshop translation items against a base mod and target language.
 pub fn filter_and_rank_workshop_translations(
     items: Vec<crate::workshop_search::WorkshopItemResult>,
@@ -480,6 +522,83 @@ mod tests {
 
         let m = make_test_mod("unknown.mod.ru", "Unknown Mod");
         assert_eq!(find_parent_package_id(&m, &id_to_index, &name_to_id), None, "No match found");
+    }
+
+    fn item(id: &str, title: &str, tags: &[&str]) -> crate::workshop_search::WorkshopItemResult {
+        crate::workshop_search::WorkshopItemResult {
+            id: id.into(),
+            title: title.into(),
+            preview_url: None,
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            is_translation: tags.contains(&"Translation"),
+            score: 0,
+        }
+    }
+
+    #[test]
+    fn modpack_search_shows_only_this_mod_in_this_language() {
+        use crate::models::TranslationTargetLang as L;
+        let found = vec![
+            item("1", "Vanilla Expanded Framework - Russian", &["Translation"]),
+            item("2", "Vanilla Expanded Framework", &["Mod"]), // the mod itself
+            item("3", "Vanilla Expanded Framework - German", &["Translation"]),
+            item("4", "Vanilla Furniture Expanded [RU]", &["Translation"]), // another mod
+            item("5", "Vanilla Expanded Framework (Русский перевод)", &[]),
+            item("6", "VEF Russian", &["Translation"]), // abbreviation: not the mod name
+            item("7", "Vanilla Expanded Framework RU", &["Translation"]), // already subscribed
+            item("8", "Rus Vanilla Expanded Framework", &["Translation"]),
+        ];
+        let installed: std::collections::HashSet<String> = ["7".to_string()].into_iter().collect();
+        let ids: Vec<String> = translations_for_mod(found, "Vanilla Expanded Framework", Some("2"), L::Ru, &installed)
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
+        assert_eq!(ids.len(), 3, "{ids:?}");
+        for id in ["1", "5", "8"] {
+            assert!(ids.contains(&id.to_string()), "{id} missing: {ids:?}");
+        }
+    }
+
+    /// Live check against the Steam Workshop: `cargo test live_modpack_search -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn live_modpack_search() {
+        use crate::models::TranslationTargetLang as L;
+        let none = std::collections::HashSet::new();
+        for (name, lang) in [
+            ("Dubs Bad Hygiene", L::Ru),
+            ("Vanilla Expanded Framework", L::Ru),
+            ("Humanoid Alien Races", L::Ru),
+            ("RimHUD", L::De),
+            ("Allow Tool", L::Zh),
+        ] {
+            let raw = crate::workshop_search::search_steam_workshop(&format!("{name} {}", lang.search_suffix())).unwrap();
+            let total = raw.len();
+            let kept = translations_for_mod(raw, name, None, lang, &none);
+            println!("{name} [{}]: {total} found, kept {}", lang.label(), kept.len());
+            for k in kept {
+                println!("    {}  ({})", k.title, k.id);
+            }
+        }
+    }
+
+    #[test]
+    fn title_must_name_the_whole_mod() {
+        assert!(title_names_mod("Dubs Bad Hygiene", "Dubs Bad Hygiene [RU]"));
+        assert!(title_names_mod("Dubs Bad Hygiene", "Перевод Dubs Bad Hygiene"));
+        assert!(title_names_mod("Hygiene: Dubs Bad", "Dubs Bad Hygiene - Russian"));
+        assert!(!title_names_mod("Dubs Bad Hygiene", "Dubs Mint Menus [RU]"));
+        assert!(!title_names_mod("Alpha Beta Gamma", "Alpha Delta Epsilon [RU]"));
+    }
+
+    #[test]
+    fn built_in_language_needs_no_translation() {
+        use crate::models::TranslationTargetLang as L;
+        let mut m = make_test_mod("a.b", "A B");
+        m.languages = vec!["Russian (Русский)".into(), "German".into()];
+        assert!(L::Ru.is_built_into(&m));
+        assert!(L::De.is_built_into(&m));
+        assert!(!L::Zh.is_built_into(&m));
     }
 
     #[test]

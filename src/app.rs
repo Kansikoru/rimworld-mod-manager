@@ -75,6 +75,39 @@ pub enum PendingQuestion {
     LegacyDds(Vec<PathBuf>),
 }
 
+/// Translations of one mod found by the modpack-wide search.
+#[derive(Debug, Clone)]
+pub struct ModTranslations {
+    pub mod_name: String,
+    pub items: Vec<WorkshopItemResult>,
+}
+
+/// Messages from the modpack-wide translation search.
+pub enum BatchSearchMsg {
+    Progress { done: usize, total: usize },
+    Found(ModTranslations),
+    Done { searched: usize, errors: usize, cancelled: bool },
+}
+
+/// Mods being dragged with the mouse (F1).
+#[derive(Debug, Clone)]
+pub struct ModDrag {
+    /// Dragged mods in list order: IDs from the active list, or package IDs from the available list.
+    pub ids: Vec<String>,
+    pub from_active: bool,
+    /// Text of the label that follows the cursor: the mod name, "+N" for a group.
+    pub label: String,
+}
+
+/// Where the dragged mods land if the mouse button is released now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropTarget {
+    /// Insert before this index of the active list (`len` = at the end).
+    Active(usize),
+    /// Back to the available list (disable).
+    Available,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppTab {
     Mods,
@@ -111,6 +144,22 @@ pub struct App {
     pub trans_target_lang: TranslationTargetLang,
     pub workshop_search_query: String,
     pub workshop_search_results: Vec<WorkshopItemResult>,
+    /// Modpack-wide translation search: messages, stop flag, progress (done, total).
+    pub batch_rx: Option<Receiver<BatchSearchMsg>>,
+    pub batch_stop: Arc<AtomicBool>,
+    pub batch_progress: (usize, usize),
+    /// Mods with translations found, by name; the language they were searched for.
+    pub batch_results: Vec<ModTranslations>,
+    pub batch_lang: TranslationTargetLang,
+    /// Active mods not searched: the language is already in the mod or a translation is installed.
+    pub batch_skipped: usize,
+    /// Workshop IDs ticked for "Subscribe", and the ones already sent to Steam.
+    pub batch_checked: std::collections::HashSet<String>,
+    pub batch_subscribed: std::collections::HashSet<String>,
+    /// The right column shows the modpack results (true) or the manual search (false).
+    pub show_batch_results: bool,
+    /// RWMM_TAB=translations-batch: start the modpack search once the mods are scanned (screenshots).
+    batch_search_after_scan: bool,
 
     // Optimizer State
     pub opt_scope: OptimizeScope,
@@ -177,6 +226,13 @@ pub struct App {
     pub cache_rx: Option<Receiver<String>>,
     /// Background removal of DDS files that are not in the manager's log.
     pub legacy_rx: Option<Receiver<String>>,
+    /// "History" window: ModsConfig.xml backups, newest first (`Some` = window open).
+    pub history: Option<Vec<crate::mods_config::ConfigBackup>>,
+    /// Look for a new version on GitHub once a day (Settings).
+    pub check_updates: bool,
+    /// A newer release than this build: shown as a badge next to the version.
+    pub update_available: Option<crate::update_check::LatestRelease>,
+    pub update_rx: Option<Receiver<Option<crate::update_check::LatestRelease>>>,
 
     /// Mods found more than once on disk (same packageId in several folders).
     pub duplicate_mods: Vec<crate::scanner::DuplicateModEntry>,
@@ -205,6 +261,13 @@ pub struct App {
     /// Measured row heights of the two mod lists (for drawing only the visible rows).
     pub active_row_height: f32,
     pub inactive_row_height: f32,
+
+    /// Drag and drop of mods (F1): what is dragged and where it lands this frame.
+    pub mod_drag: Option<ModDrag>,
+    pub drop_target: Option<DropTarget>,
+    /// Scroll position of the active list, and a new one requested by auto-scroll while dragging.
+    pub active_scroll_offset: f32,
+    pub active_scroll_to: Option<f32>,
 
     // Status Message
     pub status_message: String,
@@ -250,6 +313,7 @@ impl App {
         } else {
             ["-logfile".to_string()].into_iter().collect()
         };
+        let last_check_updates = s.check_updates;
         let community_db = crate::community_rules::load_effective_db();
         let db_rules_count = community_db.rules.len();
 
@@ -287,9 +351,11 @@ impl App {
             }
         });
 
-        // RWMM_TAB=settings|optimizer|analyzer|translations opens that tab first (for screenshots).
-        let start_tab = match std::env::var("RWMM_TAB").unwrap_or_default().to_lowercase().as_str() {
-            "translations" => AppTab::Translations,
+        // RWMM_TAB=settings|optimizer|analyzer|translations|history opens that tab (or the
+        // History window) first, for screenshots.
+        let start_view = std::env::var("RWMM_TAB").unwrap_or_default().to_lowercase();
+        let start_tab = match start_view.as_str() {
+            "translations" | "translations-batch" => AppTab::Translations,
             "optimizer" => AppTab::Optimizer,
             "analyzer" => AppTab::Analyzer,
             "settings" => AppTab::Settings,
@@ -320,6 +386,16 @@ impl App {
             trans_target_lang: TranslationTargetLang::Ru,
             workshop_search_query: String::new(),
             workshop_search_results: Vec::new(),
+            batch_rx: None,
+            batch_stop: Arc::new(AtomicBool::new(false)),
+            batch_progress: (0, 0),
+            batch_results: Vec::new(),
+            batch_lang: TranslationTargetLang::Ru,
+            batch_skipped: 0,
+            batch_checked: std::collections::HashSet::new(),
+            batch_subscribed: std::collections::HashSet::new(),
+            show_batch_results: false,
+            batch_search_after_scan: false,
 
             opt_scope: OptimizeScope::AllInstalled,
             opt_force: false,
@@ -363,6 +439,10 @@ impl App {
             delete_rx: None,
             cache_rx: None,
             legacy_rx: None,
+            history: None,
+            check_updates: last_check_updates,
+            update_available: None,
+            update_rx: None,
             duplicate_mods: Vec::new(),
 
             category_overrides: crate::categories::load_overrides(&crate::categories::overrides_path()),
@@ -378,13 +458,36 @@ impl App {
             mod_index: std::collections::HashMap::new(),
             active_row_height: 34.0,
             inactive_row_height: 34.0,
+            mod_drag: None,
+            drop_target: None,
+            active_scroll_offset: 0.0,
+            active_scroll_to: None,
 
             status_message: tr!("Готов к работе", "Ready").to_string(),
         };
 
         // Scans in the background: the window opens at once and fills in when the scan is done.
         app.rescan_mods();
+        app.start_update_check();
+        if start_view == "history" {
+            app.open_history();
+        }
+        app.batch_search_after_scan = start_view == "translations-batch";
         app
+    }
+
+    /// Shows the last known newer release at once and asks GitHub again if a day has passed.
+    pub fn start_update_check(&mut self) {
+        use crate::update_check::{cache_path, current_version, is_newer, load_cache, needs_check, now_secs};
+        if !self.check_updates || self.update_rx.is_some() {
+            return;
+        }
+        let path = cache_path();
+        let cache = load_cache(&path);
+        self.update_available = cache.latest.clone().filter(|r| is_newer(&r.tag, current_version()));
+        if needs_check(&cache, now_secs()) {
+            self.update_rx = Some(self.spawn_task(move || crate::update_check::check_now(&path)));
+        }
     }
 
     /// Runs `job` on a background thread; the result arrives on the returned channel
@@ -464,6 +567,17 @@ impl App {
                 self.status_message = msg;
             }
         }
+        self.poll_batch_search();
+        if let Some(rx) = &self.update_rx {
+            if let Ok(res) = rx.try_recv() {
+                self.update_rx = None;
+                // Offline (None): keep what the cache said.
+                if let Some(latest) = res {
+                    let newer = crate::update_check::is_newer(&latest.tag, crate::update_check::current_version());
+                    self.update_available = (newer && self.check_updates).then_some(latest);
+                }
+            }
+        }
     }
 
     /// The load order differs from ModsConfig.xml on disk.
@@ -530,6 +644,40 @@ pub fn add_active_id(active: &mut Vec<String>, id: &str) -> bool {
     }
     active.push(id.to_lowercase());
     true
+}
+
+/// Moves `ids` so they start at `to` (an index in the list before the move), keeping their
+/// order. IDs that are not in the list yet are inserted in lower case, so the same call
+/// enables mods dragged in from the available list. Case of IDs doesn't matter.
+pub fn move_mods(active: &mut Vec<String>, ids: &[String], to: usize) {
+    let mut wanted: Vec<String> = Vec::with_capacity(ids.len());
+    for id in ids {
+        let lower = id.to_lowercase();
+        if !wanted.contains(&lower) {
+            wanted.push(lower);
+        }
+    }
+    let to = to.min(active.len());
+    let before_target = active[..to]
+        .iter()
+        .filter(|a| wanted.contains(&a.to_lowercase()))
+        .count();
+    let mut moving = Vec::with_capacity(wanted.len());
+    for id in &wanted {
+        match active.iter().position(|a| a.eq_ignore_ascii_case(id)) {
+            Some(pos) => moving.push(active.remove(pos)),
+            None => moving.push(id.clone()),
+        }
+    }
+    let at = to - before_target;
+    active.splice(at..at, moving);
+}
+
+/// Removes `ids` from the active list; Core and DLC stay. Returns how many were removed.
+pub fn remove_mods(active: &mut Vec<String>, ids: &[String]) -> usize {
+    let before = active.len();
+    active.retain(|a| is_protected_package_id(a) || !ids.iter().any(|id| id.eq_ignore_ascii_case(a)));
+    before - active.len()
 }
 
 /// Enables installed-but-disabled dependencies until none are left, so the
@@ -680,6 +828,7 @@ impl App {
             launch_flags: flags,
             launch_extra_args: self.launch_extra_args.clone(),
             opt_threads: Some(self.opt_threads),
+            check_updates: self.check_updates,
         }
     }
 
@@ -784,6 +933,9 @@ impl App {
         }
 
         self.validate_deps();
+        if std::mem::take(&mut self.batch_search_after_scan) {
+            self.start_batch_translation_search();
+        }
         if self.rescan_keep_status {
             self.rescan_keep_status = false;
         } else {
@@ -835,6 +987,38 @@ impl App {
                 false
             }
         }
+    }
+
+    /// Mouse button released while dragging mods: move, enable or disable them,
+    /// depending on where they were dropped. Dropped anywhere else: nothing changes.
+    pub fn finish_mod_drag(&mut self) {
+        let Some(drag) = self.mod_drag.take() else {
+            return;
+        };
+        match self.drop_target.take() {
+            Some(DropTarget::Active(to)) => move_mods(&mut self.active_mods, &drag.ids, to),
+            Some(DropTarget::Available) if drag.from_active => {
+                remove_mods(&mut self.active_mods, &drag.ids);
+            }
+            _ => {}
+        }
+    }
+
+    /// Opens the "History" window with the ModsConfig.xml backups.
+    pub fn open_history(&mut self) {
+        self.history = Some(crate::mods_config::list_backups(&crate::mods_config::backups_dir()));
+    }
+
+    /// Loads a backup into the list as unsaved changes: ModsConfig.xml changes only on "Save".
+    pub fn restore_backup(&mut self, backup: &crate::mods_config::ConfigBackup) {
+        self.active_mods = backup.mods.clone();
+        self.validate_deps();
+        self.history = None;
+        self.status_message = tr!(
+            "Загружен порядок от {} — нажмите «Сохранить порядок», чтобы его увидела игра",
+            "Loaded the order from {} — press \"Save Order\" so the game sees it",
+            crate::ui::components::local_date_time(backup.saved_at)
+        );
     }
 
     /// Adds a mod to the end of the load order unless it is already there (IDs are
@@ -995,6 +1179,7 @@ impl App {
         let name = m.name.clone();
         let steam_id = m.steam_item_id.clone();
         let lang = self.trans_target_lang;
+        self.show_batch_results = false;
         let query = format!("{} {}", name, lang.search_suffix());
         self.workshop_search_query = query.clone();
         self.status_message = tr!("Поиск в Workshop: {}...", "Searching the Workshop: {}...", query);
@@ -1016,11 +1201,198 @@ impl App {
         }));
     }
 
+    pub fn is_batch_searching(&self) -> bool {
+        self.batch_rx.is_some()
+    }
+
+    /// "Find translations for the whole modpack" (T1): searches the Workshop for a translation
+    /// of every active mod into the selected language, in the background (3 requests at a time).
+    /// Skipped: Core/DLC, translation mods, mods that already ship the language, mods that
+    /// already have a translation installed. Shown: only items whose title names the mod.
+    pub fn start_batch_translation_search(&mut self) {
+        if self.batch_rx.is_some() {
+            return;
+        }
+        let lang = self.trans_target_lang;
+        let installed_steam: std::collections::HashSet<String> =
+            self.all_mods.iter().filter_map(|m| m.steam_item_id.clone()).collect();
+        let translated: std::collections::HashSet<String> = self
+            .all_mods
+            .iter()
+            .filter(|m| m.is_translation_mod && lang.matches_mod_info(m))
+            .filter_map(|m| m.parent_package_id.as_deref().map(str::to_lowercase))
+            .collect();
+
+        let mut skipped = 0;
+        let mut seen = std::collections::HashSet::new();
+        let mut candidates: Vec<(String, Option<String>)> = Vec::new();
+        for id in &self.active_mods {
+            let Some(m) = self.find_mod(id) else { continue };
+            if self.is_official_mod(m) || m.is_translation_mod || !seen.insert(m.package_id.to_lowercase()) {
+                continue;
+            }
+            if lang.is_built_into(m) || translated.contains(&m.package_id.to_lowercase()) {
+                skipped += 1;
+                continue;
+            }
+            candidates.push((m.name.clone(), m.steam_item_id.clone()));
+        }
+
+        self.batch_results.clear();
+        self.batch_checked.clear();
+        self.batch_lang = lang;
+        self.batch_skipped = skipped;
+        self.batch_progress = (0, candidates.len());
+        self.show_batch_results = true;
+        if candidates.is_empty() {
+            self.status_message = tr!(
+                "Все активные моды уже переведены на {} — искать нечего",
+                "Every active mod already has {} — nothing to search",
+                lang.label()
+            );
+            return;
+        }
+        self.status_message = tr!(
+            "Поиск переводов на {} для {} модов...",
+            "Searching {} translations for {} mods...",
+            lang.label(),
+            candidates.len()
+        );
+
+        let stop = Arc::new(AtomicBool::new(false));
+        self.batch_stop = stop.clone();
+        let (tx, rx) = channel();
+        self.batch_rx = Some(rx);
+        let ctx = self.repaint_ctx.clone();
+        std::thread::spawn(move || {
+            use std::sync::atomic::AtomicUsize;
+            let total = candidates.len();
+            let next = AtomicUsize::new(0);
+            let done = AtomicUsize::new(0);
+            let errors = AtomicUsize::new(0);
+            std::thread::scope(|s| {
+                // A few requests at a time: fast enough, and gentle with Steam.
+                for _ in 0..3 {
+                    s.spawn(|| loop {
+                        if stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some((name, steam_id)) = candidates.get(i) else { break };
+                        let query = format!("{} {}", name, lang.search_suffix());
+                        match search_steam_workshop(&query) {
+                            Ok(raw) => {
+                                let items = crate::matcher::translations_for_mod(
+                                    raw,
+                                    name,
+                                    steam_id.as_deref(),
+                                    lang,
+                                    &installed_steam,
+                                );
+                                if !items.is_empty() {
+                                    let _ = tx.send(BatchSearchMsg::Found(ModTranslations { mod_name: name.clone(), items }));
+                                }
+                            }
+                            Err(_) => {
+                                errors.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+                        let _ = tx.send(BatchSearchMsg::Progress { done: d, total });
+                        if let Some(ctx) = &ctx {
+                            ctx.request_repaint();
+                        }
+                    });
+                }
+            });
+            let _ = tx.send(BatchSearchMsg::Done {
+                searched: done.load(Ordering::Relaxed),
+                errors: errors.load(Ordering::Relaxed),
+                cancelled: stop.load(Ordering::Relaxed),
+            });
+            if let Some(ctx) = &ctx {
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    pub fn stop_batch_translation_search(&mut self) {
+        self.batch_stop.store(true, Ordering::Relaxed);
+        self.status_message = tr!("Останавливаю поиск...", "Stopping the search...").to_string();
+    }
+
+    fn poll_batch_search(&mut self) {
+        let Some(rx) = &self.batch_rx else { return };
+        let mut finished = None;
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                BatchSearchMsg::Progress { done, total } => self.batch_progress = (done, total),
+                BatchSearchMsg::Found(found) => {
+                    // The best match of each mod is ticked; results stay sorted by mod name.
+                    if let Some(best) = found.items.first() {
+                        self.batch_checked.insert(best.id.clone());
+                    }
+                    let key = found.mod_name.to_lowercase();
+                    let pos = self.batch_results.partition_point(|r| r.mod_name.to_lowercase() < key);
+                    self.batch_results.insert(pos, found);
+                }
+                BatchSearchMsg::Done { searched, errors, cancelled } => finished = Some((searched, errors, cancelled)),
+            }
+        }
+        if let Some((searched, errors, cancelled)) = finished {
+            self.batch_rx = None;
+            let mut msg = tr!(
+                "Проверено модов: {} | с переводом на {}: {}",
+                "Mods checked: {} | with a {} translation: {}",
+                searched,
+                self.batch_lang.label(),
+                self.batch_results.len()
+            );
+            if cancelled {
+                msg.push_str(tr!(" | остановлено", " | stopped"));
+            }
+            if errors > 0 {
+                msg.push_str(&tr!(" | без ответа Steam: {}", " | no answer from Steam: {}", errors));
+            }
+            self.status_message = msg;
+        }
+    }
+
+    /// Subscribes to the ticked translations in one Steam session (background).
+    pub fn subscribe_checked_translations(&mut self) {
+        if self.steam_rx.is_some() || self.batch_checked.is_empty() {
+            return;
+        }
+        let Some(dll) = self.steam_paths.steam_dll_path.clone() else {
+            self.status_message = tr!(
+                "steam_api64.dll не найден — проверьте папку игры в Настройках",
+                "steam_api64.dll not found — check the game folder in Settings"
+            )
+            .to_string();
+            return;
+        };
+        let ids: Vec<String> = self.batch_checked.drain().collect();
+        self.batch_subscribed.extend(ids.iter().cloned());
+        self.status_message = tr!("Подписка на переводы: {}...", "Subscribing to translations: {}...", ids.len());
+        self.steam_rx = Some(self.spawn_task(move || {
+            let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+            match crate::steam::subscribe_workshop_items_batch_native(&dll, &refs) {
+                Ok(n) => tr!(
+                    "Steam принял подписок: {} — переводы скачаются в клиенте Steam, потом нажмите «Пересканировать»",
+                    "Steam accepted {} subscriptions — the Steam client downloads them, then press \"Rescan Mods\"",
+                    n
+                ),
+                Err(e) => tr!("Ошибка подписки: {}", "Subscribe failed: {}", e),
+            }
+        }));
+    }
+
     /// Free-text Workshop search — in the background (S5).
     pub fn search_workshop_custom(&mut self) {
         if self.workshop_rx.is_some() || self.workshop_search_query.trim().is_empty() {
             return;
         }
+        self.show_batch_results = false;
         let query = self.workshop_search_query.clone();
         self.status_message = tr!("Поиск в Workshop: {}...", "Searching the Workshop: {}...", query);
         self.workshop_rx = Some(self.spawn_task(move || {
@@ -1449,6 +1821,17 @@ impl eframe::App for App {
                         .color(THEME.text_muted)
                         .size(12.0),
                 );
+                if let Some(latest) = self.update_available.clone() {
+                    let text = tr!("Вышла {} →", "{} is out →", latest.tag);
+                    if crate::ui::components::tag(ui, &text, THEME.accent_emerald)
+                        .interact(egui::Sense::click())
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(tr!("Открыть страницу новой версии на GitHub", "Open the new version's page on GitHub"))
+                        .clicked()
+                    {
+                        crate::ui::components::open_external(&latest.url);
+                    }
+                }
 
                 ui.add_space(16.0);
                 ui.spacing_mut().item_spacing.x = 4.0;
@@ -1530,6 +1913,7 @@ impl eframe::App for App {
 
         self.render_delete_confirmation(ctx);
         self.render_question(ctx);
+        self.render_history_window(ctx);
         self.save_settings_if_changed();
 
         if self.opt_is_running {
@@ -1571,7 +1955,7 @@ impl App {
                     if crate::ui::components::danger_button(ui, t.get(TranslationKey::ConfirmDeleteBtn)).clicked() {
                         confirm = true;
                     }
-                    if ui.button(t.get(TranslationKey::BtnCancel)).clicked() {
+                    if crate::ui::components::secondary_button(ui, t.get(TranslationKey::BtnCancel)).clicked() {
                         cancel = true;
                     }
                 });
@@ -1655,11 +2039,11 @@ impl App {
                     if crate::ui::components::primary_button(ui, primary).clicked() {
                         answer = Answer::Primary;
                     }
-                    if ui.button(secondary).clicked() {
+                    if crate::ui::components::secondary_button(ui, secondary).clicked() {
                         answer = Answer::Secondary;
                     }
                     if !matches!(question, PendingQuestion::LegacyDds(_))
-                        && ui.button(self.i18n.get(TranslationKey::BtnCancel)).clicked()
+                        && crate::ui::components::secondary_button(ui, self.i18n.get(TranslationKey::BtnCancel)).clicked()
                     {
                         answer = Answer::Cancel;
                     }
@@ -1691,6 +2075,133 @@ impl App {
             _ => {}
         }
     }
+
+    /// "History" window: ModsConfig.xml backups with date, size and difference from the
+    /// current list; "Restore" loads one as unsaved changes.
+    fn render_history_window(&mut self, ctx: &egui::Context) {
+        let Some(backups) = self.history.as_ref() else {
+            return;
+        };
+        let mut restore: Option<usize> = None;
+        let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+
+        egui::Window::new(tr!("История порядка модов", "Load order history"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_width(560.0);
+                ui.label(
+                    egui::RichText::new(tr!(
+                        "Перед каждым сохранением программа делает копию ModsConfig.xml (хранятся последние 30). Восстановленный список появится как несохранённый: файл изменится, только когда вы нажмёте «Сохранить порядок».",
+                        "Before every save the manager copies ModsConfig.xml (the last 30 are kept). A restored list shows up as unsaved: the file changes only when you press \"Save Order\"."
+                    ))
+                    .color(THEME.text_secondary)
+                    .size(12.0),
+                );
+                ui.add_space(8.0);
+
+                if backups.is_empty() {
+                    ui.label(
+                        egui::RichText::new(tr!(
+                            "Копий пока нет: они появятся после первого сохранения порядка в программе.",
+                            "No copies yet: they appear after the first time you save the order here."
+                        ))
+                        .color(THEME.text_muted),
+                    );
+                }
+
+                egui::ScrollArea::vertical()
+                    .id_salt("history_list")
+                    .max_height(360.0)
+                    .show(ui, |ui| {
+                        for (i, b) in backups.iter().enumerate() {
+                            let diff = crate::mods_config::diff_lists(&self.active_mods, &b.mods);
+                            egui::Frame {
+                                inner_margin: egui::Margin::symmetric(10.0, 6.0),
+                                outer_margin: egui::Margin::symmetric(0.0, 2.0),
+                                rounding: Rounding::same(6.0),
+                                fill: THEME.bg_card,
+                                ..Default::default()
+                            }
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 12.0;
+                                    ui.label(
+                                        egui::RichText::new(crate::ui::components::local_date_time(b.saved_at))
+                                            .color(THEME.text_primary)
+                                            .strong(),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(tr!("модов: {}", "{} mods", b.mods.len()))
+                                            .color(THEME.text_secondary)
+                                            .size(12.0),
+                                    );
+                                    history_diff_label(ui, diff);
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.add_enabled_ui(!diff.is_same(), |ui| {
+                                            if crate::ui::components::small_button(
+                                                ui,
+                                                tr!("Восстановить", "Restore"),
+                                                crate::ui::components::ButtonStyle::Secondary,
+                                            )
+                                            .clicked()
+                                            {
+                                                restore = Some(i);
+                                            }
+                                        });
+                                    });
+                                });
+                            });
+                        }
+                    });
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if crate::ui::components::secondary_button_icon(ui, ICON_FOLDER, tr!("Открыть папку", "Open folder"))
+                        .clicked()
+                    {
+                        let dir = crate::mods_config::backups_dir();
+                        let _ = std::fs::create_dir_all(&dir);
+                        crate::ui::components::open_external(dir);
+                    }
+                    if crate::ui::components::secondary_button(ui, tr!("Закрыть", "Close")).clicked() {
+                        close = true;
+                    }
+                });
+            });
+
+        if let Some(i) = restore {
+            if let Some(b) = self.history.as_ref().and_then(|list| list.get(i)).cloned() {
+                self.restore_backup(&b);
+            }
+        } else if close {
+            self.history = None;
+        }
+    }
+}
+
+/// "+3 −1 · different order" relative to the current list, or "same as now".
+fn history_diff_label(ui: &mut egui::Ui, diff: crate::mods_config::ListDiff) {
+    if diff.is_same() {
+        ui.label(egui::RichText::new(tr!("как сейчас", "same as now")).color(THEME.text_muted).size(12.0));
+        return;
+    }
+    let mut parts = Vec::new();
+    if diff.added > 0 {
+        parts.push(format!("+{}", diff.added));
+    }
+    if diff.removed > 0 {
+        parts.push(format!("−{}", diff.removed));
+    }
+    if diff.reordered {
+        parts.push(tr!("другой порядок", "different order").to_string());
+    }
+    ui.label(egui::RichText::new(parts.join(" · ")).color(THEME.accent_amber).size(12.0))
+        .on_hover_text(tr!(
+            "По сравнению с текущим списком: + моды, которые вернутся, − моды, которые уберутся",
+            "Compared with the current list: + mods that come back, − mods that go away"
+        ));
 }
 
 #[cfg(test)]
@@ -1734,6 +2245,53 @@ mod tests {
         assert!(add_active_id(&mut active, "Author.CoolMod"));
         assert!(!add_active_id(&mut active, "author.coolmod"));
         assert_eq!(active, ["ludeon.rimworld", "author.coolmod"]);
+    }
+
+    fn ids(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn move_one_mod_down_and_up() {
+        let mut active = ids(&["a", "b", "c", "d"]);
+        // "a" dropped between "c" and "d" (before index 3)
+        move_mods(&mut active, &ids(&["a"]), 3);
+        assert_eq!(active, ids(&["b", "c", "a", "d"]));
+        // "d" dropped at the top
+        move_mods(&mut active, &ids(&["D"]), 0);
+        assert_eq!(active, ids(&["d", "b", "c", "a"]));
+        // dropped onto its own place: nothing changes
+        move_mods(&mut active, &ids(&["b"]), 1);
+        assert_eq!(active, ids(&["d", "b", "c", "a"]));
+        move_mods(&mut active, &ids(&["b"]), 2);
+        assert_eq!(active, ids(&["d", "b", "c", "a"]));
+    }
+
+    #[test]
+    fn move_group_keeps_its_order() {
+        let mut active = ids(&["a", "b", "c", "d", "e"]);
+        // "b" and "d" dropped at the end
+        move_mods(&mut active, &ids(&["b", "d"]), 5);
+        assert_eq!(active, ids(&["a", "c", "e", "b", "d"]));
+        // and back to the top, past the end index
+        move_mods(&mut active, &ids(&["b", "d"]), 0);
+        assert_eq!(active, ids(&["b", "d", "a", "c", "e"]));
+        move_mods(&mut active, &ids(&["a", "e"]), 99);
+        assert_eq!(active, ids(&["b", "d", "c", "a", "e"]));
+    }
+
+    #[test]
+    fn mods_from_the_available_list_are_inserted() {
+        let mut active = ids(&["core", "x"]);
+        move_mods(&mut active, &ids(&["Author.New", "author.new", "Other.Mod"]), 1);
+        assert_eq!(active, ids(&["core", "author.new", "other.mod", "x"]));
+    }
+
+    #[test]
+    fn removing_keeps_core() {
+        let mut active = ids(&["ludeon.rimworld", "a", "b"]);
+        assert_eq!(remove_mods(&mut active, &ids(&["Ludeon.RimWorld", "A"])), 1);
+        assert_eq!(active, ids(&["ludeon.rimworld", "b"]));
     }
 
     #[test]

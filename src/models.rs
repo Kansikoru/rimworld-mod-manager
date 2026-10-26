@@ -144,6 +144,22 @@ impl TranslationTargetLang {
         }
     }
 
+    /// The mod itself ships this language (a folder in its Languages): no translation needed.
+    pub fn is_built_into(&self, m: &ModInfo) -> bool {
+        let words: &[&str] = match self {
+            Self::Ru => &["russian", "русский"],
+            Self::En => &["english"],
+            Self::Zh => &["chinese"],
+            Self::De => &["german", "deutsch"],
+            Self::Fr => &["french", "français"],
+            Self::All => return false,
+        };
+        m.languages.iter().any(|l| {
+            let lower = l.to_lowercase();
+            words.iter().any(|w| lower.contains(w))
+        })
+    }
+
     /// Checks if a local mod on disk matches this target language.
     pub fn matches_mod_info(&self, m: &ModInfo) -> bool {
         match self {
@@ -256,9 +272,17 @@ pub fn contains_chinese_chars(s: &str) -> bool {
     s.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c))
 }
 
+/// The text has one of `words` as a whole word ("Rus Dubs Bad Hygiene", "Allow Tool - CN").
+fn has_word(lower: &str, words: &[&str]) -> bool {
+    lower
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|w| words.contains(&w))
+}
+
 pub fn has_ru_tag_or_keyword(s: &str) -> bool {
     let lower = s.to_lowercase();
-    lower.contains("[ru]")
+    has_word(&lower, &["ru", "rus"])
+        || lower.contains("[ru]")
         || lower.contains("(ru)")
         || lower.contains("_ru")
         || lower.ends_with(" ru")
@@ -355,7 +379,8 @@ pub fn is_translation_indicator(package_id: &str, name: &str, is_translation: bo
 
 pub fn has_zh_tag_or_keyword(s: &str) -> bool {
     let lower = s.to_lowercase();
-    lower.contains("[zh]")
+    has_word(&lower, &["zh", "cn", "chs", "cht"])
+        || lower.contains("[zh]")
         || lower.contains("(zh)")
         || lower.contains("_zh")
         || lower.ends_with(" zh")
