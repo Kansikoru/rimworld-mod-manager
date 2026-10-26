@@ -9,6 +9,7 @@ pub mod matcher;
 pub mod models;
 pub mod mods_config;
 pub mod modlists;
+pub mod saves;
 pub mod optimizer;
 pub mod scanner;
 pub mod settings;

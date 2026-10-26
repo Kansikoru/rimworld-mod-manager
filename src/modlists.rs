@@ -133,13 +133,7 @@ pub fn read_rml(path: &Path) -> Option<ModList> {
     if !saw_root {
         return None;
     }
-    // meta's ID and Steam ID lists go side by side; "0" means "not from the Workshop".
-    let steam_ids = meta_ids
-        .iter()
-        .zip(&meta_steam)
-        .filter(|(_, steam)| is_workshop_id(steam))
-        .map(|(id, steam)| (id.to_lowercase(), steam.clone()))
-        .collect();
+    let steam_ids = steam_id_map(&meta_ids, &meta_steam);
     if ids.is_empty() {
         ids = meta_ids;
         names = meta_names;
@@ -204,6 +198,16 @@ pub fn share_text(title: &str, mods: &[(String, Option<String>)]) -> String {
         }
     }
     out
+}
+
+/// `meta`'s ID and Steam ID lists go side by side; "0" means "not from the Workshop".
+/// Returns Workshop IDs by lowercase package ID.
+pub fn steam_id_map(ids: &[String], steam_ids: &[String]) -> std::collections::HashMap<String, String> {
+    ids.iter()
+        .zip(steam_ids)
+        .filter(|(_, steam)| is_workshop_id(steam))
+        .map(|(id, steam)| (id.to_lowercase(), steam.clone()))
+        .collect()
 }
 
 /// A Workshop item ID: digits, not 0.

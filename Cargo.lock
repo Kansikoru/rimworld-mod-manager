@@ -2539,6 +2539,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui_extras",
+ "flate2",
  "image",
  "image_dds",
  "libloading",

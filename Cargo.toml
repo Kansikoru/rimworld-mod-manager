@@ -26,6 +26,7 @@ rfd = "0.15"
 libloading = "0.8"
 trash = "5"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+flate2 = "1"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

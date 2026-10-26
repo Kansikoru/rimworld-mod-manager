@@ -121,6 +121,7 @@ pub enum DropTarget {
 pub enum AppTab {
     Mods,
     Sets,
+    Saves,
     Translations,
     Optimizer,
     Analyzer,
@@ -245,6 +246,13 @@ pub struct App {
     pub selected_modlist: Option<String>,
     pub sets_search: String,
     pub modlist_dialog: Option<ModListDialog>,
+
+    // Saves (F7): headers of the game's saves, read in the background.
+    pub saves: Vec<crate::saves::SaveInfo>,
+    saves_rx: Option<Receiver<Vec<crate::saves::SaveInfo>>>,
+    saves_loaded_at: Option<std::time::Instant>,
+    pub selected_save: Option<String>,
+    pub saves_search: String,
     /// "History" window: ModsConfig.xml backups, newest first (`Some` = window open).
     pub history: Option<Vec<crate::mods_config::ConfigBackup>>,
     /// Look for a new version on GitHub once a day (Settings).
@@ -375,6 +383,7 @@ impl App {
         let start_view = std::env::var("RWMM_TAB").unwrap_or_default().to_lowercase();
         let start_tab = match start_view.as_str() {
             "sets" => AppTab::Sets,
+            "saves" => AppTab::Saves,
             "translations" | "translations-batch" => AppTab::Translations,
             "optimizer" => AppTab::Optimizer,
             "analyzer" => AppTab::Analyzer,
@@ -466,6 +475,12 @@ impl App {
             selected_modlist: std::env::var("RWMM_SET").ok().filter(|s| !s.is_empty()),
             sets_search: String::new(),
             modlist_dialog: None,
+            saves: Vec::new(),
+            saves_rx: None,
+            saves_loaded_at: None,
+            // RWMM_SAVE=<name> opens that save on the Saves tab (screenshots).
+            selected_save: std::env::var("RWMM_SAVE").ok().filter(|s| !s.is_empty()),
+            saves_search: String::new(),
             check_updates: last_check_updates,
             update_available: None,
             update_rx: None,
@@ -535,6 +550,17 @@ impl App {
 
     /// Picks up finished background tasks (called every frame).
     fn poll_background_tasks(&mut self) {
+        if let Some(rx) = &self.saves_rx {
+            if let Ok(saves) = rx.try_recv() {
+                self.saves_rx = None;
+                self.saves = saves;
+                if let Some(sel) = &self.selected_save {
+                    if !self.saves.iter().any(|s| &s.name == sel) {
+                        self.selected_save = None;
+                    }
+                }
+            }
+        }
         if let Some(rx) = &self.rescan_rx {
             if let Ok(res) = rx.try_recv() {
                 self.rescan_rx = None;
@@ -1090,7 +1116,12 @@ impl App {
         }
         let Some(list) = self.modlists.iter().find(|l| l.name == name) else { return };
         let ids = self.modlist_missing_workshop_ids(list);
-        if ids.is_empty() {
+        self.subscribe_workshop_ids(ids);
+    }
+
+    /// Subscribes to Workshop items in one Steam session in the background.
+    fn subscribe_workshop_ids(&mut self, ids: Vec<String>) {
+        if self.steam_rx.is_some() || ids.is_empty() {
             return;
         }
         let t = self.i18n;
@@ -1183,6 +1214,117 @@ impl App {
             })
             .collect();
         crate::modlists::share_text(&list.name, &mods)
+    }
+
+    /// The game's Saves folder (next to the Config folder with ModsConfig.xml).
+    pub fn saves_folder(&self) -> Option<PathBuf> {
+        self.mods_config_path.as_deref().and_then(crate::saves::saves_dir)
+    }
+
+    /// Reads the save headers in the background (the first read of big files can be slow).
+    pub fn refresh_saves(&mut self) {
+        if self.saves_rx.is_some() {
+            return;
+        }
+        let Some(dir) = self.saves_folder() else { return };
+        self.saves_loaded_at = Some(std::time::Instant::now());
+        self.saves_rx = Some(self.spawn_task(move || crate::saves::list_saves(&dir)));
+    }
+
+    /// Reads the saves when the Saves tab is shown, and again every 30 s while it is
+    /// open, so new saves and autosaves appear by themselves.
+    pub fn ensure_saves_loaded(&mut self) {
+        const REREAD: std::time::Duration = std::time::Duration::from_secs(30);
+        if self.saves_loaded_at.is_none_or(|t| t.elapsed() > REREAD) {
+            self.refresh_saves();
+        }
+    }
+
+    pub fn saves_loading(&self) -> bool {
+        self.saves_rx.is_some()
+    }
+
+    /// The save's mods compared with the current load order.
+    pub fn save_compare(&self, save: &crate::saves::SaveInfo) -> crate::saves::SaveCompare {
+        crate::saves::compare(&save.ids, &self.active_mods, |id| self.find_mod(id).is_some())
+    }
+
+    /// The save was made on another major game version than the installed one.
+    pub fn save_other_version(&self, save: &crate::saves::SaveInfo) -> bool {
+        let installed = self.steam_paths.game_version.as_deref().and_then(crate::game_install::major_minor);
+        let saved = save.game_version.as_deref().and_then(crate::game_install::major_minor);
+        matches!((installed, saved), (Some(a), Some(b)) if a != b)
+    }
+
+    /// "Enable as in the save": the save's mods in its order, as unsaved changes
+    /// (ModsConfig.xml changes only on "Save Order"; mods not on disk are kept).
+    pub fn load_save_mods(&mut self, name: &str) {
+        let Some(save) = self.saves.iter().find(|s| s.name == name) else { return };
+        let mut ids = Vec::with_capacity(save.ids.len());
+        for id in &save.ids {
+            add_active_id(&mut ids, id);
+        }
+        self.active_mods = ids;
+        self.current_modlist = None;
+        self.validate_deps();
+        self.status_message = fmt(self.i18n.get(TranslationKey::SavesLoaded), &[name]);
+    }
+
+    /// Keeps the save's mod list as a modpack named after the save.
+    pub fn save_to_modlist(&mut self, name: &str) {
+        let t = self.i18n;
+        let Some(dir) = self.modlists_folder() else {
+            self.status_message = t.get(TranslationKey::SetsNoFolder).to_string();
+            return;
+        };
+        let Some(save) = self.saves.iter().find(|s| s.name == name) else { return };
+        let entries: Vec<crate::modlists::ModListEntry> = save
+            .ids
+            .iter()
+            .map(|id| {
+                let m = self.find_mod(id);
+                crate::modlists::ModListEntry {
+                    id: id.to_lowercase(),
+                    name: m
+                        .map(|m| m.name.clone())
+                        .or_else(|| save.name_of(id).map(str::to_string))
+                        .unwrap_or_else(|| id.clone()),
+                    steam_id: save
+                        .steam_id(id)
+                        .map(str::to_string)
+                        .or_else(|| m.and_then(|m| m.steam_item_id.clone())),
+                }
+            })
+            .collect();
+        let base = crate::modlists::check_name(name).unwrap_or_else(|_| t.get(TranslationKey::SetsImportedName).to_string());
+        let set_name = crate::modlists::unique_name(&dir, &base);
+        let version = save.game_version.clone().unwrap_or_else(|| self.game_version_for_sets());
+        match crate::modlists::write_rml(&crate::modlists::path_for(&dir, &set_name), &version, &entries) {
+            Ok(()) => {
+                self.refresh_modlists();
+                self.selected_modlist = Some(set_name.clone());
+                self.status_message = fmt(t.get(TranslationKey::SavesToSetDone), &[&set_name]);
+            }
+            Err(e) => self.status_message = fmt(t.get(TranslationKey::SetsWriteError), &[&e.to_string()]),
+        }
+    }
+
+    /// Subscribes to the save's mods that are not installed and have a Workshop ID.
+    pub fn subscribe_save_missing(&mut self, name: &str) {
+        let Some(save) = self.saves.iter().find(|s| s.name == name) else { return };
+        let ids = self.save_missing_workshop_ids(save);
+        self.subscribe_workshop_ids(ids);
+    }
+
+    pub fn save_missing_workshop_ids(&self, save: &crate::saves::SaveInfo) -> Vec<String> {
+        let mut ids: Vec<String> = save
+            .ids
+            .iter()
+            .filter(|id| self.find_mod(id).is_none())
+            .filter_map(|id| save.steam_id(id).map(str::to_string))
+            .collect();
+        ids.dedup();
+        ids
     }
 
     /// Whether a Steam request (subscribe, check) is running now.
@@ -2192,6 +2334,7 @@ impl eframe::App for App {
                 let tabs = [
                     (AppTab::Mods, self.i18n.get(TranslationKey::TabMods)),
                     (AppTab::Sets, self.i18n.get(TranslationKey::TabSets)),
+                    (AppTab::Saves, self.i18n.get(TranslationKey::TabSaves)),
                     (AppTab::Translations, self.i18n.get(TranslationKey::TabTranslations)),
                     (AppTab::Optimizer, self.i18n.get(TranslationKey::TabOptimizer)),
                     (AppTab::Analyzer, self.i18n.get(TranslationKey::TabAnalyzer)),
@@ -2244,6 +2387,7 @@ impl eframe::App for App {
         egui::CentralPanel::default().frame(central_frame).show(ctx, |ui| match self.current_tab {
             AppTab::Mods => crate::ui::view_mods::render_mods_view(self, ui),
             AppTab::Sets => crate::ui::view_sets::render_sets_view(self, ui),
+            AppTab::Saves => crate::ui::view_saves::render_saves_view(self, ui),
             AppTab::Translations => crate::ui::view_translations::render_translations_view(self, ui),
             // Long pages scroll as a whole, so nothing below the window edge is cut off.
             AppTab::Optimizer => {
