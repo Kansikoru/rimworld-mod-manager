@@ -463,15 +463,19 @@ fn render_version_issues(app: &mut App, ui: &mut Ui) {
     if leftover > 0 {
         let mut open = false;
         card_container(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.add(svg_icon(ICON_STATUS_ERROR, Vec2::splat(18.0), THEME.accent_rose));
-                ui.label(
-                    egui::RichText::new(t.get(TranslationKey::ModsLeftoverDds).replace("{}", &leftover.to_string()))
-                        .color(THEME.accent_rose)
-                        .strong(),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    open = secondary_button(ui, t.get(TranslationKey::ModsOpenOptimizer)).clicked();
+            // Button at the right edge first, so the text gets the rest of the width and wraps in it.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                open = secondary_button(ui, t.get(TranslationKey::ModsOpenOptimizer)).clicked();
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(svg_icon(ICON_STATUS_ERROR, Vec2::splat(18.0), THEME.accent_rose));
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(t.get(TranslationKey::ModsLeftoverDds).replace("{}", &leftover.to_string()))
+                                .color(THEME.accent_rose)
+                                .strong(),
+                        )
+                        .wrap(),
+                    );
                 });
             });
         });
@@ -490,7 +494,7 @@ fn render_version_issues(app: &mut App, ui: &mut Ui) {
                 };
                 ui.horizontal(|ui| {
                     ui.add(svg_icon(ICON_STATUS_ERROR, Vec2::splat(18.0), THEME.accent_rose));
-                    ui.label(egui::RichText::new(text).color(THEME.accent_rose).strong());
+                    ui.add(egui::Label::new(egui::RichText::new(text).color(THEME.accent_rose).strong()).wrap());
                 });
             }
         });
@@ -500,13 +504,16 @@ fn render_version_issues(app: &mut App, ui: &mut Ui) {
         if let Some(mm) = game_mm.as_deref() {
             ui.horizontal(|ui| {
                 ui.add(svg_icon(ICON_INFO, Vec2::splat(14.0), THEME.text_muted));
-                ui.label(
-                    egui::RichText::new(fmt(
-                        t.get(TranslationKey::ModsVersionSummary),
-                        &[mm, &unsupported.to_string()],
-                    ))
-                    .color(THEME.text_muted)
-                    .size(12.0),
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(fmt(
+                            t.get(TranslationKey::ModsVersionSummary),
+                            &[mm, &unsupported.to_string()],
+                        ))
+                        .color(THEME.text_muted)
+                        .size(12.0),
+                    )
+                    .wrap(),
                 );
             });
             ui.add_space(2.0);

@@ -20,17 +20,21 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
 
     ui.add_space(8.0);
 
-    // RimWorld 1.7 compresses and caches mod textures itself: conversion is off by default,
-    // the useful action here is resetting the game's own cache.
+    // RimWorld 1.7 compresses and caches mod textures itself: conversion is optional there,
+    // and resetting the game's own cache is often the useful action.
+    // Long lines wrap inside the card instead of being cut off in a narrow window.
     if app.steam_paths.engine == GameEngine::Waylith {
         card_container(ui, |ui| {
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
                     ui.add(svg_icon(ICON_STATUS_WARNING, egui::Vec2::splat(18.0), THEME.accent_amber));
-                    ui.label(
-                        egui::RichText::new(t.get(TranslationKey::OptWaylithWarning))
-                            .color(THEME.accent_amber)
-                            .strong(),
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(t.get(TranslationKey::OptWaylithWarning))
+                                .color(THEME.accent_amber)
+                                .strong(),
+                        )
+                        .wrap(),
                     );
                 });
                 ui.add_space(6.0);
@@ -38,10 +42,13 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
                     if secondary_button_icon(ui, ICON_TRASH, t.get(TranslationKey::OptClearGameCache)).clicked() {
                         app.clear_game_caches();
                     }
-                    ui.label(
-                        egui::RichText::new(t.get(TranslationKey::OptClearGameCacheHint))
-                            .color(THEME.text_muted)
-                            .size(12.0),
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(t.get(TranslationKey::OptClearGameCacheHint))
+                                .color(THEME.text_muted)
+                                .size(12.0),
+                        )
+                        .wrap(),
                     );
                 });
             });
@@ -57,13 +64,16 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
                     ui.add(svg_icon(ICON_STATUS_ERROR, egui::Vec2::splat(18.0), THEME.accent_rose));
-                    ui.label(
-                        egui::RichText::new(fmt(
-                            t.get(TranslationKey::OptLeftoverDds),
-                            &[&version, &app.opt_wrong_orientation.to_string()],
-                        ))
-                        .color(THEME.accent_rose)
-                        .strong(),
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(fmt(
+                                t.get(TranslationKey::OptLeftoverDds),
+                                &[&version, &app.opt_wrong_orientation.to_string()],
+                            ))
+                            .color(THEME.accent_rose)
+                            .strong(),
+                        )
+                        .wrap(),
                     );
                 });
                 ui.add_space(6.0);
