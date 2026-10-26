@@ -16,12 +16,16 @@ pub enum UiFont {
     Verdana,
     Tahoma,
     Arial,
+    Montserrat,
+    MontserratSemibold,
 }
 
 impl UiFont {
-    pub const ALL: [UiFont; 5] = [
+    pub const ALL: [UiFont; 7] = [
         UiFont::SegoeUiSemibold,
         UiFont::SegoeUi,
+        UiFont::Montserrat,
+        UiFont::MontserratSemibold,
         UiFont::Verdana,
         UiFont::Tahoma,
         UiFont::Arial,
@@ -34,17 +38,29 @@ impl UiFont {
             UiFont::Verdana => "Verdana",
             UiFont::Tahoma => "Tahoma",
             UiFont::Arial => "Arial",
+            UiFont::Montserrat => "Montserrat",
+            UiFont::MontserratSemibold => "Montserrat SemiBold",
         }
     }
 
     /// Font files to try, in order (Windows Fonts folder).
     pub fn files(&self) -> &'static [&'static str] {
         match self {
-            UiFont::SegoeUi => &["segoeui.ttf"],
+            UiFont::SegoeUi | UiFont::Montserrat | UiFont::MontserratSemibold => &["segoeui.ttf"],
             UiFont::SegoeUiSemibold => &["seguisb.ttf", "segoeui.ttf"],
             UiFont::Verdana => &["verdana.ttf", "segoeui.ttf"],
             UiFont::Tahoma => &["tahoma.ttf", "segoeui.ttf"],
             UiFont::Arial => &["arial.ttf", "segoeui.ttf"],
+        }
+    }
+
+    /// Fonts shipped inside the program (not part of Windows). For these, `files()`
+    /// is the fallback for letters the bundled font doesn't have.
+    pub fn bundled(&self) -> Option<&'static [u8]> {
+        match self {
+            UiFont::Montserrat => Some(include_bytes!("../assets/fonts/Montserrat-Medium.ttf")),
+            UiFont::MontserratSemibold => Some(include_bytes!("../assets/fonts/Montserrat-SemiBold.ttf")),
+            _ => None,
         }
     }
 }

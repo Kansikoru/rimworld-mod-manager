@@ -40,7 +40,8 @@ jobs:
         run: |
           $version = $env:GITHUB_REF_NAME.TrimStart('v')
           $zip = "RimWorldModManager-$version.zip"
-          Compress-Archive -Path target/release/rimworld-mod-manager.exe -DestinationPath $zip
+          Copy-Item assets/fonts/OFL.txt Montserrat-OFL.txt
+          Compress-Archive -Path target/release/rimworld-mod-manager.exe, Montserrat-OFL.txt -DestinationPath $zip
           "version=$version" >> $env:GITHUB_OUTPUT
           "zip=$zip" >> $env:GITHUB_OUTPUT
           # Changelog: the body of the tagged commit without trailer lines.

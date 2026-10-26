@@ -19,19 +19,25 @@ pub fn setup_custom_fonts(ctx: &egui::Context, prefs: &UiPrefs) {
 
     // Primary interface font (with Cyrillic). FontTweak::scale makes every glyph bigger;
     // glyphs are still rasterized at the final pixel size, so this stays sharp.
+    // A bundled font goes first; the Windows font then fills in letters it lacks.
+    let tweak = FontTweak {
+        scale,
+        ..Default::default()
+    };
+    let mut primary: Vec<(&str, FontData)> = Vec::new();
+    if let Some(bytes) = prefs.font.bundled() {
+        primary.push(("BundledPrimaryFont", FontData::from_static(bytes).tweak(tweak)));
+    }
     if let Some(bytes) = prefs.font.files().iter().find_map(|f| windows_font(f)) {
-        fonts.font_data.insert(
-            "SystemPrimaryFont".to_owned(),
-            FontData::from_owned(bytes).tweak(FontTweak {
-                scale,
-                ..Default::default()
-            }),
-        );
+        primary.push(("SystemPrimaryFont", FontData::from_owned(bytes).tweak(tweak)));
+    }
+    for (i, (name, data)) in primary.into_iter().enumerate() {
+        fonts.font_data.insert(name.to_owned(), data);
         fonts
             .families
             .entry(FontFamily::Proportional)
             .or_default()
-            .insert(0, "SystemPrimaryFont".to_owned());
+            .insert(i, name.to_owned());
     }
 
     // Monospace (log excerpts, package IDs): Consolas is designed for screens.
