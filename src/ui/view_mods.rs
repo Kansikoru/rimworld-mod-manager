@@ -93,6 +93,75 @@ fn row_drag_handle(ui: &mut Ui, id: egui::Id, row_height: f32) -> egui::Response
     ui.interact(rect, id, egui::Sense::drag())
 }
 
+/// Mod set picker (F4): the sets from the game's ModLists folder, a click loads one;
+/// below them: save as new, save to the current set, rename, delete, open the folder.
+fn render_set_picker(app: &mut App, ui: &mut Ui, width: f32) {
+    let t = app.i18n;
+    let current = app.current_modlist.clone();
+    let mut load: Option<String> = None;
+    let mut dialog: Option<crate::app::ModListDialog> = None;
+    let mut overwrite = false;
+    let mut open_folder = false;
+
+    let shown = current.clone().unwrap_or_else(|| t.get(TranslationKey::SetsPicker).to_string());
+    egui::ComboBox::from_id_salt("mod_sets_picker")
+        .selected_text(egui::RichText::new(shown).size(12.0))
+        .width(width)
+        .height(420.0)
+        .show_ui(ui, |ui| {
+            ui.set_min_width(320.0);
+            if app.modlists.is_empty() {
+                ui.label(egui::RichText::new(t.get(TranslationKey::SetsNoneYet)).color(THEME.text_muted).size(12.0));
+            }
+            for list in &app.modlists {
+                let selected = current.as_deref() == Some(list.name.as_str());
+                let count = fmt(t.get(TranslationKey::SetsModsCount), &[&list.ids.len().to_string()]);
+                if ui.selectable_label(selected, format!("{}   ·   {}", list.name, count)).clicked() {
+                    load = Some(list.name.clone());
+                }
+            }
+            ui.separator();
+            if ui.button(t.get(TranslationKey::SetsSaveAsNew)).clicked() {
+                let default = fmt(t.get(TranslationKey::SetsDefaultName), &[&(app.modlists.len() + 1).to_string()]);
+                dialog = Some(crate::app::ModListDialog::SaveAs { name: default, error: None });
+            }
+            if let Some(cur) = &current {
+                if ui.button(fmt(t.get(TranslationKey::SetsOverwrite), &[cur])).clicked() {
+                    overwrite = true;
+                }
+                if ui.button(fmt(t.get(TranslationKey::SetsRename), &[cur])).clicked() {
+                    dialog = Some(crate::app::ModListDialog::Rename { from: cur.clone(), name: cur.clone(), error: None });
+                }
+                if ui.button(fmt(t.get(TranslationKey::SetsDelete), &[cur])).clicked() {
+                    dialog = Some(crate::app::ModListDialog::Delete { name: cur.clone() });
+                }
+            }
+            if ui.button(t.get(TranslationKey::SetsOpenFolder)).clicked() {
+                open_folder = true;
+            }
+        })
+        .response
+        .on_hover_text(t.get(TranslationKey::SetsPickerHint));
+
+    if let Some(name) = load {
+        app.load_modlist(&name);
+    }
+    if overwrite {
+        if let Some(cur) = &current {
+            app.overwrite_modlist(cur);
+        }
+    }
+    if dialog.is_some() {
+        app.modlist_dialog = dialog;
+    }
+    if open_folder {
+        if let Some(dir) = app.modlists_folder() {
+            let _ = std::fs::create_dir_all(&dir);
+            open_external(dir);
+        }
+    }
+}
+
 /// Dragged rows are drawn faded, so it is clear what is being moved.
 fn fade_row(ui: &Ui, rect: egui::Rect) {
     ui.painter().rect_filled(rect, Rounding::same(6.0), THEME.bg_surface.gamma_multiply(0.65));
@@ -121,9 +190,12 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
         if !app.is_details_panel_visible {
             library.push((ICON_INFO, t.get(TranslationKey::ModsBtnInfoPanel)));
         }
-        let mut fixed = styled_button_width(ui, true, t.get(TranslationKey::BtnAutoSort))
+        const SET_PICKER_W: f32 = 170.0;
+        let mut fixed = SET_PICKER_W
+            + 12.0
+            + styled_button_width(ui, true, t.get(TranslationKey::BtnAutoSort))
             + styled_button_width(ui, true, t.get(TranslationKey::BtnSaveConfig))
-            + 2.0 * GAP;
+            + 3.0 * GAP;
         if unsaved {
             fixed += ui.painter().layout_no_wrap(unsaved_text.to_string(), egui::FontId::proportional(12.0), Color32::WHITE).size().x + GAP;
         }
@@ -136,6 +208,8 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
         let compact = fixed + full + SEARCH_MIN > avail;
         let used = fixed + if compact { icons_only } else { full };
         let search_as_button = avail - used < SEARCH_MIN;
+
+        render_set_picker(app, ui, SET_PICKER_W);
 
         if secondary_button_icon(ui, ICON_SORT, t.get(TranslationKey::BtnAutoSort)).clicked() {
             app.sort_active_mods();

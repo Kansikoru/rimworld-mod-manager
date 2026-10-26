@@ -75,6 +75,15 @@ pub enum PendingQuestion {
     LegacyDds(Vec<PathBuf>),
 }
 
+/// Window for a mod set action that needs a name or a confirmation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModListDialog {
+    /// Save the current load order as a new set.
+    SaveAs { name: String, error: Option<String> },
+    Rename { from: String, name: String, error: Option<String> },
+    Delete { name: String },
+}
+
 /// Translations of one mod found by the modpack-wide search.
 #[derive(Debug, Clone)]
 pub struct ModTranslations {
@@ -227,6 +236,11 @@ pub struct App {
     pub cache_rx: Option<Receiver<String>>,
     /// Background removal of DDS files that are not in the manager's log.
     pub legacy_rx: Option<Receiver<String>>,
+    /// Mod sets from the game's ModLists folder (F4), by name.
+    pub modlists: Vec<crate::modlists::ModList>,
+    /// The set last loaded or saved here: shown in the set picker.
+    pub current_modlist: Option<String>,
+    pub modlist_dialog: Option<ModListDialog>,
     /// "History" window: ModsConfig.xml backups, newest first (`Some` = window open).
     pub history: Option<Vec<crate::mods_config::ConfigBackup>>,
     /// Look for a new version on GitHub once a day (Settings).
@@ -441,6 +455,9 @@ impl App {
             cache_rx: None,
             legacy_rx: None,
             history: None,
+            modlists: Vec::new(),
+            current_modlist: None,
+            modlist_dialog: None,
             check_updates: last_check_updates,
             update_available: None,
             update_rx: None,
@@ -918,6 +935,8 @@ impl App {
         self.all_mods = mods;
         self.duplicate_mods = res.duplicates;
         self.opt_wrong_orientation = res.optimizer_dds;
+        // Sets can be added or changed in the game itself: re-read them with the mods.
+        self.refresh_modlists();
         self.rebuild_mod_index();
 
         // Drop cached thumbnails of mods that are gone (the cache folder doesn't grow forever).
@@ -1009,6 +1028,124 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// The game's ModLists folder (next to the Config folder with ModsConfig.xml).
+    pub fn modlists_folder(&self) -> Option<PathBuf> {
+        self.mods_config_path.as_deref().and_then(crate::modlists::modlists_dir)
+    }
+
+    pub fn refresh_modlists(&mut self) {
+        self.modlists = self
+            .modlists_folder()
+            .map(|dir| crate::modlists::list_modlists(&dir))
+            .unwrap_or_default();
+        if let Some(cur) = &self.current_modlist {
+            if !self.modlists.iter().any(|l| &l.name == cur) {
+                self.current_modlist = None;
+            }
+        }
+    }
+
+    /// The current load order with names and Workshop IDs, as the game writes it.
+    fn modlist_entries(&self) -> Vec<crate::modlists::ModListEntry> {
+        self.active_mods
+            .iter()
+            .map(|id| {
+                let m = self.find_mod(id);
+                crate::modlists::ModListEntry {
+                    id: id.to_lowercase(),
+                    name: m.map(|m| m.name.clone()).unwrap_or_else(|| id.clone()),
+                    steam_id: m.and_then(|m| m.steam_item_id.clone()),
+                }
+            })
+            .collect()
+    }
+
+    fn game_version_for_sets(&self) -> String {
+        self.steam_paths.game_version.clone().unwrap_or_else(|| "1.6".into())
+    }
+
+    fn name_problem_text(&self, problem: crate::modlists::NameProblem) -> String {
+        use crate::modlists::NameProblem;
+        self.i18n
+            .get(match problem {
+                NameProblem::Empty => TranslationKey::SetsNameEmpty,
+                NameProblem::BadCharacters => TranslationKey::SetsNameBadChars,
+                NameProblem::TooLong => TranslationKey::SetsNameTooLong,
+            })
+            .to_string()
+    }
+
+    /// Loads a set into the list as unsaved changes: ModsConfig.xml changes only on "Save Order".
+    pub fn load_modlist(&mut self, name: &str) {
+        let Some(list) = self.modlists.iter().find(|l| l.name == name).cloned() else { return };
+        let mut ids = Vec::with_capacity(list.ids.len());
+        for id in &list.ids {
+            add_active_id(&mut ids, id);
+        }
+        self.active_mods = ids;
+        self.validate_deps();
+        self.current_modlist = Some(list.name.clone());
+        self.status_message = fmt(self.i18n.get(TranslationKey::SetsLoaded), &[&list.name]);
+    }
+
+    /// Saves the current load order as a new set. The error text is shown in the dialog.
+    pub fn save_modlist_as(&mut self, raw_name: &str) -> Result<(), String> {
+        let name = crate::modlists::check_name(raw_name).map_err(|p| self.name_problem_text(p))?;
+        let dir = self.modlists_folder().ok_or_else(|| self.i18n.get(TranslationKey::SetsNoFolder).to_string())?;
+        let path = crate::modlists::path_for(&dir, &name);
+        if path.exists() {
+            return Err(self.i18n.get(TranslationKey::SetsNameExists).to_string());
+        }
+        self.write_modlist(&name, &path)
+    }
+
+    /// Overwrites an existing set with the current load order.
+    pub fn overwrite_modlist(&mut self, name: &str) {
+        let Some(dir) = self.modlists_folder() else { return };
+        let path = crate::modlists::path_for(&dir, name);
+        if let Err(e) = self.write_modlist(name, &path) {
+            self.status_message = e;
+        }
+    }
+
+    fn write_modlist(&mut self, name: &str, path: &std::path::Path) -> Result<(), String> {
+        let entries = self.modlist_entries();
+        crate::modlists::write_rml(path, &self.game_version_for_sets(), &entries)
+            .map_err(|e| fmt(self.i18n.get(TranslationKey::SetsWriteError), &[&e.to_string()]))?;
+        self.refresh_modlists();
+        self.current_modlist = Some(name.to_string());
+        self.status_message = fmt(self.i18n.get(TranslationKey::SetsSaved), &[name, &entries.len().to_string()]);
+        Ok(())
+    }
+
+    pub fn rename_modlist(&mut self, from: &str, raw_name: &str) -> Result<(), String> {
+        let name = crate::modlists::check_name(raw_name).map_err(|p| self.name_problem_text(p))?;
+        let dir = self.modlists_folder().ok_or_else(|| self.i18n.get(TranslationKey::SetsNoFolder).to_string())?;
+        let target = crate::modlists::path_for(&dir, &name);
+        // Changing only the letter case is fine; another existing set is not.
+        if target.exists() && !name.eq_ignore_ascii_case(from) {
+            return Err(self.i18n.get(TranslationKey::SetsNameExists).to_string());
+        }
+        std::fs::rename(crate::modlists::path_for(&dir, from), &target)
+            .map_err(|e| fmt(self.i18n.get(TranslationKey::SetsWriteError), &[&e.to_string()]))?;
+        if self.current_modlist.as_deref() == Some(from) {
+            self.current_modlist = Some(name.clone());
+        }
+        self.refresh_modlists();
+        self.status_message = fmt(self.i18n.get(TranslationKey::SetsRenamed), &[from, &name]);
+        Ok(())
+    }
+
+    /// Moves a set file to the Recycle Bin. Mods and ModsConfig.xml are not touched.
+    pub fn delete_modlist(&mut self, name: &str) {
+        let Some(dir) = self.modlists_folder() else { return };
+        match trash::delete(crate::modlists::path_for(&dir, name)) {
+            Ok(()) => self.status_message = fmt(self.i18n.get(TranslationKey::SetsDeleted), &[name]),
+            Err(e) => self.status_message = fmt(self.i18n.get(TranslationKey::SetsWriteError), &[&e.to_string()]),
+        }
+        self.refresh_modlists();
     }
 
     /// Opens the "History" window with the ModsConfig.xml backups.
@@ -1957,6 +2094,7 @@ impl eframe::App for App {
         self.render_delete_confirmation(ctx);
         self.render_question(ctx);
         self.render_history_window(ctx);
+        self.render_modlist_dialog(ctx);
         self.save_settings_if_changed();
 
         if self.opt_is_running {
@@ -2116,6 +2254,86 @@ impl App {
             }
             (PendingQuestion::LegacyDds(paths), Answer::Secondary) => self.delete_unlogged_dds(paths),
             _ => {}
+        }
+    }
+
+    /// Window for a mod set action: name field (save as new, rename) or delete confirmation.
+    fn render_modlist_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.modlist_dialog.clone() else { return };
+        let t = self.i18n;
+        let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        let mut submit = false;
+        let title = match &dialog {
+            ModListDialog::SaveAs { .. } => t.get(TranslationKey::SetsDialogSaveTitle),
+            ModListDialog::Rename { .. } => t.get(TranslationKey::SetsDialogRenameTitle),
+            ModListDialog::Delete { .. } => t.get(TranslationKey::SetsDialogDeleteTitle),
+        };
+
+        egui::Window::new(title)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_width(400.0);
+                match &mut dialog {
+                    ModListDialog::SaveAs { name, error } | ModListDialog::Rename { name, error, .. } => {
+                        ui.label(t.get(TranslationKey::SetsNameLabel));
+                        let field = ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY));
+                        if ui.memory(|m| m.focused().is_none()) {
+                            field.request_focus();
+                        }
+                        if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            submit = true;
+                        }
+                        if let Some(e) = error {
+                            ui.label(egui::RichText::new(e.as_str()).color(THEME.accent_rose).size(12.0));
+                        }
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(t.get(TranslationKey::SetsHint)).color(THEME.text_muted).size(12.0),
+                            )
+                            .wrap(),
+                        );
+                    }
+                    ModListDialog::Delete { name } => {
+                        ui.add(egui::Label::new(fmt(t.get(TranslationKey::SetsDialogDeleteBody), &[name])).wrap());
+                    }
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let (text, style) = match &dialog {
+                        ModListDialog::SaveAs { .. } => (t.get(TranslationKey::SetsBtnSave), crate::ui::components::ButtonStyle::Primary),
+                        ModListDialog::Rename { .. } => (t.get(TranslationKey::SetsBtnRename), crate::ui::components::ButtonStyle::Primary),
+                        ModListDialog::Delete { .. } => (t.get(TranslationKey::SetsBtnDelete), crate::ui::components::ButtonStyle::Danger),
+                    };
+                    if crate::ui::components::styled_button(ui, None, text, style).clicked() {
+                        submit = true;
+                    }
+                    if crate::ui::components::secondary_button(ui, t.get(TranslationKey::BtnCancel)).clicked() {
+                        close = true;
+                    }
+                });
+            });
+
+        if submit {
+            let result = match &dialog {
+                ModListDialog::SaveAs { name, .. } => self.save_modlist_as(name),
+                ModListDialog::Rename { from, name, .. } => self.rename_modlist(from, name),
+                ModListDialog::Delete { name } => {
+                    self.delete_modlist(name);
+                    Ok(())
+                }
+            };
+            self.modlist_dialog = match (result, dialog) {
+                (Ok(()), _) => None,
+                (Err(e), ModListDialog::SaveAs { name, .. }) => Some(ModListDialog::SaveAs { name, error: Some(e) }),
+                (Err(e), ModListDialog::Rename { from, name, .. }) => Some(ModListDialog::Rename { from, name, error: Some(e) }),
+                (Err(_), other) => Some(other),
+            };
+        } else if close {
+            self.modlist_dialog = None;
+        } else {
+            self.modlist_dialog = Some(dialog);
         }
     }
 
