@@ -38,7 +38,7 @@ cargo build --release
 ## Авторы
 
 - [Kansikoru](https://github.com/Kansikoru)
-- [Anry2323](https://github.com/Anry2323)BABABUI
+- [Anry2323](https://github.com/Anry2323)
 
 ## Лицензия
 
