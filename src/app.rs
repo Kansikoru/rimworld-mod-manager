@@ -287,8 +287,17 @@ impl App {
             }
         });
 
+        // RWMM_TAB=settings|optimizer|analyzer|translations opens that tab first (for screenshots).
+        let start_tab = match std::env::var("RWMM_TAB").unwrap_or_default().to_lowercase().as_str() {
+            "translations" => AppTab::Translations,
+            "optimizer" => AppTab::Optimizer,
+            "analyzer" => AppTab::Analyzer,
+            "settings" => AppTab::Settings,
+            _ => AppTab::Mods,
+        };
+
         let mut app = Self {
-            current_tab: AppTab::Mods,
+            current_tab: start_tab,
             i18n,
             is_russian: s.language == Language::Russian,
 
@@ -1497,9 +1506,20 @@ impl eframe::App for App {
         egui::CentralPanel::default().frame(central_frame).show(ctx, |ui| match self.current_tab {
             AppTab::Mods => crate::ui::view_mods::render_mods_view(self, ui),
             AppTab::Translations => crate::ui::view_translations::render_translations_view(self, ui),
-            AppTab::Optimizer => crate::ui::view_optimizer::render_optimizer_view(self, ui),
+            // Long pages scroll as a whole, so nothing below the window edge is cut off.
+            AppTab::Optimizer => {
+                egui::ScrollArea::vertical()
+                    .id_salt("optimizer_page_scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| crate::ui::view_optimizer::render_optimizer_view(self, ui));
+            }
             AppTab::Analyzer => crate::ui::view_analyzer::render_analyzer_view(self, ui),
-            AppTab::Settings => crate::ui::view_settings::render_settings_view(self, ui),
+            AppTab::Settings => {
+                egui::ScrollArea::vertical()
+                    .id_salt("settings_page_scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| crate::ui::view_settings::render_settings_view(self, ui));
+            }
         });
 
         // Closing the window with an unsaved load order: ask first.

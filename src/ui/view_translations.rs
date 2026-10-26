@@ -187,11 +187,11 @@ fn render_workshop_search_column(app: &mut App, ui: &mut Ui) {
 
     // Search bar for workshop
     ui.horizontal(|ui| {
-        ui.add(
-            egui::TextEdit::singleline(&mut app.workshop_search_query)
-                .hint_text(t.get(TranslationKey::TransSearchPlaceholder))
-                .desired_width(ui.available_width() - 80.0),
-        );
+        ui.spacing_mut().item_spacing.x = 8.0;
+        // Leave room for the "Search" button (icon + label + padding), whatever the language.
+        let button_w = 12.0 * 2.0 + 16.0 + 8.0 + badge_width(ui, t.get(TranslationKey::TransBtnSearch)) + 4.0;
+        let field_w = (ui.available_width() - button_w - 16.0).max(120.0);
+        search_input_width(ui, &mut app.workshop_search_query, t.get(TranslationKey::TransSearchPlaceholder), field_w);
         let searching = app.workshop_rx.is_some();
         ui.add_enabled_ui(!searching, |ui| {
             if primary_button_icon(ui, ICON_SEARCH, t.get(TranslationKey::TransBtnSearch)).clicked() {
