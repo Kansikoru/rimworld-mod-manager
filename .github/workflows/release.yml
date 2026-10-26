@@ -1,6 +1,13 @@
 name: Release
 
-# Push a tag like v2.0.0 to build the exe and attach it to a GitHub release.
+# Push a tag like v2.0.0 to build the exe, attach it to a GitHub release and
+# upload it to Nexus Mods as a new version of the main file. The bullet list of
+# the tagged "Version X.Y.Z" commit becomes the Nexus changelog for that version.
+#
+# Nexus Mods setup (repository Settings > Secrets and variables > Actions):
+#   - secret   NEXUSMODS_API_KEY  - key from https://www.nexusmods.com/settings/api-keys
+#   - variable NEXUS_FILE_ID      - File ID of the main file (its "Advanced" menu)
+# Without the variable the Nexus steps are skipped.
 on:
   push:
     tags: ["v*"]
@@ -25,3 +32,38 @@ jobs:
         with:
           files: target/release/rimworld-mod-manager.exe
           generate_release_notes: true
+
+      - name: Pack for Nexus Mods
+        id: pack
+        if: ${{ vars.NEXUS_FILE_ID != '' }}
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          $zip = "RimWorldModManager-$version.zip"
+          Compress-Archive -Path target/release/rimworld-mod-manager.exe -DestinationPath $zip
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "zip=$zip" >> $env:GITHUB_OUTPUT
+          # Changelog: the body of the tagged commit without trailer lines.
+          $notes = (@(git log -1 --format=%b $env:GITHUB_SHA) |
+            Where-Object { $_ -notmatch '^\s*Co-Authored-By:' }) -join "`n"
+          "changelog<<NOTES_END" >> $env:GITHUB_OUTPUT
+          $notes.Trim() >> $env:GITHUB_OUTPUT
+          "NOTES_END" >> $env:GITHUB_OUTPUT
+
+      # The GitHub release above is already done; a Nexus failure doesn't undo it.
+      - name: Upload to Nexus Mods
+        if: ${{ vars.NEXUS_FILE_ID != '' }}
+        continue-on-error: true
+        uses: Nexus-Mods/upload-action@v1.0.0-beta.11
+        with:
+          api_key: ${{ secrets.NEXUSMODS_API_KEY }}
+          file_id: ${{ vars.NEXUS_FILE_ID }}
+          filename: ${{ steps.pack.outputs.zip }}
+          version: ${{ steps.pack.outputs.version }}
+          display_name: Rimworld Mod Manager
+          category: main
+          archive_existing_version: true
+          update_mod_version: true
+          # "Unique Mod ID" from the file's "Advanced" menu (public, not a secret)
+          mod_id: "1821066134328"
+          changelog: ${{ steps.pack.outputs.changelog }}
