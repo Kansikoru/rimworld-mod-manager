@@ -4,5 +4,6 @@ pub mod theme;
 pub mod view_analyzer;
 pub mod view_mods;
 pub mod view_optimizer;
+pub mod view_sets;
 pub mod view_settings;
 pub mod view_translations;

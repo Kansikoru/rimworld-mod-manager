@@ -120,6 +120,7 @@ pub enum DropTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppTab {
     Mods,
+    Sets,
     Translations,
     Optimizer,
     Analyzer,
@@ -238,8 +239,11 @@ pub struct App {
     pub legacy_rx: Option<Receiver<String>>,
     /// Mod sets from the game's ModLists folder (F4), by name.
     pub modlists: Vec<crate::modlists::ModList>,
-    /// The set last loaded or saved here: shown in the set picker.
+    /// The set last loaded or saved here.
     pub current_modlist: Option<String>,
+    /// Set selected on the Sets tab, and its search query.
+    pub selected_modlist: Option<String>,
+    pub sets_search: String,
     pub modlist_dialog: Option<ModListDialog>,
     /// "History" window: ModsConfig.xml backups, newest first (`Some` = window open).
     pub history: Option<Vec<crate::mods_config::ConfigBackup>>,
@@ -370,6 +374,7 @@ impl App {
         // History window) first, for screenshots.
         let start_view = std::env::var("RWMM_TAB").unwrap_or_default().to_lowercase();
         let start_tab = match start_view.as_str() {
+            "sets" => AppTab::Sets,
             "translations" | "translations-batch" => AppTab::Translations,
             "optimizer" => AppTab::Optimizer,
             "analyzer" => AppTab::Analyzer,
@@ -457,6 +462,8 @@ impl App {
             history: None,
             modlists: Vec::new(),
             current_modlist: None,
+            selected_modlist: None,
+            sets_search: String::new(),
             modlist_dialog: None,
             check_updates: last_check_updates,
             update_available: None,
@@ -1044,6 +1051,47 @@ impl App {
             if !self.modlists.iter().any(|l| &l.name == cur) {
                 self.current_modlist = None;
             }
+        }
+        if let Some(sel) = &self.selected_modlist {
+            if !self.modlists.iter().any(|l| &l.name == sel) {
+                self.selected_modlist = None;
+            }
+        }
+    }
+
+    /// How the set differs from what the game loads now (ModsConfig.xml on disk).
+    pub fn modlist_diff(&self, list: &crate::modlists::ModList) -> crate::mods_config::ListDiff {
+        crate::mods_config::diff_lists(&self.saved_active_mods, &list.ids)
+    }
+
+    /// Mods of the set that are not on disk.
+    pub fn modlist_missing(&self, list: &crate::modlists::ModList) -> usize {
+        list.ids.iter().filter(|id| self.find_mod(id).is_none()).count()
+    }
+
+    /// "Enable": writes the set to ModsConfig.xml (a backup of the old order is made),
+    /// and starts the game too if asked.
+    pub fn apply_modlist(&mut self, name: &str, launch: bool) {
+        self.load_modlist(name);
+        if self.save_config() {
+            self.status_message = fmt(self.i18n.get(TranslationKey::SetsApplied), &[name]);
+            if launch {
+                self.launch_game_now();
+            }
+        }
+    }
+
+    /// Copies a set to a free "Name (copy)" and selects the copy.
+    pub fn duplicate_modlist(&mut self, name: &str) {
+        let Some(dir) = self.modlists_folder() else { return };
+        let copy = crate::modlists::copy_name(&dir, name, self.i18n.get(TranslationKey::SetsCopyWord));
+        match std::fs::copy(crate::modlists::path_for(&dir, name), crate::modlists::path_for(&dir, &copy)) {
+            Ok(_) => {
+                self.refresh_modlists();
+                self.selected_modlist = Some(copy.clone());
+                self.status_message = fmt(self.i18n.get(TranslationKey::SetsDuplicated), &[name, &copy]);
+            }
+            Err(e) => self.status_message = fmt(self.i18n.get(TranslationKey::SetsWriteError), &[&e.to_string()]),
         }
     }
 
@@ -2017,6 +2065,7 @@ impl eframe::App for App {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 let tabs = [
                     (AppTab::Mods, self.i18n.get(TranslationKey::TabMods)),
+                    (AppTab::Sets, self.i18n.get(TranslationKey::TabSets)),
                     (AppTab::Translations, self.i18n.get(TranslationKey::TabTranslations)),
                     (AppTab::Optimizer, self.i18n.get(TranslationKey::TabOptimizer)),
                     (AppTab::Analyzer, self.i18n.get(TranslationKey::TabAnalyzer)),
@@ -2068,6 +2117,7 @@ impl eframe::App for App {
         };
         egui::CentralPanel::default().frame(central_frame).show(ctx, |ui| match self.current_tab {
             AppTab::Mods => crate::ui::view_mods::render_mods_view(self, ui),
+            AppTab::Sets => crate::ui::view_sets::render_sets_view(self, ui),
             AppTab::Translations => crate::ui::view_translations::render_translations_view(self, ui),
             // Long pages scroll as a whole, so nothing below the window edge is cut off.
             AppTab::Optimizer => {

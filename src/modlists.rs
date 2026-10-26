@@ -16,6 +16,8 @@ pub struct ModList {
     pub ids: Vec<String>,
     /// Mod names in the same order (may be shorter in hand-made files).
     pub names: Vec<String>,
+    /// When the file was last written (unix seconds).
+    pub modified: Option<u64>,
 }
 
 /// A mod to write into a set.
@@ -124,7 +126,25 @@ pub fn read_rml(path: &Path) -> Option<ModList> {
         ids = meta_ids;
         names = meta_names;
     }
-    Some(ModList { name, path: path.to_path_buf(), game_version, ids, names })
+    let modified = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
+    Some(ModList { name, path: path.to_path_buf(), game_version, ids, names, modified })
+}
+
+/// A free name for a copy: "Name (copy)", "Name (copy 2)", ... `copy_word` is the
+/// translated word for "copy".
+pub fn copy_name(dir: &Path, name: &str, copy_word: &str) -> String {
+    let first = format!("{name} ({copy_word})");
+    if !path_for(dir, &first).exists() {
+        return first;
+    }
+    (2..)
+        .map(|n| format!("{name} ({copy_word} {n})"))
+        .find(|candidate| !path_for(dir, candidate).exists())
+        .unwrap_or(first)
 }
 
 fn escape(s: &str) -> String {
@@ -228,6 +248,17 @@ mod tests {
         assert_eq!(check_name("what?"), Err(NameProblem::BadCharacters));
         assert_eq!(check_name(&"x".repeat(81)), Err(NameProblem::TooLong));
         assert_eq!(check_name("ends with dots..."), Ok("ends with dots".into()));
+    }
+
+    #[test]
+    fn copies_get_free_names_and_dates() {
+        let dir = temp_dir("copy");
+        write_rml(&path_for(&dir, "Main"), "1.6", &[entry("a.b", "A", None)]).unwrap();
+        assert_eq!(copy_name(&dir, "Main", "copy"), "Main (copy)");
+        write_rml(&path_for(&dir, "Main (copy)"), "1.6", &[]).unwrap();
+        assert_eq!(copy_name(&dir, "Main", "copy"), "Main (copy 2)");
+        assert!(read_rml(&path_for(&dir, "Main")).unwrap().modified.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
