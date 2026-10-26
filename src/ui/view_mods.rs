@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use crate::app::{lookup_mod, passes_category_filter, App};
 use crate::categories::ModCategory;
 use crate::dependencies::DependencyProblem;
-use crate::i18n::{fmt, TranslationKey};
+use crate::i18n::{fmt, tr, TranslationKey};
 use crate::models::{is_protected_package_id, ModInfo, ModOrigin};
 use crate::sorter::ModTier;
 use crate::steam::workshop_url;
@@ -25,21 +25,22 @@ pub fn render_mods_view(app: &mut App, ui: &mut Ui) {
 fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
 
-    // Top action bar
+    // Toolbar (design: secondary "Auto-Sort", primary "Save Order", amber "● unsaved", library actions, search)
+    ui.add_space(4.0);
     ui.horizontal(|ui| {
-        if primary_button_icon(ui, ICON_SORT, t.get(TranslationKey::BtnAutoSort)).clicked() {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        if secondary_button_icon(ui, ICON_SORT, t.get(TranslationKey::BtnAutoSort)).clicked() {
             app.sort_active_mods();
         }
 
-        if success_button_icon(ui, ICON_SAVE, t.get(TranslationKey::BtnSaveConfig)).clicked() {
+        if primary_button_icon(ui, ICON_SAVE, t.get(TranslationKey::BtnSaveConfig)).clicked() {
             app.save_config();
         }
         if app.has_unsaved_changes() {
             ui.label(
                 egui::RichText::new(crate::i18n::tr!("● не сохранено", "● unsaved"))
                     .color(THEME.accent_amber)
-                    .size(12.0)
-                    .strong(),
+                    .size(12.0),
             )
             .on_hover_text(crate::i18n::tr!(
                 "Порядок модов отличается от ModsConfig.xml. Нажмите «Сохранить порядок», чтобы игра его увидела.",
@@ -57,8 +58,6 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
             ui.spinner();
         }
 
-        ui.separator();
-
         if secondary_button_icon(ui, ICON_CHECK_ALL, t.get(TranslationKey::BtnEnableAll)).clicked() {
             app.activate_all_mods();
         }
@@ -75,11 +74,12 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
             }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            search_input(ui, &mut app.mod_search_query, t.get(TranslationKey::SearchPlaceholder));
+            let w = ui.available_width().clamp(160.0, 264.0);
+            search_input_width(ui, &mut app.mod_search_query, t.get(TranslationKey::SearchPlaceholder), w);
         });
     });
 
-    ui.add_space(6.0);
+    ui.add_space(8.0);
 
     // Conflict & Dependency Alert Bar (if any problems detected)
     if !app.dependency_report.is_empty() {
@@ -160,60 +160,106 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
     render_version_issues(app, ui);
 
     render_category_filter(app, ui);
-    ui.add_space(4.0);
+    ui.add_space(12.0);
 
-    // MAIN 2-COLUMN LAYOUT:
-    // Left: Available Mods (Доступные моды)
-    // Right: active mods + mod details panel
-    let available_width = ui.available_width();
-    // Leave room for the separator and item spacing so the right column never overflows the window.
-    let col_width = ((available_width - 2.0 * ui.spacing().item_spacing.x - 12.0) / 2.0).max(280.0);
+    // Two panels side by side with a 16 px gap: available mods | active mods (+ details card).
+    let gap = 16.0;
+    let col_width = ((ui.available_width() - gap) / 2.0).floor().max(280.0);
     let total_height = ui.available_height();
 
     ui.horizontal_top(|ui| {
-        // LEFT COLUMN: Inactive / Available Mods
-        ui.allocate_ui_with_layout(
-            Vec2::new(col_width, total_height),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                render_inactive_mods_column(app, ui);
-            },
-        );
-
-        ui.separator();
-
-        // Right column: active mods + details panel below
-        ui.allocate_ui_with_layout(
-            Vec2::new(col_width, total_height),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                let info_height = if !app.is_details_panel_visible {
-                    0.0
-                } else if app.is_details_panel_collapsed {
-                    34.0
-                } else {
-                    190.0
-                };
-
-                let active_list_height = (ui.available_height() - info_height - 6.0).max(120.0);
-
-                // Top: Active Mods List
-                ui.allocate_ui_with_layout(
-                    Vec2::new(col_width, active_list_height),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
-                        render_active_mods_column(app, ui);
-                    },
-                );
-
-                // Collapsible mod details panel
-                if app.is_details_panel_visible {
-                    ui.add_space(4.0);
-                    render_mod_details_panel(app, ui);
-                }
-            },
-        );
+        ui.spacing_mut().item_spacing.x = gap;
+        panel_card(ui, col_width, total_height, |ui| render_inactive_mods_column(app, ui));
+        panel_card(ui, col_width, total_height, |ui| {
+            // Details card takes exactly its own height at the bottom; the list gets the rest.
+            if app.is_details_panel_visible {
+                egui::TopBottomPanel::bottom("mod_details_card")
+                    .frame(egui::Frame::none().inner_margin(egui::Margin::same(8.0)))
+                    .show_separator_line(false)
+                    .resizable(false)
+                    .show_inside(ui, |ui| render_mod_details_panel(app, ui));
+            }
+            egui::CentralPanel::default()
+                .frame(egui::Frame::none())
+                .show_inside(ui, |ui| render_active_mods_column(app, ui));
+        });
     });
+}
+
+/// Panel card of the design: panel color, subtle border, 6 px corners, fixed size.
+fn panel_card(ui: &mut Ui, width: f32, height: f32, add_contents: impl FnOnce(&mut Ui)) {
+    ui.allocate_ui_with_layout(Vec2::new(width, height), egui::Layout::top_down(egui::Align::Min), |ui| {
+        egui::Frame {
+            inner_margin: egui::Margin::ZERO,
+            outer_margin: egui::Margin::ZERO,
+            rounding: Rounding::same(6.0),
+            shadow: egui::epaint::Shadow::NONE,
+            fill: THEME.bg_surface,
+            stroke: Stroke::new(1.0_f32, THEME.border_subtle),
+        }
+        .show(ui, |ui| {
+            ui.set_width(width - 2.0);
+            ui.set_height(height - 2.0);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            add_contents(ui);
+        });
+    });
+}
+
+/// 48 px panel header: uppercase title + muted count on the left, `right` content on the right.
+fn panel_header(ui: &mut Ui, title: &str, count: usize, right: impl FnOnce(&mut Ui)) {
+    egui::Frame::none().inner_margin(egui::Margin::symmetric(16.0, 0.0)).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.set_height(48.0);
+            ui.spacing_mut().item_spacing.x = 8.0;
+            ui.label(egui::RichText::new(title.to_uppercase()).color(THEME.text_secondary).size(12.0).strong());
+            ui.label(egui::RichText::new(count.to_string()).color(THEME.text_muted).size(12.0));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), right);
+        });
+    });
+}
+
+/// Thin muted line under a list: `left` text and optional `right` text.
+fn panel_footer(ui: &mut Ui, top_border: bool, icon: Option<egui::ImageSource<'static>>, left: &str, right: Option<&str>) {
+    let rect = ui.available_rect_before_wrap();
+    if top_border {
+        ui.painter().hline(rect.x_range(), rect.top(), Stroke::new(1.0_f32, THEME.border_subtle));
+    }
+    egui::Frame::none().inner_margin(egui::Margin::symmetric(16.0, 0.0)).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.set_height(if top_border { 48.0 } else { 28.0 });
+            ui.spacing_mut().item_spacing.x = 8.0;
+            if let Some(icon) = icon {
+                ui.add(svg_icon(icon, Vec2::splat(16.0), THEME.text_muted));
+            }
+            ui.label(egui::RichText::new(left).color(THEME.text_muted).size(12.0));
+            if let Some(right) = right {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(right).color(THEME.text_muted).size(12.0));
+                });
+            }
+        });
+    });
+}
+
+/// Mod row frame of the design: 34 px card, the selected one lighter with a lavender bar at the left.
+fn mod_row_frame(selected: bool) -> egui::Frame {
+    egui::Frame {
+        inner_margin: egui::Margin::symmetric(8.0, 5.0),
+        outer_margin: egui::Margin::symmetric(0.0, 1.0),
+        rounding: Rounding::same(6.0),
+        shadow: egui::epaint::Shadow::NONE,
+        fill: if selected { THEME.bg_surface_hover } else { THEME.bg_card },
+        stroke: Stroke::NONE,
+    }
+}
+
+fn paint_selection_bar(ui: &Ui, row: egui::Rect) {
+    let bar = egui::Rect::from_min_max(
+        egui::pos2(row.min.x, row.center().y - 11.0),
+        egui::pos2(row.min.x + 3.0, row.center().y + 11.0),
+    );
+    ui.painter().rect_filled(bar, Rounding::same(1.5), THEME.accent_cyan);
 }
 
 /// Mod name in a list row: clickable, takes at most ~60% of the row so badges keep room,
@@ -228,9 +274,9 @@ fn mod_name_label(ui: &mut Ui, text: egui::RichText) -> egui::Response {
     .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// Width reserved at the right edge of a row for its buttons (padding + buttons).
-const ACTIVE_ROW_BUTTONS_WIDTH: f32 = 84.0;
-const INACTIVE_ROW_BUTTONS_WIDTH: f32 = 40.0;
+/// Width reserved at the right edge of a row for its buttons (24 px boxes, 4 px gaps, scrollbar room).
+const ACTIVE_ROW_BUTTONS_WIDTH: f32 = 3.0 * 24.0 + 2.0 * 4.0 + 8.0 + 4.0;
+const INACTIVE_ROW_BUTTONS_WIDTH: f32 = 24.0 + 8.0 + 4.0;
 
 /// Where a row's button slot starts and ends.
 struct RowSplit {
@@ -332,12 +378,7 @@ fn version_badge(ui: &mut Ui, m: &ModInfo, game_mm: Option<&str>, t: crate::i18n
         return;
     }
     let newest = crate::version_check::newest_supported(m).unwrap_or_default();
-    if let Some(resp) = badge_if_fits(
-        ui,
-        &fmt(t.get(TranslationKey::ModsVersionBadge), &[&newest]),
-        THEME.bg_dark,
-        THEME.text_muted,
-    ) {
+    if let Some(resp) = tag_if_fits(ui, &fmt(t.get(TranslationKey::ModsVersionBadge), &[&newest]), THEME.accent_amber) {
         resp.on_hover_text(fmt(t.get(TranslationKey::ModsVersionHint), &[game_mm.unwrap_or("?")]));
     }
 }
@@ -357,11 +398,9 @@ fn render_category_filter(app: &mut App, ui: &mut Ui) {
     }
 
     ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
         let all_selected = app.category_filter.is_empty();
-        if ui
-            .selectable_label(all_selected, format!("{} ({})", t.get(TranslationKey::CategoriesAll), app.all_mods.len()))
-            .clicked()
-        {
+        if chip(ui, None, t.get(TranslationKey::CategoriesAll), app.all_mods.len(), all_selected).clicked() {
             app.category_filter.clear();
         }
         for cat in ModCategory::ALL {
@@ -369,25 +408,9 @@ fn render_category_filter(app: &mut App, ui: &mut Ui) {
                 continue;
             };
             let selected = app.category_filter.contains(&cat);
-            let (bg, fg) = cat.colors();
+            let (_, fg) = cat.colors();
             let fg = Color32::from_rgb(fg[0], fg[1], fg[2]);
-            let chip = egui::Button::image_and_text(
-                svg_icon(category_icon(cat), Vec2::splat(14.0), fg),
-                egui::RichText::new(format!("{} ({})", cat.label(t.language()), n))
-                    .color(fg)
-                    .size(12.0),
-            )
-            .fill(if selected {
-                Color32::from_rgb(bg[0], bg[1], bg[2])
-            } else {
-                THEME.bg_card
-            })
-            .stroke(Stroke::new(
-                1.0_f32,
-                if selected { fg } else { THEME.border_subtle },
-            ))
-            .rounding(Rounding::same(10.0));
-            if ui.add(chip).clicked() {
+            if chip(ui, Some((category_icon(cat), fg)), cat.label(t.language()), *n, selected).clicked() {
                 if selected {
                     app.category_filter.remove(&cat);
                 } else {
@@ -405,9 +428,8 @@ fn category_badges(ui: &mut Ui, cats: &[ModCategory], t: crate::i18n::I18n, max:
     let mut shown = 0;
     for cat in cats.iter().take(max) {
         let (bg, fg) = cat.colors();
-        let drawn = icon_badge_if_fits(
+        let drawn = badge_if_fits(
             ui,
-            category_icon(*cat),
             cat.label(t.language()),
             Color32::from_rgb(bg[0], bg[1], bg[2]),
             Color32::from_rgb(fg[0], fg[1], fg[2]),
@@ -422,7 +444,7 @@ fn category_badges(ui: &mut Ui, cats: &[ModCategory], t: crate::i18n::I18n, max:
             .iter()
             .map(|c| c.label(t.language()).to_string())
             .collect();
-        if let Some(resp) = badge_if_fits(ui, &format!("+{}", cats.len() - shown), THEME.bg_dark, THEME.text_muted) {
+        if let Some(resp) = tag_if_fits(ui, &format!("+{}", cats.len() - shown), THEME.text_muted) {
             resp.on_hover_text(rest.join("\n"));
         }
     }
@@ -477,11 +499,11 @@ fn apply_category_actions(app: &mut App, toggle: Option<(String, ModCategory)>, 
 /// Helper function to draw a distinctive mod icon badge or real image
 /// "Steam" (Workshop) or "Local" badge with its icon.
 fn origin_badge(ui: &mut Ui, origin: ModOrigin) {
-    let (icon, text) = match origin {
-        ModOrigin::Workshop => (ICON_STATUS_WORKSHOP, "Steam"),
-        ModOrigin::Local => (ICON_STATUS_LOCAL, "Local"),
+    let (icon, text, color) = match origin {
+        ModOrigin::Workshop => (ICON_STATUS_WORKSHOP, "Steam", THEME.accent_info),
+        ModOrigin::Local => (ICON_STATUS_LOCAL, "Local", THEME.text_muted),
     };
-    icon_badge(ui, icon, text, THEME.bg_dark, THEME.text_muted);
+    icon_badge(ui, icon, text, crate::ui::theme::tint(color), color);
 }
 
 /// Icon, background and foreground for a mod without a preview image:
@@ -491,7 +513,7 @@ fn mod_fallback_icon(
     category: Option<ModCategory>,
 ) -> (egui::ImageSource<'static>, Color32, Color32) {
     if is_protected {
-        return (ICON_SHIELD, Color32::from_rgb(45, 26, 12), Color32::from_rgb(251, 191, 36));
+        return (ICON_SHIELD, crate::ui::theme::tint(THEME.accent_amber), THEME.accent_amber);
     }
     match category {
         Some(cat) => {
@@ -502,10 +524,11 @@ fn mod_fallback_icon(
                 Color32::from_rgb(fg[0], fg[1], fg[2]),
             )
         }
-        None => (ICON_MODS, Color32::from_rgb(20, 28, 44), Color32::from_rgb(148, 163, 184)),
+        None => (ICON_MODS, crate::ui::theme::tint(THEME.accent_cyan), THEME.accent_cyan),
     }
 }
 
+/// 20 px mod icon: the real preview (rounded corners), or a category icon on its tinted square.
 fn render_mod_icon_pill(
     ui: &mut Ui,
     category: Option<ModCategory>,
@@ -513,23 +536,16 @@ fn render_mod_icon_pill(
     texture: Option<&egui::TextureHandle>,
 ) {
     if let Some(tex) = texture {
-        // Draw the image
-        ui.add(egui::Image::new(tex).fit_to_exact_size(egui::vec2(20.0, 20.0)));
+        ui.add(egui::Image::new(tex).rounding(Rounding::same(4.0)).fit_to_exact_size(egui::vec2(20.0, 20.0)));
         return;
     }
-
     let (icon, bg_col, fg_col) = mod_fallback_icon(is_protected, category);
-    let frame = egui::Frame {
-        inner_margin: egui::Margin::same(3.0),
-        outer_margin: egui::Margin::ZERO,
-        rounding: Rounding::same(4.0),
-        fill: bg_col,
-        stroke: Stroke::new(1.0_f32, fg_col.linear_multiply(0.4)),
-        shadow: egui::epaint::Shadow::NONE,
-    };
-    frame.show(ui, |ui| {
-        ui.add(svg_icon(icon, Vec2::splat(16.0), fg_col));
-    });
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(20.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, Rounding::same(6.0), bg_col);
+    egui::Image::new(icon)
+        .texture_options(egui::TextureOptions::NEAREST)
+        .tint(fg_col)
+        .paint_at(ui, egui::Rect::from_center_size(rect.center(), Vec2::splat(16.0)));
 }
 
 /// Right column: active mods in load order.
@@ -537,60 +553,35 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
     let game_mm = app.steam_paths.game_major_minor();
 
-    // Header: title, count, move up / down buttons
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(t.get(TranslationKey::ActiveModsTitle).to_uppercase())
-                .color(THEME.text_primary)
-                .size(13.0)
-                .strong(),
-        );
-
-        let count_frame = egui::Frame {
-            inner_margin: egui::Margin::symmetric(6.0, 2.0),
-            outer_margin: egui::Margin::ZERO,
-            rounding: Rounding::same(4.0),
-            fill: THEME.bg_dark,
-            stroke: Stroke::new(1.0_f32, THEME.border_subtle),
-            shadow: egui::epaint::Shadow::NONE,
-        };
-        count_frame.show(ui, |ui| {
-            ui.label(
-                egui::RichText::new(format!("{}", app.active_mods.len()))
-                    .color(THEME.text_secondary)
-                    .size(12.0)
-                    .strong(),
-            );
-        });
-
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // Move Down (frameless button)
-            // The selection may come from the left list, where IDs keep the case of
-            // About.xml, while ModsConfig stores them in lower case: compare ignoring case.
-            let selected_pos = app.selected_mod_id.as_deref().and_then(|sel| {
-                app.active_mods.iter().position(|id| id.eq_ignore_ascii_case(sel))
-            });
-            if ui.add(egui::Button::new(egui::RichText::new("▼").size(12.0).color(THEME.text_secondary)).frame(false)).clicked() {
-                if let Some(pos) = selected_pos.filter(|&p| p + 1 < app.active_mods.len()) {
-                    app.active_mods.swap(pos, pos + 1);
-                }
-            }
-
-            // Move Up (frameless button)
-            if ui.add(egui::Button::new(egui::RichText::new("▲").size(12.0).color(THEME.text_secondary)).frame(false)).clicked() {
-                if let Some(pos) = selected_pos.filter(|&p| p > 0) {
-                    app.active_mods.swap(pos, pos - 1);
-                }
-            }
-        });
+    // Header: title, count; on the right — search and move up / down for the selected mod.
+    let active_count = app.active_mods.len();
+    let mut move_selected: i32 = 0;
+    let search_hint = app.i18n.get(TranslationKey::ModsSearchActive);
+    panel_header(ui, t.get(TranslationKey::ActiveModsTitle), active_count, |ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        search_input_width(ui, &mut app.active_search_query, search_hint, 192.0);
+        if boxed_icon_button(ui, ICON_ARROW_DOWN).on_hover_text(t.get(TranslationKey::ModsCtxMoveDown)).clicked() {
+            move_selected = 1;
+        }
+        if boxed_icon_button(ui, ICON_ARROW_UP).on_hover_text(t.get(TranslationKey::ModsCtxMoveUp)).clicked() {
+            move_selected = -1;
+        }
     });
-
-    ui.add_space(4.0);
-
-    // Search in active mods
-    search_input(ui, &mut app.active_search_query, app.i18n.get(TranslationKey::ModsSearchActive));
-
-    ui.add_space(4.0);
+    if move_selected != 0 {
+        // The selection may come from the left list, where IDs keep the case of
+        // About.xml, while ModsConfig stores them in lower case: compare ignoring case.
+        let selected_pos = app
+            .selected_mod_id
+            .as_deref()
+            .and_then(|sel| app.active_mods.iter().position(|id| id.eq_ignore_ascii_case(sel)));
+        if let Some(pos) = selected_pos {
+            if move_selected > 0 && pos + 1 < app.active_mods.len() {
+                app.active_mods.swap(pos, pos + 1);
+            } else if move_selected < 0 && pos > 0 {
+                app.active_mods.swap(pos, pos - 1);
+            }
+        }
+    }
 
     let query_lower = app.active_search_query.trim().to_lowercase();
     let mut move_up_idx = None;
@@ -631,14 +622,19 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     let mut missing_icons = Vec::new();
     let row_height = app.active_row_height;
     let mut measured_row_height: Option<f32> = None;
+    let mut shown_range = 0..0;
+    let list_height = (ui.available_height() - 28.0).max(60.0);
 
     // Only rows inside the visible area are built (M1): big modpacks stay smooth.
+    egui::Frame::none().inner_margin(egui::Margin::symmetric(8.0, 0.0)).show(ui, |ui| {
     egui::ScrollArea::vertical()
         .id_salt("active_mods_scroll_right")
         .auto_shrink([false, false])
+        .max_height(list_height)
         .show_rows(ui, row_height, visible_rows.len(), |ui, row_range| {
             let rows_top = ui.cursor().top();
             let rows_count = row_range.len();
+            shown_range = row_range.clone();
             for &idx in &visible_rows[row_range] {
                 let pkg_id = &app.active_mods[idx];
                 let mod_info_opt = lookup_mod(&app.mod_index, &app.all_mods, pkg_id);
@@ -652,47 +648,21 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
 
                 // Dependency warning for this mod
                 let dep_problem = dep_by_mod.get(&pkg_id.to_lowercase());
+                let incompatible = matches!(dep_problem, Some(DependencyProblem::Incompatible { .. }));
 
-                let bg_color = if is_selected {
-                    Color32::from_rgb(22, 35, 59)
-                } else if idx % 2 == 0 {
-                    THEME.bg_card
-                } else {
-                    THEME.bg_surface
-                };
-
-                let frame = egui::Frame {
-                    inner_margin: egui::Margin::symmetric(6.0, 5.0),
-                    outer_margin: egui::Margin::symmetric(0.0, 1.0),
-                    rounding: Rounding::same(5.0),
-                    fill: bg_color,
-                    stroke: if is_selected {
-                        Stroke::new(1.0_f32, THEME.accent_cyan)
-                    } else {
-                        Stroke::new(1.0_f32, THEME.border_subtle)
-                    },
-                    shadow: egui::epaint::Shadow::NONE,
-                };
-
-                frame.show(ui, |ui| {
+                let row = mod_row_frame(is_selected).show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
                         // Buttons get a fixed slot at the right edge; long names and badges are
                         // clipped before it instead of pushing the buttons over them.
                         let (mut left_ui, split) = split_row(ui, ACTIVE_ROW_BUTTONS_WIDTH);
                         {
                         let ui = &mut left_ui;
-                        // Numeric index in a fixed-width column, so "9." and "10." rows stay aligned.
-                        ui.allocate_ui_with_layout(
-                            Vec2::new(30.0, 18.0),
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                ui.label(
-                                    egui::RichText::new(format!("{}.", idx + 1))
-                                        .color(THEME.text_muted)
-                                        .monospace()
-                                        .size(12.0),
-                                );
-                            },
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        // Index in a fixed-width column, so "9." and "10." rows stay aligned.
+                        ui.add_sized(
+                            Vec2::new(24.0, 20.0),
+                            egui::Label::new(egui::RichText::new(format!("{}.", idx + 1)).color(THEME.text_muted).size(12.0)),
                         );
 
                         // Mod Icon badge
@@ -709,19 +679,16 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                         );
 
                         // Mod Name (selectable)
-                        let label_resp = mod_name_label(
-                            ui,
-                            egui::RichText::new(display_name)
-                                .color(if is_protected {
-                                    Color32::from_rgb(251, 191, 36)
-                                } else if is_selected {
-                                    Color32::WHITE
-                                } else {
-                                    THEME.text_primary
-                                })
-                                .size(12.0)
-                                .strong(),
-                        );
+                        let name_text = egui::RichText::new(display_name)
+                            .color(if is_protected {
+                                THEME.accent_amber
+                            } else if incompatible {
+                                THEME.accent_rose
+                            } else {
+                                THEME.text_primary
+                            })
+                            .size(13.0);
+                        let label_resp = mod_name_label(ui, if is_selected { name_text.strong() } else { name_text });
 
                         // Multi-selection: Ctrl+click, Shift+click, normal click
                         if label_resp.clicked() {
@@ -825,46 +792,40 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                             }
                         });
 
-                        // Badges: Core, categories, "not on disk"
+                        // Badges: Core, categories, version, "not on disk"
                         if is_protected {
-                            badge_if_fits(ui, "Core", Color32::from_rgb(30, 41, 59), THEME.text_muted);
+                            tag_if_fits(ui, "Core", THEME.accent_amber);
                         }
                         if let Some(m) = mod_info_opt {
-                            category_badges(ui, &m.categories, t, 2);
+                            if !is_protected {
+                                category_badges(ui, &m.categories, t, 2);
+                            }
                             version_badge(ui, m, game_mm.as_deref(), t);
                         }
                         // Listed in ModsConfig.xml but not found by the scanner: kept on save, not dropped.
                         if mod_info_opt.is_none() {
-                            icon_badge_if_fits(ui, ICON_STATUS_NOT_ON_DISK, app.i18n.get(TranslationKey::ModsNotOnDisk), Color32::from_rgb(0x7F, 0x1D, 0x1D), Color32::from_rgb(0xFE, 0xE2, 0xE2));
+                            tag_if_fits(ui, app.i18n.get(TranslationKey::ModsNotOnDisk), THEME.accent_rose);
                         }
 
-                        // Missing or Disabled dependency pill
+                        // Dependency problems
                         if let Some(prob) = dep_problem {
                             match prob {
                                 DependencyProblem::Disabled { required_id, .. } => {
-                                    icon_badge_if_fits(ui, ICON_STATUS_WARNING, app.i18n.get(TranslationKey::ModsDepNotInList), Color32::from_rgb(0x78, 0x35, 0x0F), Color32::from_rgb(0xFE, 0xF3, 0xC7));
-                                    let btn = egui::Button::new(
-                                        egui::RichText::new(app.i18n.get(TranslationKey::ModsDepEnable))
-                                            .color(Color32::from_rgb(74, 222, 128))
-                                            .size(12.0)
-                                            .strong(),
-                                    )
-                                    .fill(Color32::from_rgb(20, 60, 35))
-                                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(34, 197, 94).linear_multiply(0.5)))
-                                    .rounding(Rounding::same(3.0));
-
-                                    if ui.add(btn).clicked() {
+                                    tag_if_fits(ui, app.i18n.get(TranslationKey::ModsDepNotInList), THEME.accent_amber);
+                                    if fits(ui, 60.0)
+                                        && small_button(ui, app.i18n.get(TranslationKey::ModsDepEnable), ButtonStyle::Success).clicked()
+                                    {
                                         enable_dep_id = Some(required_id.clone());
                                     }
                                 }
                                 DependencyProblem::Missing { .. } => {
-                                    icon_badge_if_fits(ui, ICON_STATUS_MISSING, app.i18n.get(TranslationKey::ModsDepNotFound), Color32::from_rgb(0x7F, 0x1D, 0x1D), Color32::from_rgb(0xFE, 0xE2, 0xE2));
+                                    tag_if_fits(ui, app.i18n.get(TranslationKey::ModsDepNotFound), THEME.accent_rose);
                                 }
                                 DependencyProblem::WrongOrder { .. } => {
-                                    icon_badge_if_fits(ui, ICON_SORT, app.i18n.get(TranslationKey::ModsDepOrder), Color32::from_rgb(0x78, 0x35, 0x0F), Color32::from_rgb(0xFE, 0xF3, 0xC7));
+                                    tag_if_fits(ui, app.i18n.get(TranslationKey::ModsDepOrder), THEME.accent_amber);
                                 }
                                 DependencyProblem::Incompatible { other_name, .. } => {
-                                    if let Some(resp) = icon_badge_if_fits(ui, ICON_STATUS_ERROR, app.i18n.get(TranslationKey::ModsDepIncompatible), Color32::from_rgb(0x7F, 0x1D, 0x1D), Color32::from_rgb(0xFE, 0xE2, 0xE2)) {
+                                    if let Some(resp) = tag_if_fits(ui, app.i18n.get(TranslationKey::ModsDepIncompatible), THEME.accent_rose) {
                                         resp.on_hover_text(other_name.as_str());
                                     }
                                 }
@@ -880,30 +841,51 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                 .max_rect(right_rect)
                                 .layout(egui::Layout::right_to_left(egui::Align::Center)),
                             |ui| {
-                            ui.add_space(16.0); // Padding to prevent scrollbar overlap
-
-                            if !is_protected && icon_button(ui, ICON_CLOSE, Vec2::new(14.0, 14.0), THEME.text_muted).on_hover_text(t.get(TranslationKey::BtnDeactivate)).clicked() {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            ui.add_space(8.0); // room for the scrollbar
+                            // Fixed slots, so ↑ ↓ ✕ stay in the same columns on every row.
+                            if is_protected {
+                                ui.add_space(24.0 + 4.0);
+                            } else if boxed_icon_button(ui, ICON_CLOSE).on_hover_text(t.get(TranslationKey::BtnDeactivate)).clicked() {
                                 deactivate_idx = Some(idx);
                             }
-
-                            if idx < app.active_mods.len().saturating_sub(1)
-                                && icon_button(ui, ICON_ARROW_DOWN, Vec2::new(14.0, 14.0), THEME.text_muted).clicked()
-                            {
+                            if idx + 1 >= app.active_mods.len() {
+                                ui.add_space(24.0 + 4.0);
+                            } else if boxed_icon_button(ui, ICON_ARROW_DOWN).on_hover_text(t.get(TranslationKey::ModsCtxMoveDown)).clicked() {
                                 move_down_idx = Some(idx);
                             }
-
-                            if idx > 0 && icon_button(ui, ICON_ARROW_UP, Vec2::new(14.0, 14.0), THEME.text_muted).clicked() {
+                            if idx == 0 {
+                                ui.add_space(24.0);
+                            } else if boxed_icon_button(ui, ICON_ARROW_UP).on_hover_text(t.get(TranslationKey::ModsCtxMoveUp)).clicked() {
                                 move_up_idx = Some(idx);
                             }
                         });
                     });
                 });
+                if is_selected {
+                    paint_selection_bar(ui, row.response.rect);
+                }
             }
             measured_row_height = measure_row_height(ui, rows_top, rows_count);
         });
+    });
     if let Some(h) = measured_row_height {
         app.active_row_height = h;
     }
+
+    // Footer: visible range and a reminder of how the order works.
+    let showing = if visible_rows.is_empty() {
+        tr!("Нет модов", "No mods").to_string()
+    } else {
+        tr!(
+            "Показаны {}–{} из {}",
+            "Showing {}–{} of {}",
+            shown_range.start + 1,
+            shown_range.end.min(visible_rows.len()),
+            visible_rows.len()
+        )
+    };
+    panel_footer(ui, false, None, &showing, Some(tr!("Загрузка сверху вниз", "Loads from top to bottom")));
 
     // Request missing icons
     for (pkg_id, preview_opt) in missing_icons {
@@ -963,41 +945,10 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
         .filter(|m| !active_set.contains(&m.package_id.to_lowercase()))
         .collect();
 
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(t.get(TranslationKey::AvailableModsTitle).to_uppercase())
-                .color(THEME.text_primary)
-                .size(13.0)
-                .strong(),
-        );
-
-        let count_frame = egui::Frame {
-            inner_margin: egui::Margin::symmetric(6.0, 2.0),
-            outer_margin: egui::Margin::ZERO,
-            rounding: Rounding::same(4.0),
-            fill: THEME.bg_dark,
-            stroke: Stroke::new(1.0_f32, THEME.border_subtle),
-            shadow: egui::epaint::Shadow::NONE,
-        };
-        count_frame.show(ui, |ui| {
-            ui.label(
-                egui::RichText::new(format!("{}", inactive_mods.len()))
-                    .color(THEME.text_secondary)
-                    .size(12.0)
-                    .strong(),
-            );
-        });
-
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(
-                egui::RichText::new(app.i18n.get(TranslationKey::ModsTotal).replace("{}", &app.all_mods.len().to_string()))
-                    .color(THEME.text_muted)
-                    .size(12.0),
-            );
-        });
+    let total_text = app.i18n.get(TranslationKey::ModsTotal).replace("{}", &app.all_mods.len().to_string());
+    panel_header(ui, t.get(TranslationKey::AvailableModsTitle), inactive_mods.len(), |ui| {
+        ui.label(egui::RichText::new(total_text).color(THEME.text_muted).size(12.0));
     });
-
-    ui.add_space(4.0);
 
     let query_lower = app.mod_search_query.trim().to_lowercase();
     let mut activate_id = None;
@@ -1024,45 +975,30 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     let mut missing_icons = Vec::new();
     let row_height = app.inactive_row_height;
     let mut measured_row_height: Option<f32> = None;
+    let list_height = (ui.available_height() - 48.0).max(60.0);
 
     // Only rows inside the visible area are built (M1).
+    egui::Frame::none().inner_margin(egui::Margin::symmetric(8.0, 0.0)).show(ui, |ui| {
     egui::ScrollArea::vertical()
         .id_salt("inactive_mods_scroll_left")
         .auto_shrink([false, false])
+        .max_height(list_height)
+        .min_scrolled_height(list_height)
         .show_rows(ui, row_height, visible_mods.len(), |ui, row_range| {
             let rows_top = ui.cursor().top();
             let rows_count = row_range.len();
-            for (idx, m) in visible_mods.iter().enumerate().skip(row_range.start).take(rows_count) {
+            for m in visible_mods.iter().skip(row_range.start).take(rows_count) {
 
                 let is_selected = app.selected_mod_ids.contains(&m.package_id) || app.selected_mod_id.as_deref() == Some(&m.package_id);
 
-                let bg_color = if is_selected {
-                    Color32::from_rgb(22, 35, 59)
-                } else if idx % 2 == 0 {
-                    THEME.bg_card
-                } else {
-                    THEME.bg_surface
-                };
-
-                let frame = egui::Frame {
-                    inner_margin: egui::Margin::symmetric(6.0, 5.0),
-                    outer_margin: egui::Margin::symmetric(0.0, 1.0),
-                    rounding: Rounding::same(5.0),
-                    fill: bg_color,
-                    stroke: if is_selected {
-                        Stroke::new(1.0_f32, THEME.accent_cyan)
-                    } else {
-                        Stroke::new(1.0_f32, THEME.border_subtle)
-                    },
-                    shadow: egui::epaint::Shadow::NONE,
-                };
-
-                frame.show(ui, |ui| {
+                let row = mod_row_frame(is_selected).show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
                         // Fixed slot for the "+" button at the right edge (see the active list).
                         let (mut left_ui, split) = split_row(ui, INACTIVE_ROW_BUTTONS_WIDTH);
                         {
                         let ui = &mut left_ui;
+                        ui.spacing_mut().item_spacing.x = 8.0;
                         // Mod Icon badge
                         let tex_opt = app.mod_textures.get(&m.package_id);
                         if tex_opt.is_none() {
@@ -1071,12 +1007,8 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                         let texture = tex_opt.and_then(|t| t.as_ref());
                         render_mod_icon_pill(ui, m.categories.first().copied(), false, texture);
 
-                        let label_resp = mod_name_label(
-                            ui,
-                            egui::RichText::new(&m.name)
-                                .color(if is_selected { Color32::WHITE } else { THEME.text_primary })
-                                .size(12.0),
-                        );
+                        let name_text = egui::RichText::new(&m.name).color(THEME.text_primary).size(13.0);
+                        let label_resp = mod_name_label(ui, if is_selected { name_text.strong() } else { name_text });
 
                         // Multi-selection: Ctrl+click, Shift+click, normal click
                         if label_resp.clicked() {
@@ -1166,7 +1098,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                         category_badges(ui, &m.categories, t, 2);
                         version_badge(ui, m, game_mm.as_deref(), t);
                         if m.origin == ModOrigin::Workshop {
-                            icon_badge_if_fits(ui, ICON_STATUS_WORKSHOP, "Steam", THEME.accent_cyan.linear_multiply(0.2), THEME.accent_cyan);
+                            tag_if_fits(ui, "Steam", THEME.accent_info);
                         }
                         }
                         let right_rect = finish_row(ui, &left_ui, &split);
@@ -1176,19 +1108,34 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                                 .max_rect(right_rect)
                                 .layout(egui::Layout::right_to_left(egui::Align::Center)),
                             |ui| {
-                            ui.add_space(16.0); // Padding to prevent scrollbar overlap
-                            if icon_button(ui, ICON_PLUS, Vec2::new(14.0, 14.0), THEME.text_muted).on_hover_text(t.get(TranslationKey::BtnActivate)).clicked() {
+                            ui.add_space(8.0); // room for the scrollbar
+                            if boxed_icon_button(ui, ICON_PLUS).on_hover_text(t.get(TranslationKey::BtnActivate)).clicked() {
                                 activate_id = Some(m.package_id.clone());
                             }
                         });
                     });
                 });
+                if is_selected {
+                    paint_selection_bar(ui, row.response.rect);
+                }
             }
             measured_row_height = measure_row_height(ui, rows_top, rows_count);
         });
+    });
     if let Some(h) = measured_row_height {
         app.inactive_row_height = h;
     }
+
+    panel_footer(
+        ui,
+        true,
+        Some(ICON_PLUS),
+        tr!(
+            "Нажмите +, чтобы добавить мод в порядок загрузки.",
+            "Use + to add a mod to the active load order."
+        ),
+        None,
+    );
 
     for (pkg_id, preview_opt) in missing_icons {
         app.mod_textures.insert(pkg_id.clone(), None);
@@ -1220,33 +1167,37 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
     });
 
     let frame = egui::Frame {
-        inner_margin: egui::Margin::symmetric(10.0, 8.0),
-        outer_margin: egui::Margin::symmetric(0.0, 2.0),
+        inner_margin: egui::Margin::same(12.0),
+        outer_margin: egui::Margin::ZERO,
         rounding: Rounding::same(6.0),
-        fill: THEME.bg_surface,
-        stroke: Stroke::new(1.0_f32, THEME.border_strong),
+        fill: THEME.bg_dark,
+        stroke: Stroke::new(1.0_f32, THEME.border_subtle),
         shadow: egui::epaint::Shadow::NONE,
     };
 
     frame.show(ui, |ui| {
-        // Header: collapse toggle and close button
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = 8.0;
+        // Header: icon + title (click collapses), close button on the right
         ui.horizontal(|ui| {
-            let toggle_symbol = if app.is_details_panel_collapsed { "▶" } else { "▼" };
+            ui.spacing_mut().item_spacing.x = 8.0;
             let title = if selected_opt.is_some() {
-                format!("{} {}", toggle_symbol, app.i18n.get(TranslationKey::ModsDetailsTitle))
+                app.i18n.get(TranslationKey::ModsDetailsTitle)
             } else {
-                format!("{} {}", toggle_symbol, app.i18n.get(TranslationKey::ModsSummaryHeader))
+                app.i18n.get(TranslationKey::ModsSummaryHeader)
             };
-
-            let title_btn = egui::Button::new(
-                egui::RichText::new(title)
-                    .color(THEME.accent_cyan)
-                    .size(12.0)
-                    .strong(),
-            )
-            .fill(Color32::TRANSPARENT);
-
-            if ui.add(title_btn).clicked() {
+            ui.add(svg_icon(
+                if selected_opt.is_some() { ICON_INFO } else { ICON_CHECK_ALL },
+                Vec2::splat(16.0),
+                THEME.accent_cyan,
+            ));
+            let title_resp = ui
+                .add(
+                    egui::Label::new(egui::RichText::new(title).color(THEME.text_primary).size(13.0).strong())
+                        .sense(egui::Sense::click()),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            if title_resp.clicked() {
                 app.is_details_panel_collapsed = !app.is_details_panel_collapsed;
             }
 
@@ -1397,20 +1348,33 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
                 }); // close vertical
             }); // close horizontal
         } else {
-            // No mod selected: Summary
+            // No mod selected: counts + reminder (design "Mod list summary")
+            let available = app.all_mods.len().saturating_sub(app.active_mods.len());
+            let incompatible = app.dependency_report.incompatible_count();
             ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 16.0;
                 ui.label(
-                    egui::RichText::new(fmt(
-                        app.i18n.get(TranslationKey::ModListSummary),
-                        &[
-                            &app.active_mods.len().to_string(),
-                            &app.all_mods.len().saturating_sub(app.active_mods.len()).to_string(),
-                        ],
-                    ))
-                    .color(THEME.text_muted)
-                    .size(12.0),
+                    egui::RichText::new(tr!("Активно: {}", "{} active", app.active_mods.len()))
+                        .color(THEME.text_secondary)
+                        .size(12.0),
                 );
+                ui.label(egui::RichText::new(tr!("Доступно: {}", "{} available", available)).color(THEME.text_secondary).size(12.0));
+                if incompatible > 0 {
+                    ui.label(
+                        egui::RichText::new(tr!("Несовместимых: {}", "{} incompatible", incompatible))
+                            .color(THEME.accent_rose)
+                            .size(12.0),
+                    );
+                }
             });
+            ui.label(
+                egui::RichText::new(tr!(
+                    "Проверьте совместимость и сохраните порядок перед игрой. Нажмите на мод, чтобы увидеть подробности.",
+                    "Review compatibility and save your order before playing. Click a mod for details."
+                ))
+                .color(THEME.text_muted)
+                .size(12.0),
+            );
         }
     });
 }

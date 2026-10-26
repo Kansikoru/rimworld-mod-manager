@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
 
-use eframe::egui::{self, Color32, Rounding, Stroke};
+use eframe::egui::{self, Rounding};
 
 use crate::analyzer::{analyze_rimworld_log, detect_rimworld_log_paths, LogReport};
 use crate::cleaner::{delete_translation_mods, unsubscribe_and_delete_single};
@@ -1420,18 +1420,21 @@ impl eframe::App for App {
         }
 
         // Top Navigation Bar
-        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            ui.add_space(4.0);
+        // App bar (64 px): logo + name + version, text tabs, "Play" on the right.
+        let bar_frame = egui::Frame {
+            inner_margin: egui::Margin::symmetric(16.0, 12.0),
+            fill: THEME.bg_surface,
+            ..Default::default()
+        };
+        egui::TopBottomPanel::top("top_panel").frame(bar_frame).show(ctx, |ui| {
             ui.horizontal(|ui| {
-                // App Logo / Title
-                ui.add(egui::Image::new(ICON_LOGO).fit_to_exact_size(egui::vec2(24.0, 24.0)));
-                ui.heading(
-                    egui::RichText::new("RimWorld Mod Manager")
-                        .color(THEME.accent_cyan)
-                        .size(17.0)
-                        .strong(),
-                );
-
+                ui.set_height(40.0);
+                ui.spacing_mut().item_spacing.x = 8.0;
+                // Logo in a lavender-tinted square
+                let (logo_rect, _) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
+                ui.painter().rect_filled(logo_rect, Rounding::same(6.0), crate::ui::theme::tint(THEME.accent_cyan));
+                egui::Image::new(ICON_LOGO).paint_at(ui, logo_rect.shrink(4.0));
+                ui.label(egui::RichText::new("RimWorld Mod Manager").color(THEME.accent_cyan).size(14.0).strong());
                 ui.label(
                     egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
                         .color(THEME.text_muted)
@@ -1439,88 +1442,59 @@ impl eframe::App for App {
                 );
 
                 ui.add_space(16.0);
-
-                // Navigation Tabs
+                ui.spacing_mut().item_spacing.x = 4.0;
                 let tabs = [
-                    (AppTab::Mods, self.i18n.get(TranslationKey::TabMods), ICON_MODS),
-                    (AppTab::Translations, self.i18n.get(TranslationKey::TabTranslations), ICON_TRANSLATIONS),
-                    (AppTab::Optimizer, self.i18n.get(TranslationKey::TabOptimizer), ICON_OPTIMIZER),
-                    (AppTab::Analyzer, self.i18n.get(TranslationKey::TabAnalyzer), ICON_ANALYZER),
-                    (AppTab::Settings, self.i18n.get(TranslationKey::TabSettings), ICON_SETTINGS),
+                    (AppTab::Mods, self.i18n.get(TranslationKey::TabMods)),
+                    (AppTab::Translations, self.i18n.get(TranslationKey::TabTranslations)),
+                    (AppTab::Optimizer, self.i18n.get(TranslationKey::TabOptimizer)),
+                    (AppTab::Analyzer, self.i18n.get(TranslationKey::TabAnalyzer)),
+                    (AppTab::Settings, self.i18n.get(TranslationKey::TabSettings)),
                 ];
-
-                for (tab_val, label, icon) in tabs {
-                    let is_active = self.current_tab == tab_val;
-
-                    let (bg, border, text_color) = if is_active {
-                        (THEME.bg_surface_hover, THEME.accent_cyan, THEME.accent_cyan)
-                    } else {
-                        (THEME.bg_card, THEME.border_subtle, THEME.text_secondary)
-                    };
-
-                    let btn_resp = ui.add(
-                        egui::Button::image_and_text(
-                            svg_icon(icon, egui::vec2(16.0, 16.0), text_color),
-                            egui::RichText::new(label)
-                                .color(text_color)
-                                .size(13.0)
-                                .strong(),
-                        )
-                        .fill(bg)
-                        .stroke(Stroke::new(1.0_f32, border))
-                        .rounding(Rounding::same(6.0)),
-                    );
-
-                    if btn_resp.clicked() {
+                for (tab_val, label) in tabs {
+                    if crate::ui::components::nav_tab(ui, label, self.current_tab == tab_val).clicked() {
                         self.current_tab = tab_val;
                     }
                 }
 
-                // Fast Launch Game button in top right
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(8.0); // keep the button off the window edge
-                    if ui.add(
-                        egui::Button::image_and_text(
-                            svg_icon(ICON_PLAY, egui::vec2(16.0, 16.0), Color32::WHITE),
-                            egui::RichText::new(self.i18n.get(TranslationKey::AppPlayBtn))
-                                .color(Color32::WHITE)
-                                .size(13.0)
-                                .strong(),
-                        )
-                        .fill(THEME.accent_emerald)
-                        .rounding(Rounding::same(6.0)),
-                    ).clicked() {
+                    if crate::ui::components::success_button_icon(ui, ICON_PLAY, self.i18n.get(TranslationKey::AppPlayBtn))
+                        .clicked()
+                    {
                         self.launch_game();
                     }
                 });
             });
-            ui.add_space(4.0);
         });
 
-        // Bottom Status Bar
-        egui::TopBottomPanel::bottom("bottom_status_bar").show(ctx, |ui| {
+        // Status bar (28 px): last status on the left, game version on the right.
+        let status_frame = egui::Frame {
+            inner_margin: egui::Margin::symmetric(16.0, 6.0),
+            fill: THEME.bg_surface,
+            ..Default::default()
+        };
+        egui::TopBottomPanel::bottom("bottom_status_bar").frame(status_frame).show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(&self.status_message)
-                        .color(THEME.text_secondary)
-                        .size(12.0),
-                );
-
+                ui.label(egui::RichText::new(&self.status_message).color(THEME.text_secondary).size(12.0));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        egui::RichText::new(fmt(
+                    let game = match self.steam_paths.game_version.as_deref() {
+                        Some(v) => format!("RimWorld {v}"),
+                        None => fmt(
                             self.i18n.get(TranslationKey::AppStatusBarStats),
                             &[&self.all_mods.len().to_string(), &self.active_mods.len().to_string()],
-                        ))
-                        .color(THEME.text_muted)
-                        .size(12.0),
-                    );
+                        ),
+                    };
+                    ui.label(egui::RichText::new(game).color(THEME.text_muted).size(12.0));
                 });
             });
         });
 
-        // Main Viewport Area
-        egui::CentralPanel::default().show(ctx, |ui| match self.current_tab {
+        // Main area: window background with 16 px side padding.
+        let central_frame = egui::Frame {
+            inner_margin: egui::Margin { left: 16.0, right: 16.0, top: 8.0, bottom: 12.0 },
+            fill: THEME.bg_dark,
+            ..Default::default()
+        };
+        egui::CentralPanel::default().frame(central_frame).show(ctx, |ui| match self.current_tab {
             AppTab::Mods => crate::ui::view_mods::render_mods_view(self, ui),
             AppTab::Translations => crate::ui::view_translations::render_translations_view(self, ui),
             AppTab::Optimizer => crate::ui::view_optimizer::render_optimizer_view(self, ui),
