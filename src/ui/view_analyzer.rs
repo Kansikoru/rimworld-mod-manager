@@ -56,6 +56,8 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
     });
 
     ui.add_space(8.0);
+    super::view_bisect::render_bisect_card(app, ui);
+    ui.add_space(8.0);
 
     // Report Results
     if let Some(ref report) = app.log_report {

@@ -181,7 +181,15 @@ pub fn save_active_mods_with_backup(config_path: &Path, active_mods: &[String], 
             e
         )
     })?;
+    write_active_mods(config_path, active_mods)
+}
 
+/// Writes the active list without a backup copy. For the broken-mod search: one backup
+/// is made when it starts, so its many test launches don't push real backups out.
+pub fn write_active_mods(config_path: &Path, active_mods: &[String]) -> Result<(), String> {
+    if !config_path.exists() {
+        return Err(tr!("Файл не найден: {}", "File not found: {}", config_path.display()));
+    }
 
     let mut unique: Vec<String> = Vec::with_capacity(active_mods.len());
     for m in active_mods {
@@ -405,6 +413,11 @@ mod tests {
         let text = std::fs::read_to_string(&cfg).unwrap();
         assert!(text.contains("<knownExpansions>") && text.contains("1.7.4985 rev1269"));
         assert!(!cfg.with_extension("xml.tmp").exists());
+        assert_eq!(std::fs::read_dir(&backups).unwrap().count(), 1);
+
+        // Without a backup: the list changes, the backups stay as they were.
+        write_active_mods(&cfg, &["ludeon.rimworld".to_string()]).unwrap();
+        assert_eq!(load_active_mods(&cfg), vec!["ludeon.rimworld"]);
         assert_eq!(std::fs::read_dir(&backups).unwrap().count(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }

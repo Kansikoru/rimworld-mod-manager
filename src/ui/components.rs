@@ -276,22 +276,28 @@ pub fn boxed_icon_button(ui: &mut Ui, icon: ImageSource<'static>) -> Response {
 /// Top-bar tab: text only, 40 px tall; the active one is lavender on the hover color with a
 /// 2 px lavender line at the bottom.
 pub fn nav_tab(ui: &mut Ui, label: &str, active: bool) -> Response {
+    nav_tab_padded(ui, label, active, 24.0)
+}
+
+/// `nav_tab` with the given total side padding (smaller in a narrow window).
+pub fn nav_tab_padded(ui: &mut Ui, label: &str, active: bool, pad: f32) -> Response {
     let color = if active { THEME.accent_cyan } else { THEME.text_secondary };
     let galley = ui.painter().layout_no_wrap(label.to_string(), egui::FontId::proportional(13.0), color);
-    let size = Vec2::new(galley.size().x + 24.0, 40.0);
+    let size = Vec2::new(galley.size().x + pad, 40.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let half = pad / 2.0;
     if ui.is_rect_visible(rect) {
         let hovered = response.hovered();
         if active || hovered {
             ui.painter().rect_filled(rect, Rounding::same(6.0), THEME.bg_surface_hover);
         }
         let text_color = if hovered && !active { THEME.text_primary } else { color };
-        let pos = Pos2::new(snap(ui, rect.min.x + 12.0), snap(ui, rect.center().y - galley.size().y / 2.0));
+        let pos = Pos2::new(snap(ui, rect.min.x + half), snap(ui, rect.center().y - galley.size().y / 2.0));
         ui.painter().galley(pos, galley, text_color);
         if active {
             let line = Rect::from_min_max(
-                Pos2::new(rect.min.x + 12.0, rect.max.y - 2.0),
-                Pos2::new(rect.max.x - 12.0, rect.max.y),
+                Pos2::new(rect.min.x + half, rect.max.y - 2.0),
+                Pos2::new(rect.max.x - half, rect.max.y),
             );
             ui.painter().rect_filled(line, Rounding::same(1.0), THEME.accent_cyan);
         }

@@ -8,6 +8,7 @@ pub mod i18n;
 pub mod matcher;
 pub mod models;
 pub mod mods_config;
+pub mod bisect;
 pub mod modlists;
 pub mod saves;
 pub mod optimizer;

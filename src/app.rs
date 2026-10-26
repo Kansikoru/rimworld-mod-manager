@@ -28,6 +28,16 @@ use crate::ui::icons::*;
 use crate::ui::theme::THEME;
 use crate::workshop_search::{search_steam_workshop, WorkshopItemResult};
 
+fn bisect_session_path() -> PathBuf {
+    crate::game_install::manager_data_dir().join("bisect.json")
+}
+
+/// An unfinished broken-mod search from an earlier run, if any.
+fn load_bisect_session() -> Option<crate::bisect::Bisect> {
+    let text = std::fs::read_to_string(bisect_session_path()).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 /// Finds an installed mod by package ID: case-insensitive, and understands the `_steam`
 /// suffix RimWorld adds to a Workshop copy when a local copy with the same ID also exists.
 pub fn find_mod_in<'a>(all_mods: &'a [ModInfo], id: &str) -> Option<&'a ModInfo> {
@@ -171,6 +181,8 @@ pub struct App {
     pub show_batch_results: bool,
     /// RWMM_TAB=translations-batch: start the modpack search once the mods are scanned (screenshots).
     batch_search_after_scan: bool,
+    /// RWMM_TAB=bisect: open the broken-mod search once the mods are scanned (screenshots).
+    bisect_after_scan: bool,
 
     // Optimizer State
     pub opt_scope: OptimizeScope,
@@ -224,7 +236,7 @@ pub struct App {
     /// Deletion waiting for confirmation (modal window).
     pub pending_delete: Option<PendingDelete>,
     /// Active list as it is in ModsConfig.xml on disk (lower case): detects unsaved changes.
-    saved_active_mods: Vec<String>,
+    pub saved_active_mods: Vec<String>,
     /// The next rescan reads the active list from disk even with unsaved changes
     /// (another ModsConfig.xml was picked).
     reload_active_from_disk: bool,
@@ -253,6 +265,16 @@ pub struct App {
     saves_loaded_at: Option<std::time::Instant>,
     pub selected_save: Option<String>,
     pub saves_search: String,
+
+    // Broken-mod search (F8). The session is saved to bisect.json after every change,
+    // so it survives closing the program in the middle.
+    pub bisect: Option<crate::bisect::Bisect>,
+    pub bisect_open: bool,
+    /// Setup screen: mods ticked as "never turn off" (lowercase IDs).
+    pub bisect_keep: Option<std::collections::HashSet<String>>,
+    pub bisect_filter: String,
+    /// Why the last wizard action didn't run (game running, unsaved order...).
+    pub bisect_note: Option<String>,
     /// "History" window: ModsConfig.xml backups, newest first (`Some` = window open).
     pub history: Option<Vec<crate::mods_config::ConfigBackup>>,
     /// Look for a new version on GitHub once a day (Settings).
@@ -385,12 +407,14 @@ impl App {
             "sets" => AppTab::Sets,
             "saves" => AppTab::Saves,
             "translations" | "translations-batch" => AppTab::Translations,
+            "bisect" => AppTab::Analyzer,
             "optimizer" => AppTab::Optimizer,
             "analyzer" => AppTab::Analyzer,
             "settings" => AppTab::Settings,
             _ => AppTab::Mods,
         };
 
+        let bisect_session = load_bisect_session();
         let mut app = Self {
             current_tab: start_tab,
             i18n,
@@ -425,6 +449,7 @@ impl App {
             batch_subscribed: std::collections::HashSet::new(),
             show_batch_results: false,
             batch_search_after_scan: false,
+            bisect_after_scan: false,
 
             opt_scope: OptimizeScope::AllInstalled,
             opt_force: false,
@@ -481,6 +506,12 @@ impl App {
             // RWMM_SAVE=<name> opens that save on the Saves tab (screenshots).
             selected_save: std::env::var("RWMM_SAVE").ok().filter(|s| !s.is_empty()),
             saves_search: String::new(),
+            // An unfinished search opens again where it stopped.
+            bisect_open: bisect_session.is_some(),
+            bisect: bisect_session,
+            bisect_keep: None,
+            bisect_filter: String::new(),
+            bisect_note: None,
             check_updates: last_check_updates,
             update_available: None,
             update_rx: None,
@@ -514,6 +545,7 @@ impl App {
             app.open_history();
         }
         app.batch_search_after_scan = start_view == "translations-batch";
+        app.bisect_after_scan = start_view == "bisect";
         app
     }
 
@@ -996,6 +1028,9 @@ impl App {
         if std::mem::take(&mut self.batch_search_after_scan) {
             self.start_batch_translation_search();
         }
+        if std::mem::take(&mut self.bisect_after_scan) {
+            self.open_bisect();
+        }
         if self.rescan_keep_status {
             self.rescan_keep_status = false;
         } else {
@@ -1325,6 +1360,210 @@ impl App {
             .collect();
         ids.dedup();
         ids
+    }
+
+    // ----- Broken-mod search (F8) -----
+
+    /// Opens the search window: the running search, or the setup for a new one.
+    pub fn open_bisect(&mut self) {
+        self.bisect_open = true;
+        self.bisect_note = None;
+        if self.bisect.is_none() && self.bisect_keep.is_none() {
+            self.bisect_keep = Some(self.bisect_default_keep());
+        }
+    }
+
+    /// Never turned off by default: Core and DLC, Harmony / Prepatcher, frameworks.
+    fn bisect_default_keep(&self) -> std::collections::HashSet<String> {
+        self.saved_active_mods
+            .iter()
+            .filter(|id| {
+                let lower = id.to_lowercase();
+                lower == "ludeon.rimworld"
+                    || lower.starts_with("ludeon.rimworld.")
+                    || lower == "brrainz.harmony"
+                    || lower == "zetrith.prepatcher"
+                    || self.find_mod(id).is_some_and(|m| {
+                        self.is_official_mod(m) || m.categories.contains(&ModCategory::Framework)
+                    })
+            })
+            .map(|id| id.to_lowercase())
+            .collect()
+    }
+
+    /// What each mod of `ids` needs among `ids` (alternatives and Prepatcher-for-Harmony count).
+    pub fn bisect_requirements(&self, ids: &[String]) -> std::collections::BTreeMap<String, Vec<String>> {
+        let present: std::collections::HashSet<String> = ids.iter().map(|i| i.to_lowercase()).collect();
+        let mut out = std::collections::BTreeMap::new();
+        for id in ids {
+            let Some(m) = self.find_mod(id) else { continue };
+            let mut needs: Vec<String> = Vec::new();
+            for dep in &m.dependencies {
+                let dep = dep.trim().to_lowercase();
+                let declared = m.dependency_alternatives.get(&dep).cloned().unwrap_or_default();
+                let choice = std::iter::once(dep.clone())
+                    .chain(declared.into_iter().map(|a| a.to_lowercase()))
+                    .chain(crate::dependencies::dependency_substitutes(&dep).iter().map(|s| s.to_string()))
+                    .find(|candidate| present.contains(candidate));
+                if let Some(c) = choice {
+                    needs.push(c);
+                }
+            }
+            if !needs.is_empty() {
+                out.insert(id.to_lowercase(), needs);
+            }
+        }
+        out
+    }
+
+    fn persist_bisect(&self) {
+        let path = bisect_session_path();
+        match &self.bisect {
+            Some(search) => {
+                if let Ok(text) = serde_json::to_string(search) {
+                    let _ = std::fs::write(path, text);
+                }
+            }
+            None => {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+
+    /// Why a step can't run now: the game is open, or the list has unsaved changes.
+    fn bisect_blocker(&self, check_unsaved: bool) -> Option<String> {
+        let t = self.i18n;
+        if self.mods_config_path.is_none() {
+            return Some(t.get(TranslationKey::BisectNoConfig).to_string());
+        }
+        if check_unsaved && self.has_unsaved_changes() {
+            return Some(t.get(TranslationKey::BisectUnsaved).to_string());
+        }
+        if crate::game_install::is_game_running() {
+            return Some(t.get(TranslationKey::BisectCloseGame).to_string());
+        }
+        None
+    }
+
+    /// Starts a search from the load order the game uses now, keeping the ticked mods on.
+    /// The current order is saved as a modpack first, so it can always be brought back.
+    pub fn start_bisect(&mut self) {
+        if let Some(why) = self.bisect_blocker(true) {
+            self.bisect_note = Some(why);
+            return;
+        }
+        let keep: Vec<String> = self.bisect_keep.clone().unwrap_or_default().into_iter().collect();
+        let original = self.saved_active_mods.clone();
+        let requires = self.bisect_requirements(&original);
+        let search = crate::bisect::Bisect::new(&original, &keep, &requires);
+
+        // "Before the search" modpack (overwritten each time).
+        if let Some(dir) = self.modlists_folder() {
+            let name = self.i18n.get(TranslationKey::BisectBackupSetName);
+            let entries = self.modlist_entries();
+            let version = self.game_version_for_sets();
+            if crate::modlists::write_rml(&crate::modlists::path_for(&dir, name), &version, &entries).is_ok() {
+                self.refresh_modlists();
+            }
+        }
+        self.bisect = Some(search);
+        self.bisect_keep = None;
+        self.bisect_note = None;
+        self.persist_bisect();
+    }
+
+    /// Writes the current test's load order to ModsConfig.xml, and starts the game if asked.
+    pub fn bisect_apply(&mut self, launch: bool) {
+        if let Some(why) = self.bisect_blocker(false) {
+            self.bisect_note = Some(why);
+            return;
+        }
+        let (Some(search), Some(config)) = (self.bisect.as_ref(), self.mods_config_path.clone()) else { return };
+        let enabled = search.enabled();
+        // One backup at the first launch; later steps don't push real backups out.
+        let first = search.history.is_empty() && !search.applied;
+        let written = if first {
+            save_active_mods(&config, &enabled)
+        } else {
+            crate::mods_config::write_active_mods(&config, &enabled)
+        };
+        if let Err(e) = written {
+            self.bisect_note = Some(e);
+            return;
+        }
+        self.active_mods = enabled.clone();
+        self.remember_saved_order(&enabled);
+        self.validate_deps();
+        if let Some(search) = self.bisect.as_mut() {
+            search.applied = true;
+        }
+        self.bisect_note = None;
+        self.persist_bisect();
+        if launch {
+            self.launch_game_now();
+        }
+    }
+
+    pub fn bisect_answer(&mut self, problem: bool) {
+        if let Some(search) = self.bisect.as_mut() {
+            search.answer(problem);
+            self.bisect_note = None;
+            self.persist_bisect();
+        }
+    }
+
+    pub fn bisect_step_back(&mut self) {
+        if let Some(search) = self.bisect.as_mut() {
+            search.step_back();
+            self.bisect_note = None;
+            self.persist_bisect();
+        }
+    }
+
+    /// Ends the search: brings the original load order back, without the found mods and
+    /// what needs them if `turn_off_found`.
+    pub fn bisect_finish(&mut self, turn_off_found: bool) {
+        if let Some(why) = self.bisect_blocker(false) {
+            self.bisect_note = Some(why);
+            return;
+        }
+        let Some(search) = self.bisect.as_ref() else { return };
+        let Some(config) = self.mods_config_path.clone() else { return };
+        let t = self.i18n;
+        let mut order = search.original.clone();
+        let mut message = t.get(TranslationKey::BisectRestored).to_string();
+        if turn_off_found {
+            if let Some(crate::bisect::Outcome::Found(found)) = search.outcome() {
+                let mut off: Vec<String> = found.clone();
+                off.extend(search.dependents_of(found));
+                order.retain(|id| !off.contains(id));
+                message = fmt(t.get(TranslationKey::BisectTurnedOff), &[&off.len().to_string()]);
+            }
+        }
+        if let Err(e) = save_active_mods(&config, &order) {
+            self.bisect_note = Some(e);
+            return;
+        }
+        self.active_mods = order.clone();
+        self.remember_saved_order(&order);
+        self.validate_deps();
+        self.bisect = None;
+        self.bisect_open = false;
+        self.bisect_note = None;
+        self.persist_bisect();
+        self.status_message = message;
+    }
+
+    /// The setup screen is closed without starting.
+    pub fn close_bisect_window(&mut self) {
+        self.bisect_open = false;
+        self.bisect_keep = None;
+        self.bisect_note = None;
+    }
+
+    /// A mod's display name: the installed mod's name, else its ID.
+    pub fn mod_display_name(&self, id: &str) -> String {
+        self.find_mod(id).map(|m| m.name.clone()).unwrap_or_else(|| id.to_string())
     }
 
     /// Whether a Steam request (subscribe, check) is running now.
@@ -2307,19 +2546,52 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 ui.set_height(40.0);
                 ui.spacing_mut().item_spacing.x = 8.0;
+                let t = self.i18n;
+                let tabs = [
+                    (AppTab::Mods, t.get(TranslationKey::TabMods)),
+                    (AppTab::Sets, t.get(TranslationKey::TabSets)),
+                    (AppTab::Saves, t.get(TranslationKey::TabSaves)),
+                    (AppTab::Translations, t.get(TranslationKey::TabTranslations)),
+                    (AppTab::Optimizer, t.get(TranslationKey::TabOptimizer)),
+                    (AppTab::Analyzer, t.get(TranslationKey::TabAnalyzer)),
+                    (AppTab::Settings, t.get(TranslationKey::TabSettings)),
+                ];
+                let update_text = self.update_available.as_ref().map(|l| tr!("Вышла {} →", "{} is out →", l.tag));
+                let bisect_text = (self.bisect.is_some() && !self.bisect_open).then(|| {
+                    let step = self.bisect.as_ref().map_or(1, |s| s.stage.answers + 1);
+                    fmt(t.get(TranslationKey::BisectHeaderTag), &[&step.to_string()])
+                });
+
+                // What fits in a narrow window: first the title and version go (the logo
+                // keeps them as a tooltip), then the tabs get tighter.
+                let title = "RimWorld Mod Manager";
+                let version = concat!("v", env!("CARGO_PKG_VERSION"));
+                let text_w = |s: &str, size: f32| ui.painter().layout_no_wrap(s.to_string(), egui::FontId::proportional(size), egui::Color32::WHITE).size().x;
+                let tags_w: f32 = [&update_text, &bisect_text]
+                    .iter()
+                    .filter_map(|s| s.as_deref())
+                    .map(|s| crate::ui::components::badge_width(ui, s) + 8.0)
+                    .sum();
+                let tabs_w = |pad: f32| tabs.iter().map(|(_, l)| text_w(l, 13.0) + pad + 4.0).sum::<f32>();
+                let play_w = crate::ui::components::styled_button_width(ui, true, t.get(TranslationKey::AppPlayBtn));
+                let fixed = 32.0 + 8.0 + 16.0 + play_w + 8.0 + tags_w;
+                let title_w = text_w(title, 14.0) + text_w(version, 12.0) + 16.0;
+                let avail = ui.available_width();
+                let show_title = fixed + title_w + tabs_w(24.0) <= avail;
+                let tab_pad = if show_title || fixed + tabs_w(24.0) <= avail { 24.0 } else { 14.0 };
+
                 // Logo in a lavender-tinted square
-                let (logo_rect, _) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
+                let (logo_rect, logo) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
                 ui.painter().rect_filled(logo_rect, Rounding::same(6.0), crate::ui::theme::tint(THEME.accent_cyan));
                 egui::Image::new(ICON_LOGO).paint_at(ui, logo_rect.shrink(4.0));
-                ui.label(egui::RichText::new("RimWorld Mod Manager").color(THEME.accent_cyan).size(14.0).strong());
-                ui.label(
-                    egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
-                        .color(THEME.text_muted)
-                        .size(12.0),
-                );
-                if let Some(latest) = self.update_available.clone() {
-                    let text = tr!("Вышла {} →", "{} is out →", latest.tag);
-                    if crate::ui::components::tag(ui, &text, THEME.accent_emerald)
+                if show_title {
+                    ui.label(egui::RichText::new(title).color(THEME.accent_cyan).size(14.0).strong());
+                    ui.label(egui::RichText::new(version).color(THEME.text_muted).size(12.0));
+                } else {
+                    logo.on_hover_text(format!("{title} {version}"));
+                }
+                if let (Some(latest), Some(text)) = (self.update_available.clone(), update_text.as_deref()) {
+                    if crate::ui::components::tag(ui, text, THEME.accent_emerald)
                         .interact(egui::Sense::click())
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .on_hover_text(tr!("Открыть страницу новой версии на GitHub", "Open the new version's page on GitHub"))
@@ -2328,26 +2600,26 @@ impl eframe::App for App {
                         crate::ui::components::open_external(&latest.url);
                     }
                 }
+                if let Some(text) = bisect_text.as_deref() {
+                    if crate::ui::components::tag(ui, text, THEME.accent_amber)
+                        .interact(egui::Sense::click())
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        self.open_bisect();
+                    }
+                }
 
                 ui.add_space(16.0);
                 ui.spacing_mut().item_spacing.x = 4.0;
-                let tabs = [
-                    (AppTab::Mods, self.i18n.get(TranslationKey::TabMods)),
-                    (AppTab::Sets, self.i18n.get(TranslationKey::TabSets)),
-                    (AppTab::Saves, self.i18n.get(TranslationKey::TabSaves)),
-                    (AppTab::Translations, self.i18n.get(TranslationKey::TabTranslations)),
-                    (AppTab::Optimizer, self.i18n.get(TranslationKey::TabOptimizer)),
-                    (AppTab::Analyzer, self.i18n.get(TranslationKey::TabAnalyzer)),
-                    (AppTab::Settings, self.i18n.get(TranslationKey::TabSettings)),
-                ];
                 for (tab_val, label) in tabs {
-                    if crate::ui::components::nav_tab(ui, label, self.current_tab == tab_val).clicked() {
+                    if crate::ui::components::nav_tab_padded(ui, label, self.current_tab == tab_val, tab_pad).clicked() {
                         self.current_tab = tab_val;
                     }
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if crate::ui::components::success_button_icon(ui, ICON_PLAY, self.i18n.get(TranslationKey::AppPlayBtn))
+                    if crate::ui::components::success_button_icon(ui, ICON_PLAY, t.get(TranslationKey::AppPlayBtn))
                         .clicked()
                     {
                         self.launch_game();
@@ -2415,6 +2687,7 @@ impl eframe::App for App {
         self.render_question(ctx);
         self.render_history_window(ctx);
         self.render_modlist_dialog(ctx);
+        crate::ui::view_bisect::render_bisect_window(self, ctx);
         self.save_settings_if_changed();
 
         if self.opt_is_running {
