@@ -45,7 +45,12 @@ fn render_steamcmd_card(app: &mut App, ui: &mut Ui) {
             ui.add_space(4.0);
             hint(ui, t.get(TranslationKey::SteamCmdCardHint));
             ui.add_space(6.0);
-            ui.checkbox(&mut app.use_steamcmd, t.get(TranslationKey::SteamCmdUse));
+            if ui
+                .checkbox(&mut app.use_steamcmd, t.get(TranslationKey::SteamCmdUse))
+                .changed()
+            {
+                app.use_steamcmd_set = true;
+            }
             if app.steam_paths.steam_path.is_none() && !app.use_steamcmd {
                 ui.add(
                     egui::Label::new(

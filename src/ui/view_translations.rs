@@ -4,7 +4,7 @@ use super::components::*;
 use super::icons::*;
 use super::theme::THEME;
 use crate::app::App;
-use crate::i18n::{tr, TranslationKey};
+use crate::i18n::{fmt, tr, TranslationKey};
 use crate::models::{ModInfo, TranslationTargetLang};
 
 pub fn render_translations_view(app: &mut App, ui: &mut Ui) {
@@ -298,6 +298,8 @@ fn render_workshop_search_column(app: &mut App, ui: &mut Ui) {
     }
 
     let mut to_subscribe_id = None;
+    // "Download" when SteamCMD does it, "Subscribe" for the Steam client.
+    let steamcmd = app.steamcmd_active();
 
     egui::ScrollArea::vertical()
         .id_salt("workshop_search_scroll")
@@ -327,7 +329,12 @@ fn render_workshop_search_column(app: &mut App, ui: &mut Ui) {
                         });
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if success_button_icon(ui, ICON_PLUS, t.get(TranslationKey::TransBtnSubscribe)).clicked() {
+                            let label = if steamcmd {
+                                t.get(TranslationKey::TransBtnDownload)
+                            } else {
+                                t.get(TranslationKey::TransBtnSubscribe)
+                            };
+                            if success_button_icon(ui, ICON_PLUS, label).clicked() {
                                 to_subscribe_id = Some(item.id.clone());
                             }
                             if secondary_button_icon(ui, ICON_STEAM, "Workshop").clicked() {
@@ -371,14 +378,14 @@ fn render_batch_results(app: &mut App, ui: &mut Ui) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         let n = app.batch_checked.len();
-        ui.add_enabled_ui(n > 0 && app.steam_rx.is_none(), |ui| {
-            if success_button_icon(
-                ui,
-                ICON_PLUS,
-                &tr!("Подписаться на отмеченные ({})", "Subscribe to ticked ({})", n),
-            )
-            .clicked()
-            {
+        let key = if app.steamcmd_active() {
+            TranslationKey::NameSearchDownload
+        } else {
+            TranslationKey::NameSearchSubscribe
+        };
+        let label = fmt(app.i18n.get(key), &[&n.to_string()]);
+        ui.add_enabled_ui(n > 0 && !app.steam_busy(), |ui| {
+            if success_button_icon(ui, ICON_PLUS, &label).clicked() {
                 app.subscribe_checked_translations();
             }
         });

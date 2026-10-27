@@ -352,12 +352,16 @@ pub struct App {
     pub check_updates: bool,
     /// SteamCMD: download mods with it instead of the Steam client (Settings).
     pub use_steamcmd: bool,
+    /// The user set the checkbox; until then it follows "SteamCMD is installed".
+    pub use_steamcmd_set: bool,
     pub custom_steamcmd_dir: Option<PathBuf>,
     /// The last SteamCMD job (install or download) for its window; `steamcmd_rx` while it runs.
     pub steamcmd_job: Option<crate::steamcmd::Job>,
     steamcmd_rx: Option<Receiver<crate::steamcmd::Msg>>,
     steamcmd_kill: crate::steamcmd::KillSwitch,
     pub steamcmd_window: bool,
+    /// The running job installs SteamCMD: once it's in place, downloads go through it.
+    steamcmd_fresh_install: bool,
     /// The SteamCMD window shows the console (own commands) instead of the last download.
     pub steamcmd_console: bool,
     pub steamcmd_console_input: String,
@@ -459,7 +463,12 @@ impl App {
             ["-logfile".to_string()].into_iter().collect()
         };
         let last_check_updates = s.check_updates;
-        let (use_steamcmd, custom_steamcmd_dir) = (s.use_steamcmd, s.steamcmd_dir.clone());
+        let custom_steamcmd_dir = s.steamcmd_dir.clone();
+        let use_steamcmd_set = s.use_steamcmd.is_some();
+        // Never set: SteamCMD installed means downloads go through it.
+        let use_steamcmd = s.use_steamcmd.unwrap_or_else(|| {
+            crate::steamcmd::is_installed(&custom_steamcmd_dir.clone().unwrap_or_else(crate::steamcmd::default_dir))
+        });
         let community_db = crate::community_rules::load_effective_db();
         let db_rules_count = community_db.rules.len();
 
@@ -625,11 +634,13 @@ impl App {
             bisect_note: None,
             check_updates: last_check_updates,
             use_steamcmd,
+            use_steamcmd_set,
             custom_steamcmd_dir,
             steamcmd_job: None,
             steamcmd_rx: None,
             steamcmd_kill: Arc::new(std::sync::Mutex::new(None)),
             steamcmd_window: false,
+            steamcmd_fresh_install: false,
             steamcmd_console: false,
             steamcmd_console_input: String::new(),
             ws_query: crate::workshop_browse::BrowseQuery {
@@ -1100,7 +1111,7 @@ impl App {
             launch_extra_args: self.launch_extra_args.clone(),
             opt_threads: Some(self.opt_threads),
             check_updates: self.check_updates,
-            use_steamcmd: self.use_steamcmd,
+            use_steamcmd: self.use_steamcmd_set.then_some(self.use_steamcmd),
             steamcmd_dir: self.custom_steamcmd_dir.clone(),
         }
     }
@@ -1469,6 +1480,7 @@ impl App {
             return;
         }
         let dir = self.steamcmd_dir();
+        self.steamcmd_fresh_install = !crate::steamcmd::is_installed(&dir);
         self.steamcmd_job = Some(crate::steamcmd::Job::new(&ids));
         self.steamcmd_window = true;
         self.steamcmd_console = false;
@@ -1553,6 +1565,18 @@ impl App {
 
     pub fn workshop_loading(&self) -> bool {
         self.ws_rx.is_some()
+    }
+
+    /// Opens the Workshop tab searching for a mod's name (version tags dropped). The tab
+    /// opens even when it's hidden in Settings.
+    pub fn open_workshop_search(&mut self, name: &str) {
+        self.ws_search = crate::name_search::clean_name(name);
+        self.ws_selected = None;
+        self.ws_loaded = true;
+        self.current_tab = AppTab::Workshop;
+        // A page still loading would be replaced by the search right after.
+        self.ws_rx = None;
+        self.search_workshop_tab();
     }
 
     /// A new search or sort: back to page 1.
@@ -1715,6 +1739,15 @@ impl App {
         };
         self.steamcmd_rx = None;
         self.status_message = status;
+        // Just installed: from now on every "Download" goes through SteamCMD (Settings can
+        // turn it off again).
+        if std::mem::take(&mut self.steamcmd_fresh_install)
+            && !self.use_steamcmd
+            && crate::steamcmd::is_installed(&self.steamcmd_dir())
+        {
+            self.use_steamcmd = true;
+            self.status_message = format!("{} | {}", self.status_message, t.get(TranslationKey::SteamCmdNowOn));
+        }
         if done > 0 {
             self.rescan_mods_keep_status();
         }

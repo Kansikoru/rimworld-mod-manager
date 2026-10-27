@@ -528,7 +528,12 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
                 let busy = app.steam_busy();
-                let label = fmt(t.get(TranslationKey::SetsBtnSubscribeMissing), &[&workshop.to_string()]);
+                let key = if app.steamcmd_active() {
+                    TranslationKey::SetsBtnDownloadMissing
+                } else {
+                    TranslationKey::SetsBtnSubscribeMissing
+                };
+                let label = fmt(t.get(key), &[&workshop.to_string()]);
                 let subscribe = ui
                     .add_enabled_ui(workshop > 0 && !busy, |ui| primary_button_icon(ui, ICON_STEAM, &label))
                     .inner;

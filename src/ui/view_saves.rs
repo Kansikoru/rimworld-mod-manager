@@ -342,10 +342,12 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
             actions.push(SaveAction::ToModlist(name.clone()));
         }
         if workshop_missing > 0 {
-            let label = fmt(
-                t.get(TranslationKey::SetsBtnSubscribeMissing),
-                &[&workshop_missing.to_string()],
-            );
+            let key = if app.steamcmd_active() {
+                TranslationKey::SetsBtnDownloadMissing
+            } else {
+                TranslationKey::SetsBtnSubscribeMissing
+            };
+            let label = fmt(t.get(key), &[&workshop_missing.to_string()]);
             let busy = app.steam_busy();
             if ui
                 .add_enabled_ui(!busy, |ui| primary_button_icon(ui, ICON_STEAM, &label))

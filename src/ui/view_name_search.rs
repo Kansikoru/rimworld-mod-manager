@@ -17,10 +17,12 @@ pub fn render_name_search_window(app: &mut App, ctx: &egui::Context) {
     }
     let t = app.i18n;
     let steam_busy = app.steam_busy();
+    let steamcmd = app.steamcmd_active();
     let mut open = !ctx.input(|i| i.key_pressed(egui::Key::Escape));
     let mut subscribe = false;
     let mut stop = false;
     let mut close = false;
+    let mut in_workshop: Option<String> = None;
     let (width, max_height) = dialog_size(ctx, WIDTH);
 
     egui::Window::new(t.get(TranslationKey::NameSearchTitle))
@@ -79,18 +81,35 @@ pub fn render_name_search_window(app: &mut App, ctx: &egui::Context) {
                 }
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
+                    // The name on the left (cut with "…"), on the right: search it on the
+                    // Workshop tab, or on Steam's site.
                     ui.horizontal(|ui| {
-                        if icon_button(ui, ICON_SEARCH, Vec2::splat(14.0), THEME.text_muted)
-                            .on_hover_text(t.get(TranslationKey::NameSearchBrowse))
-                            .clicked()
-                        {
-                            open_external(crate::name_search::browse_url(&row.wanted.name));
-                        }
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(&row.wanted.name).color(THEME.text_primary).strong())
+                        let find = t.get(TranslationKey::WsFindInTab);
+                        let buttons_w = styled_button_width(ui, true, find) + 14.0 + 16.0;
+                        ui.scope(|ui| {
+                            ui.set_max_width((ui.available_width() - buttons_w).max(80.0));
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&row.wanted.name).color(THEME.text_primary).strong(),
+                                )
                                 .truncate(),
-                        )
-                        .on_hover_text(&row.wanted.package_id);
+                            )
+                            .on_hover_text(&row.wanted.package_id);
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if icon_button(ui, ICON_STEAM, Vec2::splat(14.0), THEME.text_muted)
+                                .on_hover_text(t.get(TranslationKey::NameSearchBrowse))
+                                .clicked()
+                            {
+                                open_external(crate::name_search::browse_url(&row.wanted.name));
+                            }
+                            if secondary_button_icon(ui, ICON_SEARCH, find)
+                                .on_hover_text(t.get(TranslationKey::WsFindInTabHint))
+                                .clicked()
+                            {
+                                in_workshop = Some(row.wanted.name.clone());
+                            }
+                        });
                     });
                     match &row.matches {
                         None => {
@@ -156,7 +175,12 @@ pub fn render_name_search_window(app: &mut App, ctx: &egui::Context) {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
                 let n = search.checked.len();
-                let label = fmt(t.get(TranslationKey::NameSearchSubscribe), &[&n.to_string()]);
+                let key = if steamcmd {
+                    TranslationKey::NameSearchDownload
+                } else {
+                    TranslationKey::NameSearchSubscribe
+                };
+                let label = fmt(t.get(key), &[&n.to_string()]);
                 if ui
                     .add_enabled_ui(n > 0 && !steam_busy, |ui| primary_button_icon(ui, ICON_STEAM, &label))
                     .inner
@@ -186,5 +210,9 @@ pub fn render_name_search_window(app: &mut App, ctx: &egui::Context) {
     }
     if !open || close {
         app.close_name_search();
+    }
+    if let Some(name) = in_workshop {
+        app.close_name_search();
+        app.open_workshop_search(&name);
     }
 }

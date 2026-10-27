@@ -30,8 +30,9 @@ pub struct AppSettings {
     #[serde(default = "default_true")]
     pub check_updates: bool,
     /// Download Workshop mods with SteamCMD instead of subscribing in the Steam client.
+    /// None = never set: on when SteamCMD is installed.
     #[serde(default)]
-    pub use_steamcmd: bool,
+    pub use_steamcmd: Option<bool>,
     /// SteamCMD folder picked by hand (None = next to the settings).
     #[serde(default)]
     pub steamcmd_dir: Option<PathBuf>,
@@ -52,7 +53,7 @@ impl Default for AppSettings {
             launch_extra_args: String::new(),
             opt_threads: None,
             check_updates: true,
-            use_steamcmd: false,
+            use_steamcmd: None,
             steamcmd_dir: None,
         }
     }
@@ -97,9 +98,15 @@ mod tests {
         s.save_to(&path).unwrap();
         assert_eq!(AppSettings::load_from(&path), Some(s));
         assert!(AppSettings::load_from(&dir.join("missing.json")).is_none());
-        // Settings saved by an older version have no "check_updates": it is on.
+        // Settings saved by an older version have no "check_updates": it is on; SteamCMD
+        // was never chosen either way.
         std::fs::write(&path, r#"{"language":"English"}"#).unwrap();
-        assert!(AppSettings::load_from(&path).unwrap().check_updates);
+        let old = AppSettings::load_from(&path).unwrap();
+        assert!(old.check_updates);
+        assert_eq!(old.use_steamcmd, None);
+        // 2.1.0 wrote a plain true/false.
+        std::fs::write(&path, r#"{"language":"English","use_steamcmd":false}"#).unwrap();
+        assert_eq!(AppSettings::load_from(&path).unwrap().use_steamcmd, Some(false));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
