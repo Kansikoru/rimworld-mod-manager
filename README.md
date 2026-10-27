@@ -1,62 +1,60 @@
 # RimWorld Mod Manager
 
-Менеджер модов и порядка загрузки для RimWorld 1.6 (Unity) и 1.7 (Waylith). Написан на Rust, интерфейс на egui. Работает под Windows.
+**English** | [Русский](README.ru.md)
 
-*Mod and load order manager for RimWorld 1.6 and 1.7 (Windows): load order sorting with RimSort community rules, mod categories, dependency checks, modpacks, mods of a save, a step-by-step search for the broken mod, translation search on Steam Workshop, DDS texture optimizer, Player.log analyzer. The interface is available in Russian and English.*
+A mod and load order manager for RimWorld 1.6 (Unity) and 1.7 (Waylith). Written in Rust with an egui interface. Runs on Windows. The interface is available in English and Russian.
 
 ![Main window](docs/screenshot.png)
 
-Скриншот с русским интерфейсом: [docs/screenshot-ru.png](docs/screenshot-ru.png).
+## Download
 
-## Скачать
+The ready-to-run program is in the **[Releases](https://github.com/Kansikoru/rimworld-mod-manager/releases/latest)** section of this repository. Download `rimworld-mod-manager.exe` and run it — no installation needed.
 
-Готовая программа лежит в разделе **Releases** этого репозитория. Скачайте `rimworld-mod-manager.exe` и запустите — установка не нужна.
+## Features
 
-## Что умеет
+- **Mod list.** Enable and disable mods, move them (with the mouse too, one at a time or as a group), search, and filter by categories detected from each mod's content (races, factions, buildings, weapons, QoL and more). Warnings about dependencies, incompatibilities, copies of the same mod, and mods without support for the installed game version; a "No 1.7" filter.
+- **Mod updates.** The "Updates" button compares installed mods with the Steam Workshop and marks the ones with a newer version (including "updated for this game version"). Without Steam, file dates are compared and the result is marked as an estimate.
+- **Sorting.** Uses About.xml (dependencies, `loadAfter`/`loadBefore`, `*ByVersion` blocks) and the RimSort community rules database, which can be downloaded or imported from RimPy.
+- **Saving ModsConfig.xml** with a backup. Mods that aren't on disk are kept when saving. The "Load order history" window brings back the order from any of the last 30 saves.
+- **Modpacks.** Several mod lists to switch between: "Enable", "Enable and play", duplicate, rename. They are kept in the game's `ModLists` folder, so the game's own mod menu shows them too. Import an `.rml` or someone's `ModsConfig.xml`, export an `.rml`, copy a modpack as a list with Workshop links. Missing mods can be subscribed to with one button.
+- **Saves.** For every save you can see which mods it was made with: what is enabled, what is disabled, what isn't on disk. "Enable as in the save" sets exactly its mods and order; the list can be kept as a modpack.
+- **Translations.** Looks for translations of all active mods at once, in one of 13 popular languages: only translations whose title has the mod's name and the chosen language are shown; subscribe to the ticked ones with one button. You can also search for a single selected mod. Deleting the translations of the chosen language asks first and moves them to the Recycle Bin.
+- **Texture optimizer** (1.6 and 1.7). Converts PNG/JPG to DDS: BC7 for textures with transparency, BC1 for the rest, with mipmaps. On 1.7 textures are stored the way the game expects them; "Flip textures" fixes ones converted for the other version. Every created file is logged, so a rollback removes them all. The game's texture cache can be reset too.
+- **Log analyzer.** Reads Player.log in both formats (1.6 and 1.7), points at the mods to blame and prepares a question for an AI assistant.
+- **Find the broken mod.** When the log doesn't point at the culprit: the program turns off half of the mods, you start the game and say whether the problem is still there — down to one mod (or a pair of mods that only break together). Dependencies are turned on with the mods, any step can be undone, and everything comes back at the end.
+- **Game launch** with the right options for the installed version.
+- **New versions.** Once a day the program checks GitHub for a new release and shows a badge next to the version. It never downloads anything by itself; the check can be turned off in Settings.
+- **Your own layout.** Tabs you don't use (Modpacks, Saves, Translations, Optimizer) can be hidden in Settings; Log Analyzer and Settings can be shortened to an icon. The window shrinks down to 640×480: tabs and buttons turn into icons, and columns stack.
 
-- **Список модов.** Включение и выключение, перемещение (в том числе мышью, по одному или группой), поиск, категории по содержимому мода (расы, фракции, постройки, оружие, QoL и т.д.) с фильтром. Предупреждения о зависимостях, несовместимостях, копиях одного мода и модах без поддержки текущей версии игры; фильтр «Без 1.7».
-- **Обновления модов.** Кнопка «Обновления» сверяет установленные моды со Steam Workshop и отмечает те, у которых вышла версия новее (в том числе «обновлён для этой версии игры»). Без Steam — по датам файлов, с пометкой «оценка».
-- **Сортировка.** Учитывает About.xml (зависимости, `loadAfter`/`loadBefore`, блоки `*ByVersion`) и базу правил сообщества RimSort, которую можно скачать или импортировать из RimPy.
-- **Сохранение ModsConfig.xml** с бэкапом. Моды, которых нет на диске, при сохранении не теряются. В окне «История» можно вернуть порядок из любого из 30 последних сохранений.
-- **Сборки.** Несколько списков модов, между которыми можно переключаться: «Включить», «Включить и играть», копия, переименование. Хранятся в папке игры `ModLists`, поэтому видны и в меню модов самой игры. Импорт `.rml` и чужого `ModsConfig.xml`, экспорт `.rml`, копирование списком со ссылками Workshop. Для недостающих модов — подписка одной кнопкой.
-- **Сохранения.** Для каждого сейва видно, с какими модами он сделан: что включено, что выключено, чего нет на диске. «Включить как в сейве» ставит ровно его моды и порядок; список можно сохранить как сборку.
-- **Переводы.** Поиск переводов сразу для всех активных модов на одном из 13 популярных языков: показываются только переводы, в названии которых есть название мода и выбранный язык; подписка на отмеченные одной кнопкой. Можно искать и для одного выбранного мода. Удаление переводов выбранного языка — с подтверждением и в Корзину.
-- **Оптимизатор текстур** (1.6 и 1.7). PNG/JPG конвертируются в DDS: BC7 для текстур с прозрачностью, BC1 для остальных, с мипмапами. На 1.7 текстуры сохраняются в той ориентации, которую ждёт игра; «Перевернуть текстуры» исправляет конвертированные для другой версии. Все созданные файлы записываются в журнал, поэтому откат удаляет их полностью. Есть и сброс кэша текстур игры.
-- **Анализатор логов.** Разбирает Player.log обоих форматов (1.6 и 1.7), ищет моды-виновники и готовит текст запроса для ИИ.
-- **Поиск сломанного мода.** Когда лог не указывает на виновника: программа выключает половину модов, вы запускаете игру и отвечаете, осталась ли проблема, — и так до одного мода (или пары модов, которые ломаются только вместе). Зависимости включаются вместе с модами, любой шаг можно отменить, в конце всё возвращается.
-- **Запуск игры** с параметрами под нужную версию.
-- **Новые версии.** Раз в день программа проверяет релизы на GitHub и показывает плашку рядом с версией. Сама ничего не скачивает; проверку можно выключить в настройках.
-- **Интерфейс под себя.** Ненужные вкладки («Сборки», «Сохранения», «Переводы», «Оптимизация») можно скрыть в настройках, «Анализатор» и «Настройки» — сократить до значка. Окно сжимается до 640×480: вкладки и кнопки становятся значками, колонки встают друг под другом.
+Settings, cache and backups are kept in `%LOCALAPPDATA%\RimWorldModManager`.
 
-Настройки, кэш и бэкапы хранятся в `%LOCALAPPDATA%\RimWorldModManager`.
+## Building
 
-## Сборка
-
-Нужен [Rust](https://rustup.rs/) 1.87 или новее.
+Requires [Rust](https://rustup.rs/) 1.87 or newer.
 
 ```bash
 cargo build --release
 ```
 
-Готовая программа: `target/release/rimworld-mod-manager.exe`.
+The program: `target/release/rimworld-mod-manager.exe`.
 
-## Авторы
-
-- [Kansikoru](https://github.com/Kansikoru)
-- [Anry2323](https://github.com/Anry2323)
-
-## Лицензия
-
-MIT — см. [LICENSE](LICENSE).
-
-## Тесты
+## Tests
 
 ```bash
 cargo test
 ```
 
-Проверки на установленной игре, их нужно запускать вручную:
+Checks that use the installed game have to be run by hand:
 
 ```bash
 cargo test -- --ignored --nocapture
 ```
+
+## Authors
+
+- [Kansikoru](https://github.com/Kansikoru)
+- [Anry2323](https://github.com/Anry2323)
+
+## License
+
+MIT — see [LICENSE](LICENSE).
