@@ -8,6 +8,70 @@ use crate::game_install::{known_launch_flags, GameEngine};
 use crate::i18n::{fmt, Language, TranslationKey};
 use crate::ui_prefs::{UiFont, TEXT_SCALE_RANGE};
 
+/// Which tabs the top bar shows (U1): four can be hidden, the Log Analyzer can get a
+/// short label or an icon, Settings an icon. Mods and Settings always stay.
+fn render_tabs_card(app: &mut App, ui: &mut Ui) {
+    use crate::ui_prefs::TabLabel;
+    let t = app.i18n;
+    card_container(ui, |ui| {
+        ui.vertical(|ui| {
+            ui.label(
+                egui::RichText::new(format!("{}:", t.get(TranslationKey::SettingsTabsTitle)))
+                    .color(THEME.text_secondary)
+                    .strong(),
+            );
+            let before = app.ui_prefs.tabs;
+            let tabs = &mut app.ui_prefs.tabs;
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 16.0;
+                for (key, hidden) in [
+                    (TranslationKey::TabSets, &mut tabs.hide_sets),
+                    (TranslationKey::TabSaves, &mut tabs.hide_saves),
+                    (TranslationKey::TabTranslations, &mut tabs.hide_translations),
+                    (TranslationKey::TabOptimizer, &mut tabs.hide_optimizer),
+                ] {
+                    let mut shown = !*hidden;
+                    if ui.checkbox(&mut shown, t.get(key)).changed() {
+                        *hidden = !shown;
+                    }
+                }
+            });
+            ui.horizontal_wrapped(|ui| {
+                ui.label(t.get(TranslationKey::SettingsAnalyzerLabel));
+                ui.selectable_value(
+                    &mut tabs.analyzer_label,
+                    TabLabel::Full,
+                    t.get(TranslationKey::TabAnalyzer),
+                );
+                ui.selectable_value(
+                    &mut tabs.analyzer_label,
+                    TabLabel::Short,
+                    t.get(TranslationKey::TabAnalyzerShort),
+                );
+                ui.selectable_value(
+                    &mut tabs.analyzer_label,
+                    TabLabel::Icon,
+                    t.get(TranslationKey::SettingsTabIcon),
+                );
+            });
+            ui.checkbox(&mut tabs.settings_icon, t.get(TranslationKey::SettingsSettingsIcon));
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(t.get(TranslationKey::SettingsTabsHint))
+                        .color(THEME.text_muted)
+                        .size(12.0),
+                )
+                .wrap(),
+            );
+            if app.ui_prefs.tabs != before {
+                if let Err(e) = app.ui_prefs.save() {
+                    app.status_message = fmt(t.get(TranslationKey::SettingsTabsSaveError), &[&e.to_string()]);
+                }
+            }
+        });
+    });
+}
+
 pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
 
@@ -83,6 +147,8 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
         });
     });
 
+    ui.add_space(8.0);
+    render_tabs_card(app, ui);
     ui.add_space(8.0);
 
     // Update check (F2): a badge next to the version, never an automatic download.

@@ -1459,6 +1459,54 @@ impl App {
         ids
     }
 
+    // ----- Top bar tabs (U1) -----
+
+    /// Whether the tab is in the top bar. A hidden tab can still be opened by a button
+    /// that leads to it (e.g. leftover DDS files -> Optimizer).
+    pub fn tab_visible(&self, tab: AppTab) -> bool {
+        let p = &self.ui_prefs.tabs;
+        match tab {
+            AppTab::Sets => !p.hide_sets,
+            AppTab::Saves => !p.hide_saves,
+            AppTab::Translations => !p.hide_translations,
+            AppTab::Optimizer => !p.hide_optimizer,
+            AppTab::Mods | AppTab::Analyzer | AppTab::Settings => true,
+        }
+    }
+
+    /// The tabs of the top bar, as the user set them up in Settings.
+    pub fn top_bar_tabs(&self) -> Vec<(AppTab, crate::ui::components::TabFace)> {
+        use crate::ui::components::TabFace;
+        use crate::ui_prefs::TabLabel;
+        let t = self.i18n;
+        let p = self.ui_prefs.tabs;
+        let analyzer = match p.analyzer_label {
+            TabLabel::Full => TabFace::Text(t.get(TranslationKey::TabAnalyzer)),
+            TabLabel::Short => TabFace::Text(t.get(TranslationKey::TabAnalyzerShort)),
+            TabLabel::Icon => TabFace::Icon(ICON_SEARCH, t.get(TranslationKey::TabAnalyzer)),
+        };
+        let settings = if p.settings_icon {
+            TabFace::Icon(ICON_SETTINGS, t.get(TranslationKey::TabSettings))
+        } else {
+            TabFace::Text(t.get(TranslationKey::TabSettings))
+        };
+        [
+            (AppTab::Mods, TabFace::Text(t.get(TranslationKey::TabMods))),
+            (AppTab::Sets, TabFace::Text(t.get(TranslationKey::TabSets))),
+            (AppTab::Saves, TabFace::Text(t.get(TranslationKey::TabSaves))),
+            (
+                AppTab::Translations,
+                TabFace::Text(t.get(TranslationKey::TabTranslations)),
+            ),
+            (AppTab::Optimizer, TabFace::Text(t.get(TranslationKey::TabOptimizer))),
+            (AppTab::Analyzer, analyzer),
+            (AppTab::Settings, settings),
+        ]
+        .into_iter()
+        .filter(|(tab, _)| self.tab_visible(*tab))
+        .collect()
+    }
+
     // ----- Mod updates (F10) -----
 
     /// Asks the Workshop in the background which installed mods have a newer version.
@@ -2778,15 +2826,7 @@ impl eframe::App for App {
                 ui.set_height(40.0);
                 ui.spacing_mut().item_spacing.x = 8.0;
                 let t = self.i18n;
-                let tabs = [
-                    (AppTab::Mods, t.get(TranslationKey::TabMods)),
-                    (AppTab::Sets, t.get(TranslationKey::TabSets)),
-                    (AppTab::Saves, t.get(TranslationKey::TabSaves)),
-                    (AppTab::Translations, t.get(TranslationKey::TabTranslations)),
-                    (AppTab::Optimizer, t.get(TranslationKey::TabOptimizer)),
-                    (AppTab::Analyzer, t.get(TranslationKey::TabAnalyzer)),
-                    (AppTab::Settings, t.get(TranslationKey::TabSettings)),
-                ];
+                let tabs = self.top_bar_tabs();
                 let update_text = self
                     .update_available
                     .as_ref()
@@ -2811,7 +2851,11 @@ impl eframe::App for App {
                     .filter_map(|s| s.as_deref())
                     .map(|s| crate::ui::components::badge_width(ui, s) + 8.0)
                     .sum();
-                let tabs_w = |pad: f32| tabs.iter().map(|(_, l)| text_w(l, 13.0) + pad + 4.0).sum::<f32>();
+                let tabs_w = |pad: f32| {
+                    tabs.iter()
+                        .map(|(_, face)| crate::ui::components::tab_face_width(ui, face, pad) + 4.0)
+                        .sum::<f32>()
+                };
                 let play_w = crate::ui::components::styled_button_width(ui, true, t.get(TranslationKey::AppPlayBtn));
                 let fixed = 32.0 + 8.0 + 16.0 + play_w + 8.0 + tags_w;
                 let title_w = text_w(title, 14.0) + text_w(version, 12.0) + 16.0;
@@ -2862,10 +2906,9 @@ impl eframe::App for App {
 
                 ui.add_space(16.0);
                 ui.spacing_mut().item_spacing.x = 4.0;
-                for (tab_val, label) in tabs {
-                    if crate::ui::components::nav_tab_padded(ui, label, self.current_tab == tab_val, tab_pad).clicked()
-                    {
-                        self.current_tab = tab_val;
+                for (tab_val, face) in &tabs {
+                    if crate::ui::components::nav_tab_face(ui, face, self.current_tab == *tab_val, tab_pad).clicked() {
+                        self.current_tab = *tab_val;
                     }
                 }
 

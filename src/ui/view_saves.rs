@@ -80,7 +80,9 @@ pub fn render_saves_view(app: &mut App, ui: &mut Ui) {
             }
             SaveAction::ToModlist(name) => {
                 app.save_to_modlist(&name);
-                app.current_tab = AppTab::Sets;
+                if app.tab_visible(AppTab::Sets) {
+                    app.current_tab = AppTab::Sets;
+                }
             }
             SaveAction::SubscribeMissing(name) => app.subscribe_save_missing(&name),
             SaveAction::Refresh => app.refresh_saves(),

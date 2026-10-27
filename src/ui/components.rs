@@ -326,6 +326,64 @@ pub fn boxed_icon_button(ui: &mut Ui, icon: ImageSource<'static>) -> Response {
 
 /// Top-bar tab: text only, 40 px tall; the active one is lavender on the hover color with a
 /// 2 px lavender line at the bottom.
+/// What a top-bar tab shows: a word, or an icon (with the full name as a tooltip).
+#[derive(Clone)]
+pub enum TabFace {
+    Text(&'static str),
+    Icon(ImageSource<'static>, &'static str),
+}
+
+/// Width of a top-bar tab with `pad` total side padding.
+pub fn tab_face_width(ui: &Ui, face: &TabFace, pad: f32) -> f32 {
+    match face {
+        TabFace::Text(label) => {
+            ui.painter()
+                .layout_no_wrap(label.to_string(), egui::FontId::proportional(13.0), Color32::WHITE)
+                .size()
+                .x
+                + pad
+        }
+        TabFace::Icon(..) => 18.0 + pad,
+    }
+}
+
+/// A top-bar tab: text (`nav_tab_padded`) or an icon in the same box and colors.
+pub fn nav_tab_face(ui: &mut Ui, face: &TabFace, active: bool, pad: f32) -> Response {
+    match face {
+        TabFace::Text(label) => nav_tab_padded(ui, label, active, pad),
+        TabFace::Icon(icon, name) => {
+            let (rect, response) = ui.allocate_exact_size(Vec2::new(18.0 + pad, 40.0), Sense::click());
+            if ui.is_rect_visible(rect) {
+                let hovered = response.hovered();
+                if active || hovered {
+                    ui.painter()
+                        .rect_filled(rect, Rounding::same(6.0), THEME.bg_surface_hover);
+                }
+                let color = if active {
+                    THEME.accent_cyan
+                } else if hovered {
+                    THEME.text_primary
+                } else {
+                    THEME.text_secondary
+                };
+                let icon_rect = Rect::from_center_size(rect.center(), Vec2::splat(18.0));
+                svg_icon(icon.clone(), Vec2::splat(18.0), color).paint_at(ui, icon_rect);
+                if active {
+                    let half = pad / 2.0;
+                    let line = Rect::from_min_max(
+                        Pos2::new(rect.min.x + half, rect.max.y - 2.0),
+                        Pos2::new(rect.max.x - half, rect.max.y),
+                    );
+                    ui.painter().rect_filled(line, Rounding::same(1.0), THEME.accent_cyan);
+                }
+            }
+            response
+                .on_hover_text(*name)
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+        }
+    }
+}
+
 pub fn nav_tab(ui: &mut Ui, label: &str, active: bool) -> Response {
     nav_tab_padded(ui, label, active, 24.0)
 }
