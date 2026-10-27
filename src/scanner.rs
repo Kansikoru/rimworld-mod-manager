@@ -5,23 +5,56 @@ use rayon::prelude::*;
 use std::collections::HashSet;
 use std::path::Path;
 
-pub fn scan_mods(workshop_dir: Option<&Path>, local_dir: Option<&Path>, game_data_dir: Option<&Path>) -> Vec<ModInfo> {
-    let mut targets = Vec::new();
+/// A folder's identity for comparing paths: the resolved path if it exists, else the
+/// path itself; in lower case, since Windows paths ignore case.
+fn dir_key(dir: &Path) -> String {
+    std::fs::canonicalize(dir)
+        .unwrap_or_else(|_| dir.to_path_buf())
+        .to_string_lossy()
+        .trim_end_matches(['\\', '/'])
+        .to_lowercase()
+}
 
-    for (dir_opt, origin) in [
+/// The folders to read mods from, each once. The same folder can be set both as the
+/// Workshop folder and as the game's Mods folder (a game without Steam, where Workshop
+/// mods are copied into Mods): it is then read once, as the game's own Mods folder.
+fn source_dirs<'a>(
+    workshop_dir: Option<&'a Path>,
+    local_dir: Option<&'a Path>,
+    game_data_dir: Option<&'a Path>,
+) -> Vec<(&'a Path, ModOrigin)> {
+    let sources = [
         (workshop_dir, ModOrigin::Workshop),
         (local_dir, ModOrigin::Local),
         (game_data_dir, ModOrigin::Local),
-    ] {
-        if let Some(dir) = dir_opt {
-            if dir.is_dir() {
-                if let Ok(entries) = std::fs::read_dir(dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.is_dir() {
-                            targets.push((path, origin));
-                        }
-                    }
+    ];
+    let mut out: Vec<(&Path, ModOrigin, String)> = Vec::new();
+    for (dir, origin) in sources.into_iter().filter_map(|(d, o)| d.map(|d| (d, o))) {
+        let key = dir_key(dir);
+        match out.iter_mut().find(|(_, _, k)| *k == key) {
+            // Seen already: the game's Mods folder wins over "Workshop".
+            Some(existing) => {
+                if origin == ModOrigin::Local {
+                    existing.1 = ModOrigin::Local;
+                }
+            }
+            None => out.push((dir, origin, key)),
+        }
+    }
+    out.into_iter().map(|(d, o, _)| (d, o)).collect()
+}
+
+pub fn scan_mods(workshop_dir: Option<&Path>, local_dir: Option<&Path>, game_data_dir: Option<&Path>) -> Vec<ModInfo> {
+    let mut targets = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for (dir, origin) in source_dirs(workshop_dir, local_dir, game_data_dir) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                // A mod folder reached twice (a link to another folder) is read once.
+                if path.is_dir() && seen.insert(dir_key(&path)) {
+                    targets.push((path, origin));
                 }
             }
         }
@@ -505,6 +538,10 @@ pub fn dedupe_mods(mods: Vec<ModInfo>) -> (Vec<ModInfo>, Vec<DuplicateModEntry>)
                 unique.push(m);
             }
             Some(&pos) => {
+                // The same folder reached twice is not a second copy.
+                if dir_key(&m.dir_path) == dir_key(&unique[pos].dir_path) {
+                    continue;
+                }
                 let di = *dup_index.entry(key.clone()).or_insert_with(|| {
                     dups.push(DuplicateModEntry {
                         package_id: unique[pos].package_id.clone(),
@@ -605,6 +642,51 @@ mod tests {
             has_other_content: false,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn one_folder_set_as_workshop_and_mods_is_read_once() {
+        let dir = std::env::temp_dir().join(format!("rwmm_scan_same_{}", std::process::id()));
+        let data = dir.join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        let mods = dir.join("Mods");
+        std::fs::create_dir_all(&mods).unwrap();
+        // Same folder, written differently (case, trailing slash), as on a game without Steam.
+        let mods_other_spelling = std::path::PathBuf::from(format!("{}\\", mods.display().to_string().to_uppercase()));
+
+        let sources = source_dirs(Some(&mods_other_spelling), Some(&mods), Some(&data));
+        assert_eq!(sources.len(), 2, "Mods once, Data once");
+        assert_eq!(
+            sources[0].1,
+            ModOrigin::Local,
+            "the game's Mods folder wins over Workshop"
+        );
+        assert_eq!(sources[1].0, data.as_path());
+
+        // A real Steam setup keeps both folders.
+        let workshop = dir.join("workshop");
+        std::fs::create_dir_all(&workshop).unwrap();
+        let sources = source_dirs(Some(&workshop), Some(&mods), None);
+        assert_eq!(
+            sources.iter().map(|s| s.1).collect::<Vec<_>>(),
+            [ModOrigin::Workshop, ModOrigin::Local]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn same_folder_is_not_reported_as_a_copy() {
+        let dir = std::env::temp_dir().join(format!("rwmm_scan_dup_{}", std::process::id()));
+        let folder = dir.join("Mods").join("1195427067");
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.display().to_string();
+        let (unique, dups) = dedupe_mods(vec![
+            m("com.bymarcin.ArchitectIcons", ModOrigin::Workshop, &path),
+            m("com.bymarcin.ArchitectIcons", ModOrigin::Local, &path.to_uppercase()),
+        ]);
+        assert_eq!(unique.len(), 1);
+        assert!(dups.is_empty(), "one folder seen twice is not two copies");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     const ABOUT: &str = r#"<?xml version="1.0" encoding="utf-8"?>
