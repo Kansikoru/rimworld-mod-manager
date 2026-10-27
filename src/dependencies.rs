@@ -98,16 +98,30 @@ pub fn validate_dependencies(active_package_ids: &[String], all_mods: &[ModInfo]
 
     let installed_map: HashMap<String, &ModInfo> = all_mods.iter().map(|m| (m.package_id.to_lowercase(), m)).collect();
 
+    // RimWorld calls the Workshop copy of a mod that also exists as a local copy
+    // `<id>_steam`. For dependencies it is the same mod: `brrainz.harmony_steam` satisfies
+    // "needs brrainz.harmony", and its own dependencies are checked too.
+    let canonical = |id: &str| -> String {
+        let lower = id.to_lowercase();
+        if installed_map.contains_key(&lower) {
+            return lower;
+        }
+        match lower.strip_suffix("_steam") {
+            Some(base) if installed_map.contains_key(base) => base.to_string(),
+            _ => lower,
+        }
+    };
+
     let active_indices: HashMap<String, usize> = active_package_ids
         .iter()
         .enumerate()
-        .map(|(idx, id)| (id.to_lowercase(), idx))
+        .map(|(idx, id)| (canonical(id), idx))
         .collect();
 
     let mut seen_problems: HashSet<(String, String)> = HashSet::new();
 
     for (current_idx, active_id) in active_package_ids.iter().enumerate() {
-        let active_lower = active_id.to_lowercase();
+        let active_lower = canonical(active_id);
         let Some(mod_info) = installed_map.get(&active_lower) else {
             continue;
         };
@@ -290,5 +304,55 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         assert_eq!(validate_dependencies(&without_prepatcher, &mods).disabled_count(), 1);
+    }
+
+    fn ids(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn dlc_that_isnt_installed_is_missing_not_disabled() {
+        // Biotech is not owned: it isn't among the scanned mods at all.
+        let mods = vec![
+            m("ludeon.rimworld", &[]),
+            m("someone.genes", &["ludeon.rimworld.biotech"]),
+        ];
+        let report = validate_dependencies(&ids(&["ludeon.rimworld", "someone.genes"]), &mods);
+        assert_eq!(report.missing_count(), 1, "reported as not found");
+        assert_eq!(
+            report.disabled_count(),
+            0,
+            "so the auto-fix never adds a DLC the player doesn't have"
+        );
+
+        // Owned but turned off: that one is "disabled" and the auto-fix may turn it on.
+        let owned = vec![
+            m("ludeon.rimworld", &[]),
+            m("ludeon.rimworld.biotech", &[]),
+            m("someone.genes", &["ludeon.rimworld.biotech"]),
+        ];
+        let report = validate_dependencies(&ids(&["ludeon.rimworld", "someone.genes"]), &owned);
+        assert_eq!((report.missing_count(), report.disabled_count()), (0, 1));
+    }
+
+    #[test]
+    fn workshop_copy_with_steam_suffix_counts_as_the_mod() {
+        let mods = vec![
+            m("brrainz.harmony", &[]),
+            m("someone.mod", &["brrainz.harmony"]),
+            m("other.mod", &["needed.lib"]),
+        ];
+        // Harmony is enabled as its Workshop copy: the dependency is met, not "disabled".
+        let report = validate_dependencies(&ids(&["brrainz.harmony_steam", "someone.mod"]), &mods);
+        assert!(report.is_empty(), "{:?}", report.problems);
+
+        // A mod enabled as `_steam` has its own dependencies checked.
+        let report = validate_dependencies(&ids(&["Other.Mod_steam"]), &mods);
+        assert_eq!(report.missing_count(), 1);
+        assert_eq!(report.problems[0].dependent_id(), "other.mod");
+
+        // Order still matters with the suffix.
+        let report = validate_dependencies(&ids(&["someone.mod", "brrainz.harmony_steam"]), &mods);
+        assert_eq!(report.order_count(), 1);
     }
 }

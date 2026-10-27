@@ -1158,8 +1158,12 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                             .is_some_and(|s| s.eq_ignore_ascii_case(pkg_id));
                     let is_protected = is_protected_package_id(pkg_id);
 
+                    // The installed mod's ID in lower case: an `<id>_steam` entry finds its
+                    // warning, and its preview is loaded once for every list (R11, R12).
+                    let mod_key = mod_info_opt.map_or_else(|| pkg_id.to_lowercase(), |m| m.package_id.to_lowercase());
+
                     // Dependency warning for this mod
-                    let dep_problem = dep_by_mod.get(&pkg_id.to_lowercase());
+                    let dep_problem = dep_by_mod.get(&mod_key);
                     let incompatible = matches!(dep_problem, Some(DependencyProblem::Incompatible { .. }));
 
                     let row = mod_row_frame(is_selected).show(ui, |ui| {
@@ -1182,10 +1186,10 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                 );
 
                                 // Mod Icon badge
-                                let tex_opt = app.mod_textures.get(pkg_id);
+                                let tex_opt = app.mod_textures.get(&mod_key);
                                 if tex_opt.is_none() {
                                     missing_icons
-                                        .push((pkg_id.clone(), mod_info_opt.and_then(|m| m.preview_path.clone())));
+                                        .push((mod_key.clone(), mod_info_opt.and_then(|m| m.preview_path.clone())));
                                 }
                                 let texture = tex_opt.and_then(|t| t.as_ref());
                                 render_mod_icon_pill(
@@ -1662,9 +1666,10 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                                     let ui = &mut left_ui;
                                     ui.spacing_mut().item_spacing.x = 8.0;
                                     // Mod Icon badge
-                                    let tex_opt = app.mod_textures.get(&m.package_id);
+                                    let tex_key = m.package_id.to_lowercase();
+                                    let tex_opt = app.mod_textures.get(&tex_key);
                                     if tex_opt.is_none() {
-                                        missing_icons.push((m.package_id.clone(), m.preview_path.clone()));
+                                        missing_icons.push((tex_key, m.preview_path.clone()));
                                     }
                                     let texture = tex_opt.and_then(|t| t.as_ref());
                                     render_mod_icon_pill(ui, m.categories.first().copied(), false, texture);
@@ -1943,15 +1948,15 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
 
             ui.horizontal(|ui| {
                 // Large Preview Image
-                let tex_opt = app.mod_textures.get(&m.package_id);
-                if tex_opt.is_none() {
+                let tex_key = m.package_id.to_lowercase();
+                if !app.mod_textures.contains_key(&tex_key) {
                     if let Some(ref path) = m.preview_path {
-                        let _ = app.icon_tx.send((m.package_id.clone(), path.clone()));
-                        app.mod_textures.insert(m.package_id.clone(), None);
+                        let _ = app.icon_tx.send((tex_key.clone(), path.clone()));
+                        app.mod_textures.insert(tex_key.clone(), None);
                     }
                 }
 
-                if let Some(Some(tex)) = app.mod_textures.get(&m.package_id) {
+                if let Some(Some(tex)) = app.mod_textures.get(&tex_key) {
                     // Show actual image
                     ui.add(egui::Image::new(tex).fit_to_exact_size(egui::vec2(64.0, 64.0)));
                 } else {
