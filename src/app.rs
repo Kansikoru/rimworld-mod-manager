@@ -30,6 +30,7 @@ use crate::workshop_search::{search_steam_workshop, WorkshopItemResult};
 fn tab_icon(tab: AppTab) -> egui::ImageSource<'static> {
     match tab {
         AppTab::Mods => ICON_MODS,
+        AppTab::Workshop => ICON_STEAM,
         AppTab::Sets => ICON_COPY,
         AppTab::Saves => ICON_SAVE,
         AppTab::Translations => ICON_TRANSLATIONS,
@@ -136,6 +137,20 @@ pub enum BatchSearchMsg {
     },
 }
 
+/// A Workshop preview image: being downloaded, shown, or not available.
+pub enum PreviewSlot {
+    Loading,
+    Ready(egui::TextureHandle),
+    Failed,
+}
+
+/// Messages from the "find by name" search (D1).
+pub enum NameSearchMsg {
+    Found(usize, Vec<crate::name_search::NameMatch>),
+    Failed(usize),
+    Done,
+}
+
 /// Mods being dragged with the mouse (F1).
 #[derive(Debug, Clone)]
 pub struct ModDrag {
@@ -158,6 +173,7 @@ pub enum DropTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppTab {
     Mods,
+    Workshop,
     Sets,
     Saves,
     Translations,
@@ -211,6 +227,9 @@ pub struct App {
     batch_search_after_scan: bool,
     /// RWMM_TAB=bisect: open the broken-mod search once the mods are scanned (screenshots).
     bisect_after_scan: bool,
+    /// RWMM_TAB=saves-findname: "find by name" for the selected save once the mods and the
+    /// saves are read (screenshots).
+    name_search_after_load: bool,
     /// RWMM_TAB=mods-updates: check the Workshop for updates once the mods are scanned (screenshots).
     updates_after_scan: bool,
 
@@ -304,6 +323,10 @@ pub struct App {
     pub workshop_index: Option<std::sync::Arc<crate::workshop_db::WorkshopIndex>>,
     /// (downloaded now, result): loading the saved index at start, or a download.
     workshop_index_rx: Option<Receiver<(bool, Result<crate::workshop_db::WorkshopIndex, String>)>>,
+    /// D1: the "find by name" window for missing mods with no Workshop link.
+    pub name_search: Option<crate::name_search::NameSearch>,
+    name_search_rx: Option<Receiver<NameSearchMsg>>,
+    name_search_stop: Arc<AtomicBool>,
 
     /// Show only mods with a newer Workshop version.
     pub filter_updates: bool,
@@ -327,6 +350,31 @@ pub struct App {
     pub history: Option<Vec<crate::mods_config::ConfigBackup>>,
     /// Look for a new version on GitHub once a day (Settings).
     pub check_updates: bool,
+    /// SteamCMD: download mods with it instead of the Steam client (Settings).
+    pub use_steamcmd: bool,
+    pub custom_steamcmd_dir: Option<PathBuf>,
+    /// The last SteamCMD job (install or download) for its window; `steamcmd_rx` while it runs.
+    pub steamcmd_job: Option<crate::steamcmd::Job>,
+    steamcmd_rx: Option<Receiver<crate::steamcmd::Msg>>,
+    steamcmd_kill: crate::steamcmd::KillSwitch,
+    pub steamcmd_window: bool,
+    /// The SteamCMD window shows the console (own commands) instead of the last download.
+    pub steamcmd_console: bool,
+    pub steamcmd_console_input: String,
+
+    // Workshop tab: the page shown, its items, previews by URL.
+    pub ws_query: crate::workshop_browse::BrowseQuery,
+    pub ws_search: String,
+    pub ws_items: Vec<crate::workshop_browse::WorkshopItem>,
+    pub ws_selected: Option<String>,
+    pub ws_error: Option<String>,
+    ws_rx: Option<Receiver<Result<Vec<crate::workshop_browse::WorkshopItem>, String>>>,
+    ws_loaded: bool,
+    /// Items sent to Steam or SteamCMD from the tab this session.
+    pub ws_requested: std::collections::HashSet<String>,
+    ws_previews: std::collections::HashMap<String, PreviewSlot>,
+    ws_preview_tx: Option<std::sync::mpsc::Sender<(String, String, u32)>>,
+    ws_preview_rx: Option<Receiver<(String, Option<egui::ColorImage>)>>,
     /// A newer release than this build: shown as a badge next to the version.
     pub update_available: Option<crate::update_check::LatestRelease>,
     pub update_rx: Option<Receiver<Option<crate::update_check::LatestRelease>>>,
@@ -411,6 +459,7 @@ impl App {
             ["-logfile".to_string()].into_iter().collect()
         };
         let last_check_updates = s.check_updates;
+        let (use_steamcmd, custom_steamcmd_dir) = (s.use_steamcmd, s.steamcmd_dir.clone());
         let community_db = crate::community_rules::load_effective_db();
         let db_rules_count = community_db.rules.len();
 
@@ -453,7 +502,8 @@ impl App {
         let start_view = std::env::var("RWMM_TAB").unwrap_or_default().to_lowercase();
         let start_tab = match start_view.as_str() {
             "sets" => AppTab::Sets,
-            "saves" => AppTab::Saves,
+            "saves" | "saves-findname" => AppTab::Saves,
+            "workshop" => AppTab::Workshop,
             "translations" | "translations-batch" => AppTab::Translations,
             "bisect" => AppTab::Analyzer,
             "optimizer" => AppTab::Optimizer,
@@ -498,6 +548,7 @@ impl App {
             show_batch_results: false,
             batch_search_after_scan: false,
             bisect_after_scan: false,
+            name_search_after_load: false,
             updates_after_scan: false,
 
             opt_scope: OptimizeScope::AllInstalled,
@@ -559,6 +610,9 @@ impl App {
             mod_updates_rx: None,
             workshop_index: None,
             workshop_index_rx: None,
+            name_search: None,
+            name_search_rx: None,
+            name_search_stop: Arc::new(AtomicBool::new(false)),
             filter_updates: false,
             filter_no_version: false,
             mods_show_active: true,
@@ -570,6 +624,28 @@ impl App {
             bisect_filter: String::new(),
             bisect_note: None,
             check_updates: last_check_updates,
+            use_steamcmd,
+            custom_steamcmd_dir,
+            steamcmd_job: None,
+            steamcmd_rx: None,
+            steamcmd_kill: Arc::new(std::sync::Mutex::new(None)),
+            steamcmd_window: false,
+            steamcmd_console: false,
+            steamcmd_console_input: String::new(),
+            ws_query: crate::workshop_browse::BrowseQuery {
+                page: 1,
+                ..Default::default()
+            },
+            ws_search: String::new(),
+            ws_items: Vec::new(),
+            ws_selected: None,
+            ws_error: None,
+            ws_rx: None,
+            ws_loaded: false,
+            ws_requested: std::collections::HashSet::new(),
+            ws_previews: std::collections::HashMap::new(),
+            ws_preview_tx: None,
+            ws_preview_rx: None,
             update_available: None,
             update_rx: None,
             duplicate_mods: Vec::new(),
@@ -603,6 +679,7 @@ impl App {
         }
         app.batch_search_after_scan = start_view == "translations-batch";
         app.bisect_after_scan = start_view == "bisect";
+        app.name_search_after_load = start_view == "saves-findname";
         app.updates_after_scan = start_view == "mods-updates";
         // The Workshop ID index downloaded earlier (a few MB): read in the background.
         app.workshop_index_rx = Some(app.spawn_task(|| (false, crate::workshop_db::load().ok_or_else(String::new))));
@@ -692,6 +769,7 @@ impl App {
                         self.selected_save = None;
                     }
                 }
+                self.name_search_when_ready();
             }
         }
         if let Some(rx) = &self.rescan_rx {
@@ -753,6 +831,9 @@ impl App {
             }
         }
         self.poll_batch_search();
+        self.poll_name_search();
+        self.poll_steamcmd();
+        self.poll_workshop();
         if let Some(rx) = &self.update_rx {
             if let Ok(res) = rx.try_recv() {
                 self.update_rx = None;
@@ -1019,6 +1100,8 @@ impl App {
             launch_extra_args: self.launch_extra_args.clone(),
             opt_threads: Some(self.opt_threads),
             check_updates: self.check_updates,
+            use_steamcmd: self.use_steamcmd,
+            steamcmd_dir: self.custom_steamcmd_dir.clone(),
         }
     }
 
@@ -1157,6 +1240,7 @@ impl App {
         if std::mem::take(&mut self.updates_after_scan) {
             self.check_mod_updates();
         }
+        self.name_search_when_ready();
         if self.rescan_keep_status {
             self.rescan_keep_status = false;
         } else {
@@ -1316,7 +1400,11 @@ impl App {
 
     /// Subscribes to Workshop items in one Steam session in the background.
     fn subscribe_workshop_ids(&mut self, ids: Vec<String>) {
-        if self.steam_rx.is_some() || ids.is_empty() {
+        if self.steam_busy() || ids.is_empty() {
+            return;
+        }
+        if self.steamcmd_active() {
+            self.start_steamcmd_job(ids);
             return;
         }
         let t = self.i18n;
@@ -1332,6 +1420,304 @@ impl App {
                 Err(e) => fmt(t.get(TranslationKey::SetsSubscribeError), &[&e]),
             }
         }));
+    }
+
+    // ----- SteamCMD -----
+
+    /// The SteamCMD folder: picked in Settings, else next to the settings.
+    pub fn steamcmd_dir(&self) -> PathBuf {
+        self.custom_steamcmd_dir
+            .clone()
+            .unwrap_or_else(crate::steamcmd::default_dir)
+    }
+
+    /// Mods are downloaded with SteamCMD: turned on in Settings, or there is no Steam client.
+    pub fn steamcmd_active(&self) -> bool {
+        self.use_steamcmd || self.steam_paths.steam_path.is_none()
+    }
+
+    pub fn steamcmd_busy(&self) -> bool {
+        self.steamcmd_rx.is_some()
+    }
+
+    /// The game's Mods folder, where links to downloaded mods go.
+    fn game_mods_dir(&self) -> Option<PathBuf> {
+        self.steam_paths
+            .local_mods_path
+            .clone()
+            .or_else(|| self.steam_paths.game_path.as_ref().map(|g| g.join("Mods")))
+    }
+
+    /// Installs or updates SteamCMD (nothing to download).
+    pub fn install_steamcmd(&mut self) {
+        self.start_steamcmd_job(Vec::new());
+    }
+
+    /// Downloads Workshop items with SteamCMD in the background (installing it first if
+    /// needed) and opens its window; the mods get links in the game's Mods folder.
+    pub fn start_steamcmd_job(&mut self, mut ids: Vec<String>) {
+        if self.steamcmd_busy() {
+            self.steamcmd_window = true;
+            return;
+        }
+        ids.sort();
+        ids.dedup();
+        let t = self.i18n;
+        let mods_dir = self.game_mods_dir();
+        if !ids.is_empty() && mods_dir.is_none() {
+            self.status_message = t.get(TranslationKey::SteamCmdNoMods).to_string();
+            return;
+        }
+        let dir = self.steamcmd_dir();
+        self.steamcmd_job = Some(crate::steamcmd::Job::new(&ids));
+        self.steamcmd_window = true;
+        self.steamcmd_console = false;
+        self.status_message = if ids.is_empty() {
+            t.get(TranslationKey::SteamCmdInstalling).to_string()
+        } else {
+            fmt(t.get(TranslationKey::SteamCmdDownloading), &[&ids.len().to_string()])
+        };
+        let (tx, rx) = channel();
+        self.steamcmd_rx = Some(rx);
+        let kill = self.steamcmd_kill.clone();
+        let ctx = self.repaint_ctx.clone();
+        std::thread::spawn(move || {
+            let repaint = || {
+                if let Some(ctx) = &ctx {
+                    ctx.request_repaint();
+                }
+            };
+            crate::steamcmd::run_job(&dir, &ids, mods_dir.as_deref(), &kill, &tx, &repaint);
+        });
+    }
+
+    pub fn stop_steamcmd(&mut self) {
+        crate::steamcmd::stop(&self.steamcmd_kill);
+    }
+
+    /// Opens the SteamCMD window on its console.
+    pub fn open_steamcmd_console(&mut self) {
+        self.steamcmd_console = true;
+        self.steamcmd_window = true;
+    }
+
+    /// Runs the console's commands (after an anonymous login) in the background.
+    pub fn run_steamcmd_console(&mut self) {
+        if self.steamcmd_busy() || self.steamcmd_console_input.trim().is_empty() {
+            return;
+        }
+        let (args, dropped_login) = crate::steamcmd::console_args(&self.steamcmd_console_input);
+        let mut job = crate::steamcmd::Job::new(&[]);
+        if dropped_login {
+            job.apply(crate::steamcmd::Msg::Line(
+                self.i18n.get(TranslationKey::SteamCmdConsoleLogin).to_string(),
+            ));
+        }
+        self.steamcmd_job = Some(job);
+        self.steamcmd_console = true;
+        self.steamcmd_window = true;
+        let dir = self.steamcmd_dir();
+        let (tx, rx) = channel();
+        self.steamcmd_rx = Some(rx);
+        let kill = self.steamcmd_kill.clone();
+        let ctx = self.repaint_ctx.clone();
+        std::thread::spawn(move || {
+            let repaint = || {
+                if let Some(ctx) = &ctx {
+                    ctx.request_repaint();
+                }
+            };
+            crate::steamcmd::run_console(&dir, &args, &kill, &tx, &repaint);
+        });
+    }
+
+    // ----- Workshop tab -----
+
+    /// Loads the first page the first time the tab is shown.
+    pub fn ensure_workshop_loaded(&mut self) {
+        if !self.ws_loaded {
+            self.ws_loaded = true;
+            self.browse_workshop();
+        }
+    }
+
+    /// Loads `ws_query`'s page in the background.
+    pub fn browse_workshop(&mut self) {
+        if self.ws_rx.is_some() {
+            return;
+        }
+        self.ws_error = None;
+        let query = self.ws_query.clone();
+        self.ws_rx = Some(self.spawn_task(move || crate::workshop_browse::fetch_page(&query)));
+    }
+
+    pub fn workshop_loading(&self) -> bool {
+        self.ws_rx.is_some()
+    }
+
+    /// A new search or sort: back to page 1.
+    pub fn search_workshop_tab(&mut self) {
+        self.ws_query.text = self.ws_search.trim().to_string();
+        self.ws_query.page = 1;
+        self.browse_workshop();
+    }
+
+    pub fn workshop_page(&mut self, page: u32) {
+        if self.ws_rx.is_some() {
+            return;
+        }
+        self.ws_query.page = page.max(1);
+        self.browse_workshop();
+    }
+
+    fn poll_workshop(&mut self) {
+        if let Some(rx) = &self.ws_rx {
+            if let Ok(result) = rx.try_recv() {
+                self.ws_rx = None;
+                match result {
+                    Ok(items) => {
+                        if !self
+                            .ws_selected
+                            .as_ref()
+                            .is_some_and(|s| items.iter().any(|i| &i.id == s))
+                        {
+                            self.ws_selected = None;
+                        }
+                        self.ws_items = items;
+                    }
+                    Err(e) => self.ws_error = Some(e),
+                }
+            }
+        }
+        if let Some(rx) = &self.ws_preview_rx {
+            let ctx = self.repaint_ctx.clone();
+            while let Ok((key, image)) = rx.try_recv() {
+                let slot = match (image, &ctx) {
+                    (Some(image), Some(ctx)) => {
+                        PreviewSlot::Ready(ctx.load_texture(&key, image, egui::TextureOptions::LINEAR))
+                    }
+                    _ => PreviewSlot::Failed,
+                };
+                self.ws_previews.insert(key, slot);
+            }
+        }
+    }
+
+    /// A Workshop preview at `width` px: the texture once it's downloaded (four at a time,
+    /// in the background); None while loading or when there's none.
+    pub fn workshop_preview(&mut self, url: &str, width: u32) -> Option<egui::TextureHandle> {
+        let key = format!("{width}:{url}");
+        if let Some(slot) = self.ws_previews.get(&key) {
+            return match slot {
+                PreviewSlot::Ready(t) => Some(t.clone()),
+                _ => None,
+            };
+        }
+        // Many pages browsed: the oldest textures go (they load again if needed).
+        if self.ws_previews.len() > 400 {
+            self.ws_previews.retain(|_, s| matches!(s, PreviewSlot::Loading));
+        }
+        if self.ws_preview_tx.is_none() {
+            self.start_preview_workers();
+        }
+        if let Some(tx) = &self.ws_preview_tx {
+            let _ = tx.send((key.clone(), url.to_string(), width));
+            self.ws_previews.insert(key, PreviewSlot::Loading);
+        }
+        None
+    }
+
+    fn start_preview_workers(&mut self) {
+        let (req_tx, req_rx) = channel::<(String, String, u32)>();
+        let (res_tx, res_rx) = channel();
+        let req_rx = Arc::new(std::sync::Mutex::new(req_rx));
+        for _ in 0..4 {
+            let (req_rx, res_tx, ctx) = (req_rx.clone(), res_tx.clone(), self.repaint_ctx.clone());
+            std::thread::spawn(move || loop {
+                let next = req_rx.lock().ok().and_then(|rx| rx.recv().ok());
+                let Some((key, url, width)) = next else { break };
+                let image =
+                    crate::workshop_browse::load_preview(&crate::workshop_browse::sized_preview(&url, width), width)
+                        .map(|rgba| {
+                            egui::ColorImage::from_rgba_unmultiplied(
+                                [rgba.width() as usize, rgba.height() as usize],
+                                rgba.as_raw(),
+                            )
+                        });
+                if res_tx.send((key, image)).is_err() {
+                    break;
+                }
+                if let Some(ctx) = &ctx {
+                    ctx.request_repaint();
+                }
+            });
+        }
+        self.ws_preview_tx = Some(req_tx);
+        self.ws_preview_rx = Some(res_rx);
+    }
+
+    /// Workshop IDs on disk: Workshop mods, and folders named by a Workshop ID in the game's
+    /// Mods folder (SteamCMD links, copies on a game without Steam).
+    pub fn installed_workshop_ids(&self) -> std::collections::HashSet<String> {
+        self.all_mods
+            .iter()
+            .filter_map(|m| {
+                m.steam_item_id.clone().or_else(|| {
+                    m.dir_path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .filter(|n| crate::modlists::is_workshop_id(n))
+                        .map(str::to_string)
+                })
+            })
+            .collect()
+    }
+
+    /// "Download" on the Workshop tab: Steam subscription or SteamCMD, as set up.
+    pub fn download_workshop_item(&mut self, id: &str) {
+        if self.steam_busy() {
+            return;
+        }
+        self.ws_requested.insert(id.to_string());
+        self.subscribe_steam_mod(id);
+    }
+
+    fn poll_steamcmd(&mut self) {
+        let Some(rx) = &self.steamcmd_rx else { return };
+        let Some(job) = self.steamcmd_job.as_mut() else { return };
+        let mut finished = false;
+        loop {
+            match rx.try_recv() {
+                Ok(msg) => {
+                    job.apply(msg);
+                    finished |= job.phase.is_finished();
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    finished = true;
+                    break;
+                }
+            }
+        }
+        if !finished {
+            return;
+        }
+        let t = self.i18n;
+        let (done, failed) = (job.finished_items(), job.failed_items());
+        let status = match &job.phase {
+            crate::steamcmd::Phase::Failed(e) => fmt(t.get(TranslationKey::SteamCmdFailed), &[e]),
+            crate::steamcmd::Phase::Stopped => t.get(TranslationKey::SteamCmdStopped).to_string(),
+            _ if job.items.is_empty() => t.get(TranslationKey::SteamCmdReady).to_string(),
+            _ => fmt(
+                t.get(TranslationKey::SteamCmdDone),
+                &[&done.to_string(), &failed.to_string()],
+            ),
+        };
+        self.steamcmd_rx = None;
+        self.status_message = status;
+        if done > 0 {
+            self.rescan_mods_keep_status();
+        }
     }
 
     /// F5: adds a shared `.rml` or `ModsConfig.xml` as a new set (a free name is picked)
@@ -1552,6 +1938,159 @@ impl App {
         ids
     }
 
+    // ----- Find missing mods by name (D1) -----
+
+    /// A missing mod with no Workshop link, to look for by name. Core and DLC are left out.
+    fn wanted(&self, package_id: &str, known: Option<&str>, name: Option<&str>) -> Option<crate::name_search::Wanted> {
+        let lower = package_id.to_lowercase();
+        if self.find_mod(package_id).is_some()
+            || lower == "ludeon.rimworld"
+            || lower.starts_with("ludeon.rimworld.")
+            || self.workshop_id_for(package_id, known, name).is_some()
+        {
+            return None;
+        }
+        let db = self
+            .workshop_index
+            .as_ref()
+            .and_then(|i| i.by_package.get(&lower))
+            .map(|items| items.iter().map(|(id, _)| id.clone()).collect())
+            .unwrap_or_default();
+        Some(crate::name_search::Wanted {
+            package_id: package_id.to_string(),
+            name: name.filter(|n| !n.trim().is_empty()).unwrap_or(package_id).to_string(),
+            known: db,
+        })
+    }
+
+    /// The set's missing mods that have no Workshop link (`only`: just this one).
+    pub fn modlist_wanted(
+        &self,
+        list: &crate::modlists::ModList,
+        only: Option<&str>,
+    ) -> Vec<crate::name_search::Wanted> {
+        list.ids
+            .iter()
+            .enumerate()
+            .filter(|(_, id)| only.is_none_or(|o| o.eq_ignore_ascii_case(id)))
+            .filter_map(|(i, id)| self.wanted(id, list.steam_id(id), list.names.get(i).map(String::as_str)))
+            .collect()
+    }
+
+    /// The save's missing mods that have no Workshop link (`only`: just this one).
+    pub fn save_wanted(&self, save: &crate::saves::SaveInfo, only: Option<&str>) -> Vec<crate::name_search::Wanted> {
+        save.ids
+            .iter()
+            .filter(|id| only.is_none_or(|o| o.eq_ignore_ascii_case(id)))
+            .filter_map(|id| self.wanted(id, save.steam_id(id), save.name_of(id)))
+            .collect()
+    }
+
+    /// Opens the "find by name" window and searches the Workshop for each mod in the
+    /// background (3 requests at a time, like the modpack translation search).
+    pub fn start_name_search(&mut self, source: String, wanted: Vec<crate::name_search::Wanted>) {
+        if wanted.is_empty() {
+            return;
+        }
+        self.name_search_stop.store(true, Ordering::Relaxed);
+        let stop = Arc::new(AtomicBool::new(false));
+        self.name_search_stop = stop.clone();
+        let installed: std::collections::HashSet<String> =
+            self.all_mods.iter().filter_map(|m| m.steam_item_id.clone()).collect();
+        self.name_search = Some(crate::name_search::NameSearch::new(source, wanted.clone()));
+        let (tx, rx) = channel();
+        self.name_search_rx = Some(rx);
+        let ctx = self.repaint_ctx.clone();
+        std::thread::spawn(move || {
+            use std::sync::atomic::AtomicUsize;
+            let next = AtomicUsize::new(0);
+            std::thread::scope(|s| {
+                for _ in 0..3 {
+                    s.spawn(|| loop {
+                        if stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(w) = wanted.get(i) else { break };
+                        let query = crate::name_search::clean_name(&w.name);
+                        let msg = match search_steam_workshop(&query) {
+                            Ok(raw) => NameSearchMsg::Found(i, crate::name_search::matches_for(raw, w, &installed)),
+                            Err(_) => NameSearchMsg::Failed(i),
+                        };
+                        let _ = tx.send(msg);
+                        if let Some(ctx) = &ctx {
+                            ctx.request_repaint();
+                        }
+                    });
+                }
+            });
+            let _ = tx.send(NameSearchMsg::Done);
+            if let Some(ctx) = &ctx {
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    /// RWMM_TAB=saves-findname: starts the search once both the mods and the saves are read.
+    fn name_search_when_ready(&mut self) {
+        if !self.name_search_after_load || self.all_mods.is_empty() || self.saves.is_empty() {
+            return;
+        }
+        self.name_search_after_load = false;
+        let name = self
+            .selected_save
+            .clone()
+            .or_else(|| self.saves.first().map(|s| s.name.clone()));
+        let Some(save) = name.and_then(|n| self.saves.iter().find(|s| s.name == n)) else {
+            return;
+        };
+        let (source, wanted) = (save.name.clone(), self.save_wanted(save, None));
+        self.start_name_search(source, wanted);
+    }
+
+    pub fn stop_name_search(&mut self) {
+        self.name_search_stop.store(true, Ordering::Relaxed);
+    }
+
+    pub fn close_name_search(&mut self) {
+        self.stop_name_search();
+        self.name_search = None;
+        self.name_search_rx = None;
+    }
+
+    fn poll_name_search(&mut self) {
+        let Some(rx) = &self.name_search_rx else { return };
+        let mut done = false;
+        while let Ok(msg) = rx.try_recv() {
+            let Some(search) = self.name_search.as_mut() else { break };
+            match msg {
+                NameSearchMsg::Found(i, matches) => search.set_matches(i, matches),
+                NameSearchMsg::Failed(i) => search.set_failed(i),
+                NameSearchMsg::Done => done = true,
+            }
+        }
+        if done {
+            self.name_search_rx = None;
+            if let Some(search) = self.name_search.as_mut() {
+                search.running = false;
+            }
+        }
+    }
+
+    /// Subscribes to the ticked items of the "find by name" window in one Steam session.
+    pub fn subscribe_name_search_checked(&mut self) {
+        if self.steam_rx.is_some() {
+            return;
+        }
+        let Some(search) = self.name_search.as_mut() else {
+            return;
+        };
+        let mut ids: Vec<String> = search.checked.drain().collect();
+        ids.sort();
+        search.subscribed.extend(ids.iter().cloned());
+        self.subscribe_workshop_ids(ids);
+    }
+
     // ----- Top bar tabs (U1) -----
 
     /// Whether the tab is in the top bar. A hidden tab can still be opened by a button
@@ -1559,6 +2098,7 @@ impl App {
     pub fn tab_visible(&self, tab: AppTab) -> bool {
         let p = &self.ui_prefs.tabs;
         match tab {
+            AppTab::Workshop => !p.hide_workshop,
             AppTab::Sets => !p.hide_sets,
             AppTab::Saves => !p.hide_saves,
             AppTab::Translations => !p.hide_translations,
@@ -1585,6 +2125,7 @@ impl App {
         };
         [
             (AppTab::Mods, TabFace::Text(t.get(TranslationKey::TabMods))),
+            (AppTab::Workshop, TabFace::Text(t.get(TranslationKey::TabWorkshop))),
             (AppTab::Sets, TabFace::Text(t.get(TranslationKey::TabSets))),
             (AppTab::Saves, TabFace::Text(t.get(TranslationKey::TabSaves))),
             (
@@ -1877,8 +2418,9 @@ impl App {
     }
 
     /// Whether a Steam request (subscribe, check) is running now.
+    /// A Steam subscription or a SteamCMD download is running.
     pub fn steam_busy(&self) -> bool {
-        self.steam_rx.is_some()
+        self.steam_rx.is_some() || self.steamcmd_rx.is_some()
     }
 
     /// "Enable": writes the set to ModsConfig.xml (a backup of the old order is made),
@@ -2407,7 +2949,13 @@ impl App {
 
     /// Subscribes to the ticked translations in one Steam session (background).
     pub fn subscribe_checked_translations(&mut self) {
-        if self.steam_rx.is_some() || self.batch_checked.is_empty() {
+        if self.steam_busy() || self.batch_checked.is_empty() {
+            return;
+        }
+        if self.steamcmd_active() {
+            let ids: Vec<String> = self.batch_checked.drain().collect();
+            self.batch_subscribed.extend(ids.iter().cloned());
+            self.start_steamcmd_job(ids);
             return;
         }
         let Some(dll) = self.steam_paths.steam_dll_path.clone() else {
@@ -2484,7 +3032,11 @@ impl App {
 
     /// Subscribes via the Steam API in the background (the request needs ~1.5 s to reach Steam).
     pub fn subscribe_steam_mod(&mut self, item_id: &str) {
-        if self.steam_rx.is_some() {
+        if self.steam_busy() {
+            return;
+        }
+        if self.steamcmd_active() {
+            self.start_steamcmd_job(vec![item_id.to_string()]);
             return;
         }
         if let Some(dll) = self.steam_paths.steam_dll_path.clone() {
@@ -3171,6 +3723,7 @@ impl eframe::App for App {
                 AppTab::Mods => crate::ui::view_mods::render_mods_view(self, ui),
                 AppTab::Sets => crate::ui::view_sets::render_sets_view(self, ui),
                 AppTab::Saves => crate::ui::view_saves::render_saves_view(self, ui),
+                AppTab::Workshop => crate::ui::view_workshop::render_workshop_view(self, ui),
                 AppTab::Translations => crate::ui::view_translations::render_translations_view(self, ui),
                 // Long pages scroll as a whole, so nothing below the window edge is cut off.
                 AppTab::Optimizer => {
@@ -3199,6 +3752,8 @@ impl eframe::App for App {
         self.render_history_window(ctx);
         self.render_modlist_dialog(ctx);
         crate::ui::view_bisect::render_bisect_window(self, ctx);
+        crate::ui::view_name_search::render_name_search_window(self, ctx);
+        crate::ui::view_steamcmd::render_steamcmd_window(self, ctx);
         self.save_settings_if_changed();
 
         if self.opt_is_running {

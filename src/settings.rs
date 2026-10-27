@@ -29,6 +29,12 @@ pub struct AppSettings {
     /// Look for a new version on GitHub once a day (on unless turned off).
     #[serde(default = "default_true")]
     pub check_updates: bool,
+    /// Download Workshop mods with SteamCMD instead of subscribing in the Steam client.
+    #[serde(default)]
+    pub use_steamcmd: bool,
+    /// SteamCMD folder picked by hand (None = next to the settings).
+    #[serde(default)]
+    pub steamcmd_dir: Option<PathBuf>,
 }
 
 fn default_true() -> bool {
@@ -46,6 +52,8 @@ impl Default for AppSettings {
             launch_extra_args: String::new(),
             opt_threads: None,
             check_updates: true,
+            use_steamcmd: false,
+            steamcmd_dir: None,
         }
     }
 }

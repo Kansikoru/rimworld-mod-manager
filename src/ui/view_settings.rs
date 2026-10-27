@@ -29,6 +29,85 @@ fn hint(ui: &mut Ui, text: &str) {
     ui.add(egui::Label::new(egui::RichText::new(text).color(THEME.text_muted).size(12.0)).wrap());
 }
 
+/// SteamCMD: on/off, where it lives, install or update, the last download's window.
+fn render_steamcmd_card(app: &mut App, ui: &mut Ui) {
+    let t = app.i18n;
+    let dir = app.steamcmd_dir();
+    let installed = crate::steamcmd::is_installed(&dir);
+    let busy = app.steamcmd_busy();
+    card_container(ui, |ui| {
+        ui.vertical(|ui| {
+            ui.heading(
+                egui::RichText::new(t.get(TranslationKey::SteamCmdCardTitle))
+                    .color(THEME.accent_cyan)
+                    .size(15.0),
+            );
+            ui.add_space(4.0);
+            hint(ui, t.get(TranslationKey::SteamCmdCardHint));
+            ui.add_space(6.0);
+            ui.checkbox(&mut app.use_steamcmd, t.get(TranslationKey::SteamCmdUse));
+            if app.steam_paths.steam_path.is_none() && !app.use_steamcmd {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(t.get(TranslationKey::SteamCmdAuto))
+                            .color(THEME.accent_amber)
+                            .size(12.0),
+                    )
+                    .wrap(),
+                );
+            }
+            ui.add_space(6.0);
+            if installed {
+                ui.label(
+                    egui::RichText::new(t.get(TranslationKey::SteamCmdStatusInstalled))
+                        .color(THEME.accent_emerald)
+                        .size(12.0),
+                );
+            } else {
+                hint(ui, t.get(TranslationKey::SteamCmdStatusMissing));
+            }
+            if path_row(ui, &dir.display().to_string(), t.get(TranslationKey::SteamCmdBtnPick)) {
+                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                    app.custom_steamcmd_dir = Some(folder);
+                }
+            }
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::Vec2::new(8.0, 8.0);
+                let label = if installed {
+                    t.get(TranslationKey::SteamCmdBtnUpdate)
+                } else {
+                    t.get(TranslationKey::SteamCmdBtnInstall)
+                };
+                if ui
+                    .add_enabled_ui(!busy, |ui| secondary_button_icon(ui, ICON_STEAM, label))
+                    .inner
+                    .clicked()
+                {
+                    app.install_steamcmd();
+                }
+                if installed
+                    && secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::SteamCmdBtnFolder)).clicked()
+                {
+                    open_external(dir.clone());
+                }
+                if secondary_button(ui, t.get(TranslationKey::SteamCmdBtnConsole)).clicked() {
+                    app.open_steamcmd_console();
+                }
+                if app.steamcmd_job.is_some()
+                    && secondary_button(ui, t.get(TranslationKey::SteamCmdBtnWindow)).clicked()
+                {
+                    app.steamcmd_console = false;
+                    app.steamcmd_window = true;
+                }
+                if busy {
+                    ui.spinner();
+                }
+            });
+        });
+    });
+}
+
 /// Which tabs the top bar shows (U1): four can be hidden, the Log Analyzer can get a
 /// short label or an icon, Settings an icon. Mods and Settings always stay.
 fn render_tabs_card(app: &mut App, ui: &mut Ui) {
@@ -46,6 +125,7 @@ fn render_tabs_card(app: &mut App, ui: &mut Ui) {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 16.0;
                 for (key, hidden) in [
+                    (TranslationKey::TabWorkshop, &mut tabs.hide_workshop),
                     (TranslationKey::TabSets, &mut tabs.hide_sets),
                     (TranslationKey::TabSaves, &mut tabs.hide_saves),
                     (TranslationKey::TabTranslations, &mut tabs.hide_translations),
@@ -302,6 +382,8 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
         });
     });
 
+    ui.add_space(8.0);
+    render_steamcmd_card(app, ui);
     ui.add_space(8.0);
 
     // Launch Game Parameters Card

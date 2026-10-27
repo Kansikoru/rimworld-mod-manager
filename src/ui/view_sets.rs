@@ -13,17 +13,25 @@ use crate::modlists::ModList;
 /// What the user clicked; applied after drawing.
 enum SetAction {
     Select(String),
-    Apply { name: String, launch: bool },
+    Apply {
+        name: String,
+        launch: bool,
+    },
     OpenInMods(String),
     SaveHere(String),
     Duplicate(String),
     Dialog(ModListDialog),
     OpenFolder,
     SubscribeMissing(String),
+    /// D1: the set's missing mods with no link (or just this one) -> "find by name" window.
+    FindByName(String, Option<String>),
     DownloadWorkshopDb,
     Rescan,
     Import(std::path::PathBuf),
-    Export { name: String, target: std::path::PathBuf },
+    Export {
+        name: String,
+        target: std::path::PathBuf,
+    },
     Copied(String),
 }
 
@@ -113,6 +121,15 @@ fn apply_actions(app: &mut App, actions: Vec<SetAction>) {
             SetAction::Duplicate(name) => app.duplicate_modlist(&name),
             SetAction::Dialog(dialog) => app.modlist_dialog = Some(dialog),
             SetAction::SubscribeMissing(name) => app.subscribe_modlist_missing(&name),
+            SetAction::FindByName(name, only) => {
+                let wanted = app
+                    .modlists
+                    .iter()
+                    .find(|l| l.name == name)
+                    .map(|list| app.modlist_wanted(list, only.as_deref()))
+                    .unwrap_or_default();
+                app.start_name_search(name, wanted);
+            }
             SetAction::Rescan => app.rescan_mods(),
             SetAction::DownloadWorkshopDb => app.download_workshop_index(),
             SetAction::Import(file) => app.import_modlist(&file),
@@ -487,6 +504,7 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
     if missing > 0 {
         let workshop = app.modlist_missing_workshop_ids(list).len();
         let manual = missing.saturating_sub(workshop);
+        let by_name = app.modlist_wanted(list, None).len();
         card_container(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.label(
@@ -516,6 +534,17 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
                     .inner;
                 if subscribe.clicked() {
                     actions.push(SetAction::SubscribeMissing(name.clone()));
+                }
+                if by_name > 0
+                    && secondary_button_icon(
+                        ui,
+                        ICON_SEARCH,
+                        &fmt(t.get(TranslationKey::NameSearchBtn), &[&by_name.to_string()]),
+                    )
+                    .on_hover_text(t.get(TranslationKey::NameSearchBtnHint))
+                    .clicked()
+                {
+                    actions.push(SetAction::FindByName(name.clone(), None));
                 }
                 if secondary_button_icon(ui, ICON_REFRESH, t.get(TranslationKey::BtnRescanMods)).clicked() {
                     actions.push(SetAction::Rescan);
@@ -581,6 +610,12 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
                                 {
                                     open_external(crate::steam::workshop_url(&steam_id));
                                 }
+                            } else if !id.to_lowercase().starts_with("ludeon.rimworld")
+                                && icon_button(ui, ICON_SEARCH, Vec2::splat(14.0), THEME.text_muted)
+                                    .on_hover_text(t.get(TranslationKey::NameSearchRowHint))
+                                    .clicked()
+                            {
+                                actions.push(SetAction::FindByName(list.name.clone(), Some(id.clone())));
                             }
                         }
                     });

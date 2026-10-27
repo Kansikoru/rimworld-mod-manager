@@ -544,9 +544,9 @@ pub fn chip(
 pub fn search_input(ui: &mut Ui, query: &mut String, placeholder: &str) {
     search_input_width(ui, query, placeholder, ui.available_width().min(320.0));
 }
-
-/// `search_input` with an explicit width.
-pub fn search_input_width(ui: &mut Ui, query: &mut String, placeholder: &str, width: f32) {
+/// `search_input` with an explicit width. Returns whether Enter was pressed in the field.
+pub fn search_input_width(ui: &mut Ui, query: &mut String, placeholder: &str, width: f32) -> bool {
+    let mut entered = false;
     egui::Frame {
         inner_margin: egui::Margin::symmetric(8.0, 0.0),
         outer_margin: egui::Margin::ZERO,
@@ -564,18 +564,20 @@ pub fn search_input_width(ui: &mut Ui, query: &mut String, placeholder: &str, wi
             ui.spacing_mut().item_spacing.x = 8.0;
             ui.add(svg_icon(ICON_SEARCH, Vec2::splat(16.0), THEME.text_muted));
             let clear_w = if query.is_empty() { 0.0 } else { 26.0 };
-            ui.add(
+            let field = ui.add(
                 egui::TextEdit::singleline(query)
                     .hint_text(egui::RichText::new(placeholder).color(THEME.text_muted).size(12.0))
                     .frame(false)
                     .font(egui::FontId::proportional(12.0))
                     .desired_width((ui.available_width() - clear_w).max(40.0)),
             );
+            entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             if !query.is_empty() && icon_button(ui, ICON_CLOSE, Vec2::new(12.0, 12.0), THEME.text_muted).clicked() {
                 query.clear();
             }
         });
     });
+    entered
 }
 
 /// Card: panel color, subtle border, 6 px corners.

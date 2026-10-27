@@ -5,6 +5,21 @@ use crate::steam::{unsubscribe_workshop_items_batch_native, SteamPaths};
 /// Moves a mod folder to the Windows Recycle Bin so the user can restore it.
 /// Never falls back to permanent deletion.
 pub fn move_mod_dir_to_trash(dir: &std::path::Path) -> Result<(), String> {
+    // A link in Mods (SteamCMD puts one per mod): the link is removed; the files go to the
+    // Recycle Bin only when they are SteamCMD's download, never someone else's folder.
+    if let Ok(target) = std::fs::read_link(dir) {
+        std::fs::remove_dir(dir).map_err(|e| {
+            crate::i18n::fmt(
+                crate::i18n::text(crate::i18n::TranslationKey::SteamCmdLinkRemoveError),
+                &[&dir.display().to_string(), &e.to_string()],
+            )
+        })?;
+        let target = crate::steamcmd::plain_path(&target);
+        if crate::steamcmd::is_steamcmd_item(&target) {
+            return move_mod_dir_to_trash(&target);
+        }
+        return Ok(());
+    }
     trash::delete(dir).map_err(|e| {
         tr!(
             "Не удалось переместить {} в Корзину: {}",

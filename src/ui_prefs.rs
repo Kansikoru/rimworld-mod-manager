@@ -80,6 +80,8 @@ pub enum TabLabel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct TabPrefs {
     #[serde(default)]
+    pub hide_workshop: bool,
+    #[serde(default)]
     pub hide_sets: bool,
     #[serde(default)]
     pub hide_saves: bool,

@@ -15,6 +15,8 @@ enum SaveAction {
     LoadMods(String),
     ToModlist(String),
     SubscribeMissing(String),
+    /// D1: the save's missing mods with no link (or just this one) -> "find by name" window.
+    FindByName(String, Option<String>),
     Refresh,
     OpenFolder,
     DownloadWorkshopDb,
@@ -113,6 +115,15 @@ fn apply_actions(app: &mut App, actions: Vec<SaveAction>) {
                 }
             }
             SaveAction::SubscribeMissing(name) => app.subscribe_save_missing(&name),
+            SaveAction::FindByName(name, only) => {
+                let wanted = app
+                    .saves
+                    .iter()
+                    .find(|s| s.name == name)
+                    .map(|save| app.save_wanted(save, only.as_deref()))
+                    .unwrap_or_default();
+                app.start_name_search(name, wanted);
+            }
             SaveAction::Refresh => app.refresh_saves(),
             SaveAction::OpenFolder => {
                 if let Some(dir) = app.saves_folder() {
@@ -283,6 +294,7 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
     let name = save.name.clone();
     let cmp = app.save_compare(save);
     let workshop_missing = app.save_missing_workshop_ids(save).len();
+    let by_name = app.save_wanted(save, None).len();
 
     ui.label(
         egui::RichText::new(&save.name)
@@ -345,6 +357,17 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
             if busy {
                 ui.spinner();
             }
+        }
+        if by_name > 0
+            && secondary_button_icon(
+                ui,
+                ICON_SEARCH,
+                &fmt(t.get(TranslationKey::NameSearchBtn), &[&by_name.to_string()]),
+            )
+            .on_hover_text(t.get(TranslationKey::NameSearchBtnHint))
+            .clicked()
+        {
+            actions.push(SaveAction::FindByName(name.clone(), None));
         }
         if secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::ModsBtnFolder)).clicked() {
             actions.push(SaveAction::OpenFolder);
@@ -437,7 +460,9 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
     });
 
     // The save's mods, then the enabled mods the save doesn't have
-    let mut rows: Vec<(String, ModState, Option<String>)> = Vec::with_capacity(save.ids.len() + cmp.extra.len());
+    // (name, state, Workshop link, package ID for "find by name" when there's no link)
+    type Row = (String, ModState, Option<String>, Option<String>);
+    let mut rows: Vec<Row> = Vec::with_capacity(save.ids.len() + cmp.extra.len());
     let enabled: std::collections::HashSet<String> = cmp.enabled.iter().map(|s| s.to_lowercase()).collect();
     let disabled: std::collections::HashSet<String> = cmp.disabled.iter().map(|s| s.to_lowercase()).collect();
     for id in &save.ids {
@@ -457,11 +482,14 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
         let link = (state == ModState::Missing)
             .then(|| app.workshop_id_for(id, save.steam_id(id), save.name_of(id)))
             .flatten();
-        rows.push((mod_name, state, link));
+        let findable =
+            (state == ModState::Missing && link.is_none() && !id.to_lowercase().starts_with("ludeon.rimworld"))
+                .then(|| id.clone());
+        rows.push((mod_name, state, link, findable));
     }
     for id in &cmp.extra {
         let mod_name = app.find_mod(id).map(|m| m.name.clone()).unwrap_or_else(|| id.clone());
-        rows.push((mod_name, ModState::Extra, None));
+        rows.push((mod_name, ModState::Extra, None, None));
     }
 
     card_container(ui, |ui| {
@@ -486,7 +514,7 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
             )
             .show_rows(ui, 22.0, rows.len(), |ui, range| {
                 for i in range {
-                    let (mod_name, state, steam_id) = &rows[i];
+                    let (mod_name, state, steam_id, findable) = &rows[i];
                     ui.horizontal(|ui| {
                         ui.set_height(20.0);
                         let (num_rect, _) = ui.allocate_exact_size(Vec2::new(30.0, 20.0), Sense::hover());
@@ -518,6 +546,14 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
                                         .clicked()
                                     {
                                         open_external(crate::steam::workshop_url(steam_id));
+                                    }
+                                }
+                                if let Some(id) = findable {
+                                    if icon_button(ui, ICON_SEARCH, Vec2::splat(14.0), THEME.text_muted)
+                                        .on_hover_text(t.get(TranslationKey::NameSearchRowHint))
+                                        .clicked()
+                                    {
+                                        actions.push(SaveAction::FindByName(name.clone(), Some(id.clone())));
                                     }
                                 }
                             }

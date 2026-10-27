@@ -14,12 +14,15 @@ pub mod mod_updates;
 pub mod models;
 pub mod modlists;
 pub mod mods_config;
+pub mod name_search;
 pub mod optimizer;
 pub mod saves;
 pub mod scanner;
 pub mod settings;
 pub mod sorter;
 pub mod steam;
+pub mod steamcmd;
+pub mod workshop_browse;
 pub mod workshop_db;
 pub mod workshop_search;
 

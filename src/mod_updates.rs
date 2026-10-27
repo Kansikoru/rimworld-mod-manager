@@ -22,6 +22,7 @@ pub struct RemoteItem {
     pub time_updated: u64,
     /// Game versions from the tags: "1.6", "1.7"...
     pub versions: Vec<String>,
+    pub title: String,
 }
 
 /// One installed mod to check.
@@ -91,7 +92,15 @@ pub fn parse_details(json: &str) -> Result<HashMap<String, RemoteItem>, String> 
                     .collect()
             })
             .unwrap_or_default();
-        out.insert(id.to_string(), RemoteItem { time_updated, versions });
+        let title = item["title"].as_str().unwrap_or_default().to_string();
+        out.insert(
+            id.to_string(),
+            RemoteItem {
+                time_updated,
+                versions,
+                title,
+            },
+        );
     }
     Ok(out)
 }
