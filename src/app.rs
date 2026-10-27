@@ -2627,6 +2627,12 @@ impl App {
                     s.up_to_date,
                     s.foreign_dds
                 );
+                if s.same_name > 0 {
+                    self.status_message.push_str(&fmt(
+                        self.i18n.get(TranslationKey::OptSameNameSkipped),
+                        &[&s.same_name.to_string()],
+                    ));
+                }
                 self.opt_scan_rx = None;
             }
         }

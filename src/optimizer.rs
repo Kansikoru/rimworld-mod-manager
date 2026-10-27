@@ -314,6 +314,10 @@ pub struct TexturePlan {
     /// A DDS exists that this tool did not make (shipped by the mod author, or left by an old
     /// version before the manifest existed). Never overwritten; "Rollback" cleans old ones.
     pub foreign_dds: usize,
+    /// Sources that share one DDS name (`icon.png` + `icon.jpg` -> `icon.dds`). Left alone:
+    /// converting one would change which picture the game shows, and both would race for
+    /// the same file.
+    pub same_name: usize,
 }
 
 /// `want_flipped`: the way up the installed game needs (see `engine_wants_flipped`); our DDS
@@ -326,7 +330,25 @@ pub fn plan_textures(
 ) -> TexturePlan {
     let mut plan = TexturePlan::default();
     for mod_dir in mod_dirs {
+        // Sources grouped by the DDS they would become, in the order they were found.
+        let mut groups: Vec<Vec<PathBuf>> = Vec::new();
+        let mut group_of: HashMap<String, usize> = HashMap::new();
         for path in walk_mod_textures(mod_dir) {
+            let key = path_key(&path.with_extension("dds"));
+            match group_of.get(&key) {
+                Some(&i) => groups[i].push(path),
+                None => {
+                    group_of.insert(key, groups.len());
+                    groups.push(vec![path]);
+                }
+            }
+        }
+        for group in groups {
+            if group.len() > 1 {
+                plan.same_name += group.len();
+                continue;
+            }
+            let Some(path) = group.into_iter().next() else { continue };
             let dds = path.with_extension("dds");
             if !dds.exists() {
                 plan.to_convert.push(path);
@@ -606,8 +628,14 @@ fn write_manifest(path: &Path, entries: &[ManifestEntry]) -> std::io::Result<()>
             _ => Ok(()),
         };
     }
+    // Through a temporary file and a rename: a crash mid-write never leaves a cut log,
+    // which rollback needs to find the DDS files and the moved sources.
     let text: String = entries.iter().map(manifest_line).collect();
-    std::fs::write(path, text)
+    let tmp = path.with_extension("tsv.tmp");
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }
 
 /// `F:\Steam\...\tex.png` -> `<backup_root>\F\Steam\...\tex.png`
@@ -875,6 +903,7 @@ pub struct TextureSummary {
     pub to_convert: usize,
     pub up_to_date: usize,
     pub foreign_dds: usize,
+    pub same_name: usize,
 }
 
 pub fn texture_summary(mod_dirs: &[PathBuf], force: bool, want_flipped: bool) -> TextureSummary {
@@ -884,6 +913,7 @@ pub fn texture_summary(mod_dirs: &[PathBuf], force: bool, want_flipped: bool) ->
         to_convert: plan.to_convert.len(),
         up_to_date: plan.up_to_date,
         foreign_dds: plan.foreign_dds,
+        same_name: plan.same_name,
     }
 }
 
@@ -1193,6 +1223,45 @@ mod tests {
         );
         assert!(!dir.join("opaque.dds.tmp").exists());
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn same_name_sources_are_left_alone() {
+        let dir = temp_dir("same_name");
+        let tex = dir.join("Mod").join("Textures").join("Things");
+        std::fs::create_dir_all(&tex).unwrap();
+        // icon.png and icon.JPG would both become icon.dds; solo.png is on its own.
+        write_png(&tex.join("icon.png"), 64, 64, 255);
+        std::fs::copy(tex.join("icon.png"), tex.join("icon.JPG")).unwrap();
+        write_png(&tex.join("solo.png"), 64, 64, 255);
+
+        let plan = plan_textures(&[dir.join("Mod")], true, false, &HashMap::new());
+        let names: Vec<String> = plan
+            .to_convert
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, ["solo.png"], "neither icon source is converted");
+        assert_eq!(plan.same_name, 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manifest_rewrite_leaves_no_temp_file() {
+        let dir = temp_dir("manifest_tmp");
+        let log = dir.join("dds_manifest.tsv");
+        let entry = |name: &str| ManifestEntry {
+            dds: dir.join(format!("{name}.dds")),
+            source: dir.join(format!("{name}.png")),
+            backup: None,
+            source_fp: Some("1:1".into()),
+            flipped: Some(false),
+        };
+        merge_manifest(&log, &[entry("a"), entry("b")]).unwrap();
+        merge_manifest(&log, &[entry("c")]).unwrap();
+        assert_eq!(read_manifest(&log).len(), 3);
+        assert!(!log.with_extension("tsv.tmp").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
