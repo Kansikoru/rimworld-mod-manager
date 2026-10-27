@@ -46,7 +46,7 @@ jobs:
           "zip=$zip" >> $env:GITHUB_OUTPUT
           # Changelog: the body of the tagged commit without trailer lines.
           $notes = (@(git log -1 --format=%b $env:GITHUB_SHA) |
-            Where-Object { $_ -notmatch '^\s*Co-Authored-By:' }) -join "`n"
+            Where-Object { $_ -notmatch '^\s*(Co-Authored-By|Automated-by):' }) -join "`n"
           "changelog<<NOTES_END" >> $env:GITHUB_OUTPUT
           $notes.Trim() >> $env:GITHUB_OUTPUT
           "NOTES_END" >> $env:GITHUB_OUTPUT
