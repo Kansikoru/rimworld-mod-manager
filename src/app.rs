@@ -26,6 +26,19 @@ use crate::ui::icons::*;
 use crate::ui::theme::THEME;
 use crate::workshop_search::{search_steam_workshop, WorkshopItemResult};
 
+/// The icon a tab gets in a narrow window.
+fn tab_icon(tab: AppTab) -> egui::ImageSource<'static> {
+    match tab {
+        AppTab::Mods => ICON_MODS,
+        AppTab::Sets => ICON_COPY,
+        AppTab::Saves => ICON_SAVE,
+        AppTab::Translations => ICON_TRANSLATIONS,
+        AppTab::Optimizer => ICON_OPTIMIZER,
+        AppTab::Analyzer => ICON_SEARCH,
+        AppTab::Settings => ICON_SETTINGS,
+    }
+}
+
 fn bisect_session_path() -> PathBuf {
     crate::game_install::manager_data_dir().join("bisect.json")
 }
@@ -288,6 +301,10 @@ pub struct App {
     pub filter_updates: bool,
     /// Show only mods that don't declare the installed game version.
     pub filter_no_version: bool,
+    /// Narrow window: the Mods tab shows one list; this says which one.
+    pub mods_show_active: bool,
+    /// Narrow window: the category chips are folded behind a "Filters" button.
+    pub show_filter_chips: bool,
 
     // Broken-mod search (F8). The session is saved to bisect.json after every change,
     // so it survives closing the program in the middle.
@@ -534,6 +551,8 @@ impl App {
             mod_updates_rx: None,
             filter_updates: false,
             filter_no_version: false,
+            mods_show_active: true,
+            show_filter_chips: false,
             // An unfinished search opens again where it stopped.
             bisect_open: bisect_session.is_some(),
             bisect: bisect_session,
@@ -2836,8 +2855,10 @@ impl eframe::App for App {
                     fmt(t.get(TranslationKey::BisectHeaderTag), &[&step.to_string()])
                 });
 
-                // What fits in a narrow window: first the title and version go (the logo
-                // keeps them as a tooltip), then the tabs get tighter.
+                // What fits in a narrow window, step by step: the title and version go (the
+                // logo keeps them as a tooltip), the tabs get tighter, "Play" becomes an icon,
+                // and the tabs that still don't fit move into a "»" menu.
+                use crate::ui::components::{tab_face_width, TabFace};
                 let title = "RimWorld Mod Manager";
                 let version = concat!("v", env!("CARGO_PKG_VERSION"));
                 let text_w = |s: &str, size: f32| {
@@ -2851,20 +2872,52 @@ impl eframe::App for App {
                     .filter_map(|s| s.as_deref())
                     .map(|s| crate::ui::components::badge_width(ui, s) + 8.0)
                     .sum();
-                let tabs_w = |pad: f32| {
-                    tabs.iter()
-                        .map(|(_, face)| crate::ui::components::tab_face_width(ui, face, pad) + 4.0)
-                        .sum::<f32>()
-                };
-                let play_w = crate::ui::components::styled_button_width(ui, true, t.get(TranslationKey::AppPlayBtn));
-                let fixed = 32.0 + 8.0 + 16.0 + play_w + 8.0 + tags_w;
+                let tab_w = |face: &TabFace, pad: f32| tab_face_width(ui, face, pad) + 4.0;
+                let tabs_w = |pad: f32| tabs.iter().map(|(_, face)| tab_w(face, pad)).sum::<f32>();
+                let play_label = t.get(TranslationKey::AppPlayBtn);
+                let play_full = crate::ui::components::styled_button_width(ui, true, play_label);
+                let play_icon = crate::ui::components::styled_button_width(ui, true, "");
+                let more_face = TabFace::Text("»");
+                let base = 32.0 + 8.0 + 16.0 + 8.0 + tags_w;
                 let title_w = text_w(title, 14.0) + text_w(version, 12.0) + 16.0;
                 let avail = ui.available_width();
-                let show_title = fixed + title_w + tabs_w(24.0) <= avail;
-                let tab_pad = if show_title || fixed + tabs_w(24.0) <= avail {
+                let show_title = base + title_w + tabs_w(24.0) + play_full <= avail;
+                let tab_pad = if show_title || base + tabs_w(24.0) + play_full <= avail {
                     24.0
                 } else {
                     14.0
+                };
+                let play_icon_only = base + tabs_w(tab_pad) + play_full > avail;
+                let play_w = if play_icon_only { play_icon } else { play_full };
+                let budget = avail - base - play_w - if show_title { title_w } else { 0.0 };
+                // Still too narrow: every tab becomes an icon (its name on hover).
+                let use_icons = tabs_w(tab_pad) > budget;
+                let tabs: Vec<(AppTab, TabFace)> = if use_icons {
+                    tabs.iter()
+                        .map(|(tab, face)| {
+                            let name = match face {
+                                TabFace::Text(label) => *label,
+                                TabFace::Icon(_, name) => *name,
+                            };
+                            (*tab, TabFace::Icon(tab_icon(*tab), name))
+                        })
+                        .collect()
+                } else {
+                    tabs
+                };
+                let tabs_w = |pad: f32| tabs.iter().map(|(_, face)| tab_w(face, pad)).sum::<f32>();
+                // How many tabs fit in a row; the rest go into the "»" menu.
+                let shown_count = if tabs_w(tab_pad) <= budget {
+                    tabs.len()
+                } else {
+                    let room = budget - tab_w(&more_face, tab_pad);
+                    let mut used = 0.0;
+                    tabs.iter()
+                        .take_while(|(_, face)| {
+                            used += tab_w(face, tab_pad);
+                            used <= room
+                        })
+                        .count()
                 };
 
                 // Logo in a lavender-tinted square
@@ -2906,16 +2959,41 @@ impl eframe::App for App {
 
                 ui.add_space(16.0);
                 ui.spacing_mut().item_spacing.x = 4.0;
-                for (tab_val, face) in &tabs {
+                let (shown, hidden) = tabs.split_at(shown_count.min(tabs.len()));
+                for (tab_val, face) in shown {
                     if crate::ui::components::nav_tab_face(ui, face, self.current_tab == *tab_val, tab_pad).clicked() {
                         self.current_tab = *tab_val;
                     }
                 }
+                if !hidden.is_empty() {
+                    let in_menu = hidden.iter().any(|(tab, _)| *tab == self.current_tab);
+                    let more = crate::ui::components::nav_tab_face(ui, &more_face, in_menu, tab_pad)
+                        .on_hover_text(t.get(TranslationKey::TabsMore));
+                    let popup_id = ui.make_persistent_id("top_bar_more_tabs");
+                    if more.clicked() {
+                        ui.memory_mut(|m| m.toggle_popup(popup_id));
+                    }
+                    egui::popup_below_widget(ui, popup_id, &more, egui::PopupCloseBehavior::CloseOnClick, |ui| {
+                        ui.set_min_width(180.0);
+                        for (tab_val, face) in hidden {
+                            let name = match face {
+                                TabFace::Text(label) => *label,
+                                TabFace::Icon(_, name) => *name,
+                            };
+                            if ui.selectable_label(self.current_tab == *tab_val, name).clicked() {
+                                self.current_tab = *tab_val;
+                            }
+                        }
+                    });
+                }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if crate::ui::components::success_button_icon(ui, ICON_PLAY, t.get(TranslationKey::AppPlayBtn))
-                        .clicked()
-                    {
+                    let play = if play_icon_only {
+                        crate::ui::components::success_button_icon(ui, ICON_PLAY, "").on_hover_text(play_label)
+                    } else {
+                        crate::ui::components::success_button_icon(ui, ICON_PLAY, play_label)
+                    };
+                    if play.clicked() {
                         self.launch_game();
                     }
                 });
@@ -3013,10 +3091,13 @@ impl App {
         let mut confirm = false;
         let mut cancel = ctx.input(|i| i.key_pressed(egui::Key::Escape));
 
+        let (_, max_height) = crate::ui::components::dialog_size(ctx, 560.0);
         egui::Window::new(t.get(TranslationKey::ConfirmDeleteTitle))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .max_height(max_height)
+            .vscroll(true)
             .show(ctx, |ui| {
                 ui.label(fmt(
                     t.get(TranslationKey::ConfirmDeleteBody),
@@ -3101,12 +3182,15 @@ impl App {
             ),
         };
 
+        let (width, max_height) = crate::ui::components::dialog_size(ctx, 560.0);
         egui::Window::new(title)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .max_height(max_height)
+            .vscroll(true)
             .show(ctx, |ui| {
-                ui.set_max_width(560.0);
+                ui.set_max_width(width);
                 ui.label(body);
                 if let PendingQuestion::LegacyDds(paths) = &question {
                     ui.add_space(6.0);
@@ -3272,12 +3356,15 @@ impl App {
         let mut restore: Option<usize> = None;
         let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
 
+        let (width, max_height) = crate::ui::components::dialog_size(ctx, 560.0);
         egui::Window::new(tr!("История порядка модов", "Load order history"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .max_height(max_height)
+            .vscroll(true)
             .show(ctx, |ui| {
-                ui.set_width(560.0);
+                ui.set_width(width);
                 ui.label(
                     egui::RichText::new(tr!(
                         "Перед каждым сохранением программа делает копию ModsConfig.xml (хранятся последние 30). Восстановленный список появится как несохранённый: файл изменится, только когда вы нажмёте «Сохранить порядок».",

@@ -18,13 +18,16 @@ pub fn render_bisect_window(app: &mut App, ctx: &egui::Context) {
     }
     let t = app.i18n;
     let mut open = true;
+    let (width, max_height) = dialog_size(ctx, WIDTH);
     egui::Window::new(t.get(TranslationKey::BisectTitle))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .max_height(max_height)
+        .vscroll(true)
         .show(ctx, |ui| {
-            ui.set_width(WIDTH);
+            ui.set_width(width);
             if app.bisect.is_some() {
                 render_search(app, ui);
             } else {
@@ -61,12 +64,14 @@ fn render_setup(app: &mut App, ui: &mut Ui) {
     );
     muted(ui, t.get(TranslationKey::BisectKeepHint));
     ui.add_space(4.0);
-    search_input_width(ui, &mut app.bisect_filter, t.get(TranslationKey::BisectFilter), WIDTH);
+    let field_w = ui.available_width();
+    search_input_width(ui, &mut app.bisect_filter, t.get(TranslationKey::BisectFilter), field_w);
     ui.add_space(4.0);
     let query = app.bisect_filter.trim().to_lowercase();
     egui::ScrollArea::vertical()
         .id_salt("bisect_keep_scroll")
-        .max_height(240.0)
+        // Shorter in a short window, so "Start" stays within reach.
+        .max_height((ui.ctx().screen_rect().height() * 0.3).clamp(100.0, 240.0))
         .auto_shrink([false, true])
         .show(ui, |ui| {
             for id in &order {

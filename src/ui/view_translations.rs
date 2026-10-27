@@ -56,6 +56,31 @@ pub fn render_translations_view(app: &mut App, ui: &mut Ui) {
 
     ui.add_space(8.0);
 
+    // Narrow window: installed translations above, the Workshop search below.
+    if ui.available_width() < NARROW_TWO_COLUMNS {
+        let width = ui.available_width();
+        let top_h = (ui.available_height() * 0.35).max(120.0);
+        ui.allocate_ui_with_layout(
+            egui::Vec2::new(width, top_h),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_width(width);
+                ui.set_max_height(top_h);
+                render_installed_translations_column(app, ui);
+            },
+        );
+        ui.separator();
+        ui.allocate_ui_with_layout(
+            egui::Vec2::new(width, ui.available_height()),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_width(width);
+                render_workshop_search_column(app, ui);
+            },
+        );
+        return;
+    }
+
     // Two sections: Detected Translations in Collection (Left) & Workshop Search Results (Right)
     let available_width = ui.available_width();
     let col_width = (available_width - 16.0) / 2.0;
@@ -133,7 +158,12 @@ fn render_installed_translations_column(app: &mut App, ui: &mut Ui) {
                 frame.show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
-                            ui.label(egui::RichText::new(&m.name).color(THEME.text_primary).strong());
+                            // Room for the Workshop ID badge and the delete button on the right.
+                            ui.set_max_width((ui.available_width() - 130.0).max(120.0));
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(&m.name).color(THEME.text_primary).strong())
+                                    .wrap(),
+                            );
                             if let Some(ref parent_id) = m.parent_package_id {
                                 ui.label(
                                     egui::RichText::new(tr!("Перевод для: {}", "Translation of: {}", parent_id))
@@ -178,7 +208,7 @@ fn render_workshop_search_column(app: &mut App, ui: &mut Ui) {
     ui.add_space(4.0);
 
     // Modpack-wide search (main way) and search for the mod selected in the list.
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         if app.is_batch_searching() {
             if danger_button_icon(ui, ICON_STOP, tr!("Остановить", "Stop")).clicked() {

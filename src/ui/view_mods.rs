@@ -158,12 +158,30 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
         let compact = fixed + full + SEARCH_MIN > avail;
         let used = fixed + if compact { icons_only } else { full };
         let search_as_button = avail - used < SEARCH_MIN;
+        // Narrowest: Auto-Sort and Save Order become icons too (their names on hover).
+        let main_icons = compact && used + styled_button_width(ui, true, "") > avail;
+        let sort_label = t.get(TranslationKey::BtnAutoSort);
+        let save_label = t.get(TranslationKey::BtnSaveConfig);
 
-        if secondary_button_icon(ui, ICON_SORT, t.get(TranslationKey::BtnAutoSort)).clicked() {
+        let sort = secondary_button_icon(ui, ICON_SORT, if main_icons { "" } else { sort_label });
+        if if main_icons {
+            sort.on_hover_text(sort_label)
+        } else {
+            sort
+        }
+        .clicked()
+        {
             app.sort_active_mods();
         }
 
-        if primary_button_icon(ui, ICON_SAVE, t.get(TranslationKey::BtnSaveConfig)).clicked() {
+        let save = primary_button_icon(ui, ICON_SAVE, if main_icons { "" } else { save_label });
+        if if main_icons {
+            save.on_hover_text(save_label)
+        } else {
+            save
+        }
+        .clicked()
+        {
             app.save_config();
         }
         if unsaved {
@@ -321,7 +339,61 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
 
     render_version_issues(app, ui);
 
-    render_category_filter(app, ui);
+    // Narrow window: one list at a time, with a switch between them; the "Filters" button
+    // shares its row.
+    if ui.available_width() < NARROW_MODS {
+        let active: std::collections::HashSet<String> = app.active_mods.iter().map(|s| s.to_lowercase()).collect();
+        let available = app
+            .all_mods
+            .iter()
+            .filter(|m| !active.contains(&m.package_id.to_lowercase()))
+            .count();
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            let active_count = app.active_mods.len();
+            if chip(
+                ui,
+                None,
+                t.get(TranslationKey::ModsShowAvailable),
+                available,
+                !app.mods_show_active,
+            )
+            .clicked()
+            {
+                app.mods_show_active = false;
+            }
+            if chip(
+                ui,
+                None,
+                t.get(TranslationKey::ModsShowActive),
+                active_count,
+                app.mods_show_active,
+            )
+            .clicked()
+            {
+                app.mods_show_active = true;
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                filters_toggle(app, ui)
+            });
+        });
+        ui.add_space(6.0);
+        render_category_filter(app, ui, true);
+        ui.add_space(6.0);
+        let width = ui.available_width();
+        let height = ui.available_height();
+        if app.mods_show_active {
+            // A short window gives the space to the list; the details card opens from
+            // the toolbar's info button.
+            let details_fit = height > 420.0;
+            panel_card(ui, width, height, |ui| render_active_panel(app, ui, details_fit));
+        } else {
+            panel_card(ui, width, height, |ui| render_inactive_mods_column(app, ui));
+        }
+        return;
+    }
+
+    render_category_filter(app, ui, false);
     ui.add_space(12.0);
 
     // Two panels side by side with a 16 px gap: available mods | active mods (+ details card).
@@ -332,20 +404,43 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = gap;
         panel_card(ui, col_width, total_height, |ui| render_inactive_mods_column(app, ui));
-        panel_card(ui, col_width, total_height, |ui| {
-            // Details card takes exactly its own height at the bottom; the list gets the rest.
-            if app.is_details_panel_visible {
-                egui::TopBottomPanel::bottom("mod_details_card")
-                    .frame(egui::Frame::none().inner_margin(egui::Margin::same(8.0)))
-                    .show_separator_line(false)
-                    .resizable(false)
-                    .show_inside(ui, |ui| render_mod_details_panel(app, ui));
-            }
-            egui::CentralPanel::default()
-                .frame(egui::Frame::none())
-                .show_inside(ui, |ui| render_active_mods_column(app, ui));
-        });
+        panel_card(ui, col_width, total_height, |ui| render_active_panel(app, ui, true));
     });
+}
+
+/// Below this width the Mods tab shows one list at a time (two lists with their headers,
+/// badges and buttons need about 470 px each).
+const NARROW_MODS: f32 = 940.0;
+/// Below this width the category chips fold behind a "Filters" button.
+const NARROW_FILTERS: f32 = 900.0;
+
+/// The active list with the details card at its bottom. In a short window (`details_fit`
+/// false) the card gets at most 40% of the height and scrolls, so the list stays usable.
+fn render_active_panel(app: &mut App, ui: &mut Ui, details_fit: bool) {
+    // Details card takes exactly its own height at the bottom; the list gets the rest.
+    // In a short window the summary (no mod selected) isn't worth the space.
+    let show_card = app.is_details_panel_visible && (details_fit || app.selected_mod_id.is_some());
+    if show_card {
+        let panel = egui::TopBottomPanel::bottom("mod_details_card")
+            .frame(egui::Frame::none().inner_margin(egui::Margin::same(8.0)))
+            .show_separator_line(false)
+            .resizable(false);
+        if details_fit {
+            panel.show_inside(ui, |ui| render_mod_details_panel(app, ui));
+        } else {
+            let max_h = (ui.available_height() * 0.4).max(90.0);
+            panel.max_height(max_h).show_inside(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("mod_details_scroll")
+                    // Leave the panel's own margins out, so the card never covers the list.
+                    .max_height(max_h - 24.0)
+                    .show(ui, |ui| render_mod_details_panel(app, ui));
+            });
+        }
+    }
+    egui::CentralPanel::default()
+        .frame(egui::Frame::none())
+        .show_inside(ui, |ui| render_active_mods_column(app, ui));
 }
 
 /// Panel card: panel color, subtle border, 6 px corners, fixed size.
@@ -641,9 +736,31 @@ fn update_badge(ui: &mut Ui, update: Option<&crate::mod_updates::ModUpdate>, t: 
     }
 }
 
+/// The "Filters" button of a narrow window: opens or folds the chips; lit when a filter is on.
+fn filters_toggle(app: &mut App, ui: &mut Ui) {
+    let t = app.i18n;
+    let selected = app.category_filter.len() + usize::from(app.filter_updates) + usize::from(app.filter_no_version);
+    let label = if selected > 0 {
+        format!("{} · {}", t.get(TranslationKey::ModsFiltersBtn), selected)
+    } else {
+        t.get(TranslationKey::ModsFiltersBtn).to_string()
+    };
+    let style = if selected > 0 || app.show_filter_chips {
+        ButtonStyle::Primary
+    } else {
+        ButtonStyle::Secondary
+    };
+    if styled_button(ui, None, &label, style)
+        .on_hover_text(t.get(TranslationKey::ModsFiltersHint))
+        .clicked()
+    {
+        app.show_filter_chips = !app.show_filter_chips;
+    }
+}
+
 /// Row of category chips above the lists: "All" + every category that some mod has, with counts.
 /// Clicking chips toggles them; a mod is shown if it has any selected category.
-fn render_category_filter(app: &mut App, ui: &mut Ui) {
+fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
     let t = app.i18n;
     let mut counts: std::collections::HashMap<ModCategory, usize> = std::collections::HashMap::new();
     for m in &app.all_mods {
@@ -662,6 +779,20 @@ fn render_category_filter(app: &mut App, ui: &mut Ui) {
         .filter(|m| crate::version_check::supports_version(m, game_mm.as_deref()) == Some(false))
         .count();
     let updates = app.mod_updates.as_ref().map(|r| r.outdated_count()).unwrap_or(0);
+
+    // Narrow window: the chips take many rows, so they fold behind a "Filters" button
+    // (drawn here, or already drawn by the caller next to the list switch).
+    if toggle_drawn {
+        if !app.show_filter_chips {
+            return;
+        }
+    } else if ui.available_width() < NARROW_FILTERS {
+        filters_toggle(app, ui);
+        if !app.show_filter_chips {
+            return;
+        }
+        ui.add_space(6.0);
+    }
 
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);

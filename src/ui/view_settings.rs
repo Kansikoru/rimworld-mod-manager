@@ -8,6 +8,27 @@ use crate::game_install::{known_launch_flags, GameEngine};
 use crate::i18n::{fmt, Language, TranslationKey};
 use crate::ui_prefs::{UiFont, TEXT_SCALE_RANGE};
 
+/// A path and its "Browse…" button on one line: a long path is cut with "…" (the whole
+/// path on hover) so the button always fits. Returns whether "Browse…" was clicked.
+fn path_row(ui: &mut Ui, path: &str, browse: &str) -> bool {
+    let mut clicked = false;
+    ui.horizontal(|ui| {
+        let button_w = styled_button_width(ui, true, browse) + 8.0;
+        ui.scope(|ui| {
+            ui.set_max_width((ui.available_width() - button_w).max(80.0));
+            ui.add(egui::Label::new(egui::RichText::new(path).color(THEME.text_muted).monospace()).truncate())
+                .on_hover_text(path);
+        });
+        clicked = secondary_button_icon(ui, ICON_FOLDER, browse).clicked();
+    });
+    clicked
+}
+
+/// A muted hint that wraps in a narrow window.
+fn hint(ui: &mut Ui, text: &str) {
+    ui.add(egui::Label::new(egui::RichText::new(text).color(THEME.text_muted).size(12.0)).wrap());
+}
+
 /// Which tabs the top bar shows (U1): four can be hidden, the Log Analyzer can get a
 /// short label or an icon, Settings an icon. Mods and Settings always stay.
 fn render_tabs_card(app: &mut App, ui: &mut Ui) {
@@ -195,20 +216,17 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
 
             // RimWorld Path
             ui.label(t.get(TranslationKey::SettingsRimWorldPath));
-            ui.horizontal(|ui| {
-                let path_str = app
-                    .steam_paths
-                    .game_path
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|| t.get(TranslationKey::SettingsNotFound).to_string());
-                ui.label(egui::RichText::new(path_str).color(THEME.text_muted).monospace());
-                if secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::SettingsBrowse)).clicked() {
-                    if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                        app.set_game_path(folder);
-                    }
+            let path_str = app
+                .steam_paths
+                .game_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| t.get(TranslationKey::SettingsNotFound).to_string());
+            if path_row(ui, &path_str, t.get(TranslationKey::SettingsBrowse)) {
+                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                    app.set_game_path(folder);
                 }
-            });
+            }
             if app.steam_paths.game_path.is_some() {
                 let version = app
                     .steam_paths
@@ -229,44 +247,38 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
 
             // Workshop Path
             ui.label(t.get(TranslationKey::SettingsWorkshopPath));
-            ui.horizontal(|ui| {
-                let path_str = app
-                    .steam_paths
-                    .workshop_path
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|| t.get(TranslationKey::SettingsNotFound).to_string());
-                ui.label(egui::RichText::new(path_str).color(THEME.text_muted).monospace());
-                if secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::SettingsBrowse)).clicked() {
-                    if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                        app.set_workshop_path(folder);
-                    }
+            let path_str = app
+                .steam_paths
+                .workshop_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| t.get(TranslationKey::SettingsNotFound).to_string());
+            if path_row(ui, &path_str, t.get(TranslationKey::SettingsBrowse)) {
+                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                    app.set_workshop_path(folder);
                 }
-            });
+            }
 
             ui.add_space(6.0);
 
             // ModsConfig.xml Path
             ui.label(t.get(TranslationKey::SettingsConfigPath));
-            ui.horizontal(|ui| {
-                let path_str = app
-                    .mods_config_path
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|| t.get(TranslationKey::SettingsNotFound).to_string());
-                ui.label(egui::RichText::new(path_str).color(THEME.text_muted).monospace());
-                if secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::SettingsBrowse)).clicked() {
-                    if let Some(file) = rfd::FileDialog::new()
-                        .add_filter("ModsConfig.xml", &["xml"])
-                        .pick_file()
-                    {
-                        app.set_mods_config_path(file);
-                    }
+            let path_str = app
+                .mods_config_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| t.get(TranslationKey::SettingsNotFound).to_string());
+            if path_row(ui, &path_str, t.get(TranslationKey::SettingsBrowse)) {
+                if let Some(file) = rfd::FileDialog::new()
+                    .add_filter("ModsConfig.xml", &["xml"])
+                    .pick_file()
+                {
+                    app.set_mods_config_path(file);
                 }
-            });
+            }
 
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if secondary_button_icon(ui, ICON_REFRESH, t.get(TranslationKey::SettingsAutoDetect)).clicked() {
                     app.reset_paths_to_auto();
                 }
@@ -275,12 +287,8 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
                         app.check_steam_api();
                     }
                 });
-                ui.label(
-                    egui::RichText::new(t.get(TranslationKey::SettingsSavedHint))
-                        .color(THEME.text_muted)
-                        .size(12.0),
-                );
             });
+            hint(ui, t.get(TranslationKey::SettingsSavedHint));
         });
     });
 
@@ -318,16 +326,13 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
                 }
             });
 
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(t.get(TranslationKey::SettingsLaunchExtraArgs));
-                ui.add(egui::TextEdit::singleline(&mut app.launch_extra_args).desired_width(320.0));
+                let field_w = ui.available_width().clamp(160.0, 320.0);
+                ui.add(egui::TextEdit::singleline(&mut app.launch_extra_args).desired_width(field_w));
             });
             if app.steam_paths.engine == GameEngine::Waylith {
-                ui.label(
-                    egui::RichText::new(t.get(TranslationKey::SettingsLaunchWaylithHint))
-                        .color(THEME.text_muted)
-                        .size(12.0),
-                );
+                hint(ui, t.get(TranslationKey::SettingsLaunchWaylithHint));
             }
 
             ui.add_space(8.0);
@@ -356,15 +361,11 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
                     .replace("{}", &app.community_db_rules_count.to_string()),
             );
 
-            ui.label(
-                egui::RichText::new(t.get(TranslationKey::SettingsDbHint))
-                    .color(THEME.text_muted)
-                    .size(12.0),
-            );
+            hint(ui, t.get(TranslationKey::SettingsDbHint));
 
             ui.add_space(4.0);
 
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 let downloading = app.rules_rx.is_some();
                 ui.add_enabled_ui(!downloading, |ui| {
                     if secondary_button_icon(ui, ICON_REFRESH, t.get(TranslationKey::SettingsBtnUpdateDb)).clicked() {

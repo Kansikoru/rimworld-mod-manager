@@ -44,7 +44,9 @@ fn main() {
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1280.0, 840.0])
-        .with_min_inner_size([980.0, 640.0])
+        // Small enough for a third of a screen or an old 1280 px monitor; every tab
+        // rearranges itself to fit.
+        .with_min_inner_size([640.0, 480.0])
         .with_title("RimWorld Mod & Load Order Manager");
 
     if let Some(icon) = load_app_icon() {

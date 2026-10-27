@@ -105,7 +105,7 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
     // Main Control Card
     card_container(ui, |ui| {
         ui.vertical(|ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(
                     egui::RichText::new(format!("{}:", t.get(TranslationKey::OptScope)))
                         .color(THEME.text_secondary)
@@ -128,25 +128,25 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
 
             ui.add_space(6.0);
 
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.checkbox(&mut app.opt_force, t.get(TranslationKey::OptForceReencode));
                 ui.add_space(12.0);
                 ui.checkbox(&mut app.opt_delete_source, t.get(TranslationKey::OptDeleteSource));
             });
             if app.opt_delete_source {
-                ui.label(
+                ui.add(egui::Label::new(
                     egui::RichText::new(tr!(
                         "Исходники переносятся в %LOCALAPPDATA%\\RimWorldModManager\\texture_backup и возвращаются кнопкой «Откатить».\nОставьте выключенным, если у вас достаточно места на диске: некоторые моды читают PNG напрямую.",
                         "Sources are moved to %LOCALAPPDATA%\\RimWorldModManager\\texture_backup and come back with \"Rollback\".\nLeave it off if you have enough disk space: some mods read PNG files directly."
                     ))
                         .color(THEME.accent_rose)
                         .size(12.0)
-                );
+                ).wrap());
             }
 
             ui.add_space(6.0);
 
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(
                     egui::RichText::new(format!("{}:", t.get(TranslationKey::OptThreads)))
                         .color(THEME.text_secondary),
@@ -161,7 +161,7 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
 
             ui.add_space(10.0);
 
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if !app.opt_is_running {
                     // Buttons are disabled while a scan/rollback runs in the background.
                     let idle = !app.optimizer_busy();

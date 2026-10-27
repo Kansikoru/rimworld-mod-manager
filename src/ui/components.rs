@@ -326,6 +326,19 @@ pub fn boxed_icon_button(ui: &mut Ui, icon: ImageSource<'static>) -> Response {
 
 /// Top-bar tab: text only, 40 px tall; the active one is lavender on the hover color with a
 /// 2 px lavender line at the bottom.
+/// Below this width, pages with a list and a details panel put them one above the other.
+pub const NARROW_TWO_COLUMNS: f32 = 940.0;
+
+/// A dialog's content width and its largest height for the current window: as wide as
+/// wanted if the window allows, never taller than the window (the rest scrolls).
+pub fn dialog_size(ctx: &egui::Context, wanted_width: f32) -> (f32, f32) {
+    let screen = ctx.screen_rect();
+    (
+        wanted_width.min(screen.width() - 64.0).max(240.0),
+        (screen.height() - 96.0).max(200.0),
+    )
+}
+
 /// What a top-bar tab shows: a word, or an icon (with the full name as a tooltip).
 #[derive(Clone)]
 pub enum TabFace {

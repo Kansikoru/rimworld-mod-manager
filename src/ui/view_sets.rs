@@ -47,6 +47,29 @@ pub fn render_sets_view(app: &mut App, ui: &mut Ui) {
     }
 
     let mut actions: Vec<SetAction> = Vec::new();
+
+    // Narrow window: the cards above, the selected modpack below (scrolling).
+    if ui.available_width() < super::components::NARROW_TWO_COLUMNS {
+        let width = ui.available_width();
+        let list_h = (ui.available_height() * 0.4).max(150.0);
+        ui.allocate_ui_with_layout(
+            Vec2::new(width, list_h),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_width(width);
+                ui.set_max_height(list_h);
+                render_cards(app, ui, &mut actions);
+            },
+        );
+        ui.add_space(8.0);
+        egui::ScrollArea::vertical()
+            .id_salt("sets_details_narrow")
+            .auto_shrink([false, false])
+            .show(ui, |ui| render_details(app, ui, &mut actions));
+        apply_actions(app, actions);
+        return;
+    }
+
     let gap = 16.0;
     let left_w = ((ui.available_width() - gap) * 0.5).floor().max(300.0);
     let right_w = (ui.available_width() - gap - left_w).max(300.0);
@@ -71,7 +94,12 @@ pub fn render_sets_view(app: &mut App, ui: &mut Ui) {
             },
         );
     });
+    apply_actions(app, actions);
+}
 
+/// Runs what the user clicked (after drawing, when `app` is free to change).
+fn apply_actions(app: &mut App, actions: Vec<SetAction>) {
+    let t = app.i18n;
     for action in actions {
         match action {
             SetAction::Select(name) => app.selected_modlist = Some(name),
@@ -518,7 +546,12 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
         egui::ScrollArea::vertical()
             .id_salt("set_mods_scroll")
             .auto_shrink([false, false])
-            .max_height(ui.available_height().max(120.0))
+            // Inside the narrow layout's scrolling the height is unlimited: keep it to the window.
+            .max_height(
+                ui.available_height()
+                    .min(ui.ctx().screen_rect().height() * 0.7)
+                    .max(120.0),
+            )
             .show_rows(ui, 22.0, list.ids.len(), |ui, range| {
                 for i in range {
                     let id = &list.ids[i];
