@@ -276,6 +276,16 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
                     app.set_mods_config_path(file);
                 }
             }
+            // Config outside the game's own AppData folder: "Play" points the game at it.
+            if let Some(dir) = app.save_data_folder() {
+                hint(
+                    ui,
+                    &fmt(
+                        t.get(TranslationKey::SettingsSaveDataFolder),
+                        &[&dir.display().to_string()],
+                    ),
+                );
+            }
 
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {

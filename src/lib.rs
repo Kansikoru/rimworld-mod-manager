@@ -20,6 +20,7 @@ pub mod scanner;
 pub mod settings;
 pub mod sorter;
 pub mod steam;
+pub mod workshop_db;
 pub mod workshop_search;
 
 pub mod ui;

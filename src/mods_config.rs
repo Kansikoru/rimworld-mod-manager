@@ -6,6 +6,33 @@ use std::path::{Path, PathBuf};
 
 use crate::i18n::tr;
 
+/// The game's own data folder (`...\LocalLow\Ludeon Studios\RimWorld by Ludeon Studios`),
+/// where it keeps Config and Saves unless started with `-savedatafolder`.
+pub fn default_save_data_dir() -> Option<PathBuf> {
+    let local_low = std::env::var_os("USERPROFILE")
+        .map(|p| PathBuf::from(p).join("AppData").join("LocalLow"))
+        .or_else(|| std::env::var_os("APPDATA").and_then(|a| Some(PathBuf::from(a).parent()?.join("LocalLow"))))?;
+    Some(local_low.join("Ludeon Studios").join("RimWorld by Ludeon Studios"))
+}
+
+/// The `-savedatafolder` the game must get so it reads `config` (`<folder>\Config\ModsConfig.xml`):
+/// `None` when that is the game's own default folder, or the file isn't in a `Config` folder.
+pub fn save_data_folder_for(config: &Path, default_dir: Option<&Path>) -> Option<PathBuf> {
+    let config_dir = config.parent()?;
+    if !config_dir.file_name()?.to_string_lossy().eq_ignore_ascii_case("config") {
+        return None;
+    }
+    let data_dir = config_dir.parent()?;
+    let same = |a: &Path, b: &Path| {
+        let key = |p: &Path| p.to_string_lossy().trim_end_matches(['\\', '/']).to_lowercase();
+        key(a) == key(b)
+    };
+    match default_dir {
+        Some(default) if same(data_dir, default) => None,
+        _ => Some(data_dir.to_path_buf()),
+    }
+}
+
 pub fn get_default_mods_config_path() -> Option<PathBuf> {
     if let Ok(appdata) = std::env::var("APPDATA") {
         let appdata_path = Path::new(&appdata);
@@ -479,6 +506,31 @@ mod tests {
         assert_eq!(list[1].saved_at, 1_700_000_000);
         assert!(list_backups(&dir.join("missing")).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_data_folder_only_when_config_is_elsewhere() {
+        let default = Path::new(r"C:\Users\u\AppData\LocalLow\Ludeon Studios\RimWorld by Ludeon Studios");
+        // The game's own folder (any case, trailing slash): nothing to add.
+        let own = default.join("Config").join("ModsConfig.xml");
+        assert_eq!(save_data_folder_for(&own, Some(default)), None);
+        let upper = PathBuf::from(
+            r"C:\USERS\U\AppData\LocalLow\Ludeon Studios\RimWorld by Ludeon Studios\Config\ModsConfig.xml",
+        );
+        assert_eq!(save_data_folder_for(&upper, Some(default)), None);
+
+        // Config inside the game folder (a game without Steam): the game must be told.
+        let portable = Path::new(r"E:\MyG\RimWorld.v1.7.4984\SaveData\Config\ModsConfig.xml");
+        assert_eq!(
+            save_data_folder_for(portable, Some(default)),
+            Some(PathBuf::from(r"E:\MyG\RimWorld.v1.7.4984\SaveData"))
+        );
+
+        // A loose ModsConfig.xml that isn't in a Config folder: no guessing.
+        assert_eq!(
+            save_data_folder_for(Path::new(r"D:\ModsConfig.xml"), Some(default)),
+            None
+        );
     }
 
     #[test]

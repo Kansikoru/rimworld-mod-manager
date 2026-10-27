@@ -17,6 +17,7 @@ enum SaveAction {
     SubscribeMissing(String),
     Refresh,
     OpenFolder,
+    DownloadWorkshopDb,
 }
 
 /// What a row of the save's mod list shows next to the name.
@@ -118,6 +119,7 @@ fn apply_actions(app: &mut App, actions: Vec<SaveAction>) {
                     open_external(dir);
                 }
             }
+            SaveAction::DownloadWorkshopDb => app.download_workshop_index(),
         }
     }
 }
@@ -348,6 +350,11 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
             actions.push(SaveAction::OpenFolder);
         }
     });
+    // Missing mods the save gave no Workshop link for (the game writes ID 0 for many).
+    let no_link = cmp.missing.len().saturating_sub(workshop_missing);
+    if workshop_links_hint(ui, t, no_link, app.workshop_index.is_some(), app.workshop_index_busy()) {
+        actions.push(SaveAction::DownloadWorkshopDb);
+    }
     ui.add_space(10.0);
 
     // Details and the comparison with the current load order
@@ -430,7 +437,7 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
     });
 
     // The save's mods, then the enabled mods the save doesn't have
-    let mut rows: Vec<(String, ModState, Option<&str>)> = Vec::with_capacity(save.ids.len() + cmp.extra.len());
+    let mut rows: Vec<(String, ModState, Option<String>)> = Vec::with_capacity(save.ids.len() + cmp.extra.len());
     let enabled: std::collections::HashSet<String> = cmp.enabled.iter().map(|s| s.to_lowercase()).collect();
     let disabled: std::collections::HashSet<String> = cmp.disabled.iter().map(|s| s.to_lowercase()).collect();
     for id in &save.ids {
@@ -447,7 +454,10 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
             .map(|m| m.name.clone())
             .or_else(|| save.name_of(id).map(str::to_string))
             .unwrap_or_else(|| id.clone());
-        rows.push((mod_name, state, save.steam_id(id)));
+        let link = (state == ModState::Missing)
+            .then(|| app.workshop_id_for(id, save.steam_id(id), save.name_of(id)))
+            .flatten();
+        rows.push((mod_name, state, link));
     }
     for id in &cmp.extra {
         let mod_name = app.find_mod(id).map(|m| m.name.clone()).unwrap_or_else(|| id.clone());

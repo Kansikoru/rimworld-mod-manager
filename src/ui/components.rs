@@ -329,6 +329,47 @@ pub fn boxed_icon_button(ui: &mut Ui, icon: ImageSource<'static>) -> Response {
 /// Below this width, pages with a list and a details panel put them one above the other.
 pub const NARROW_TWO_COLUMNS: f32 = 940.0;
 
+/// D1: under "subscribe to the missing mods": how many missing mods have no Workshop link,
+/// and (without the Workshop ID database yet) a button to load it. Returns whether the
+/// button was clicked.
+pub fn workshop_links_hint(ui: &mut Ui, t: crate::i18n::I18n, no_link: usize, have_index: bool, busy: bool) -> bool {
+    use crate::i18n::{fmt, TranslationKey};
+    if no_link == 0 {
+        return false;
+    }
+    let mut clicked = false;
+    if have_index {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(fmt(t.get(TranslationKey::WorkshopDbNoLink), &[&no_link.to_string()]))
+                    .color(THEME.text_muted)
+                    .size(12.0),
+            )
+            .wrap(),
+        );
+    } else {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(fmt(t.get(TranslationKey::WorkshopDbHint), &[&no_link.to_string()]))
+                    .color(THEME.accent_amber)
+                    .size(12.0),
+            )
+            .wrap(),
+        );
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(!busy, |ui| {
+                clicked = secondary_button_icon(ui, crate::ui::icons::ICON_STEAM, t.get(TranslationKey::WorkshopDbBtn))
+                    .on_hover_text(t.get(TranslationKey::WorkshopDbBtnHint))
+                    .clicked();
+            });
+            if busy {
+                ui.spinner();
+            }
+        });
+    }
+    clicked
+}
+
 /// A dialog's content width and its largest height for the current window: as wide as
 /// wanted if the window allows, never taller than the window (the rest scrolls).
 pub fn dialog_size(ctx: &egui::Context, wanted_width: f32) -> (f32, f32) {

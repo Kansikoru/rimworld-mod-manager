@@ -20,6 +20,7 @@ enum SetAction {
     Dialog(ModListDialog),
     OpenFolder,
     SubscribeMissing(String),
+    DownloadWorkshopDb,
     Rescan,
     Import(std::path::PathBuf),
     Export { name: String, target: std::path::PathBuf },
@@ -113,6 +114,7 @@ fn apply_actions(app: &mut App, actions: Vec<SetAction>) {
             SetAction::Dialog(dialog) => app.modlist_dialog = Some(dialog),
             SetAction::SubscribeMissing(name) => app.subscribe_modlist_missing(&name),
             SetAction::Rescan => app.rescan_mods(),
+            SetAction::DownloadWorkshopDb => app.download_workshop_index(),
             SetAction::Import(file) => app.import_modlist(&file),
             SetAction::Export { name, target } => app.export_modlist(&name, &target),
             SetAction::Copied(name) => app.status_message = fmt(t.get(TranslationKey::SetsCopied), &[&name]),
@@ -500,15 +502,9 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
                 )
                 .wrap(),
             );
-            if manual > 0 {
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(fmt(t.get(TranslationKey::SetsMissingManual), &[&manual.to_string()]))
-                            .color(THEME.accent_amber)
-                            .size(12.0),
-                    )
-                    .wrap(),
-                );
+            // Mods without a Workshop link: the database finds most of them (D1).
+            if workshop_links_hint(ui, t, manual, app.workshop_index.is_some(), app.workshop_index_busy()) {
+                actions.push(SetAction::DownloadWorkshopDb);
             }
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
@@ -576,12 +572,14 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
                         );
                         if found.is_none() {
                             tag(ui, t.get(TranslationKey::ModsNotOnDisk), THEME.accent_rose);
-                            if let Some(steam_id) = list.steam_id(id) {
+                            let link =
+                                app.workshop_id_for(id, list.steam_id(id), list.names.get(i).map(String::as_str));
+                            if let Some(steam_id) = link {
                                 if icon_button(ui, ICON_STEAM, Vec2::splat(14.0), THEME.text_muted)
                                     .on_hover_text(t.get(TranslationKey::SetsOpenWorkshop))
                                     .clicked()
                                 {
-                                    open_external(crate::steam::workshop_url(steam_id));
+                                    open_external(crate::steam::workshop_url(&steam_id));
                                 }
                             }
                         }

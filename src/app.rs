@@ -299,6 +299,12 @@ pub struct App {
     // Mod updates (F10): the last Workshop check, and the list filters for it.
     pub mod_updates: Option<crate::mod_updates::UpdateReport>,
     mod_updates_rx: Option<Receiver<Result<crate::mod_updates::UpdateReport, String>>>,
+
+    /// D1: package ID -> Workshop ID (RimSort's database), for mods the game saved with ID 0.
+    pub workshop_index: Option<std::sync::Arc<crate::workshop_db::WorkshopIndex>>,
+    /// (downloaded now, result): loading the saved index at start, or a download.
+    workshop_index_rx: Option<Receiver<(bool, Result<crate::workshop_db::WorkshopIndex, String>)>>,
+
     /// Show only mods with a newer Workshop version.
     pub filter_updates: bool,
     /// Show only mods that don't declare the installed game version.
@@ -551,6 +557,8 @@ impl App {
             saves_search: String::new(),
             mod_updates: None,
             mod_updates_rx: None,
+            workshop_index: None,
+            workshop_index_rx: None,
             filter_updates: false,
             filter_no_version: false,
             mods_show_active: true,
@@ -596,6 +604,8 @@ impl App {
         app.batch_search_after_scan = start_view == "translations-batch";
         app.bisect_after_scan = start_view == "bisect";
         app.updates_after_scan = start_view == "mods-updates";
+        // The Workshop ID index downloaded earlier (a few MB): read in the background.
+        app.workshop_index_rx = Some(app.spawn_task(|| (false, crate::workshop_db::load().ok_or_else(String::new))));
         app
     }
 
@@ -629,6 +639,26 @@ impl App {
 
     /// Picks up finished background tasks (called every frame).
     fn poll_background_tasks(&mut self) {
+        if let Some(rx) = &self.workshop_index_rx {
+            if let Ok((downloaded, result)) = rx.try_recv() {
+                self.workshop_index_rx = None;
+                let t = self.i18n;
+                match result {
+                    Ok(index) => {
+                        if downloaded {
+                            self.status_message =
+                                fmt(t.get(TranslationKey::WorkshopDbReady), &[&index.len().to_string()]);
+                        }
+                        self.workshop_index = Some(std::sync::Arc::new(index));
+                    }
+                    // Nothing saved yet is not an error; a failed download is.
+                    Err(e) if downloaded => {
+                        self.status_message = fmt(t.get(TranslationKey::WorkshopDbError), &[&e]);
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
         if let Some(rx) = &self.mod_updates_rx {
             if let Ok(result) = rx.try_recv() {
                 self.mod_updates_rx = None;
@@ -1016,7 +1046,21 @@ impl App {
             .map(|(flag, _)| flag.to_string())
             .collect();
         args.extend(self.launch_extra_args.split_whitespace().map(str::to_string));
+        // The game reads Config and Saves from its AppData folder unless told otherwise. When
+        // the ModsConfig.xml chosen in Settings is elsewhere (e.g. inside the game folder),
+        // point the game there, so it loads the same mod list (otherwise it ignores it).
+        if let Some(dir) = self.save_data_folder() {
+            if !args.iter().any(|a| a.to_lowercase().starts_with("-savedatafolder")) {
+                args.push(format!("-savedatafolder={}", dir.display()));
+            }
+        }
         args
+    }
+
+    /// The `-savedatafolder` the game needs for the chosen ModsConfig.xml, if not the default.
+    pub fn save_data_folder(&self) -> Option<PathBuf> {
+        let config = self.mods_config_path.as_deref()?;
+        crate::mods_config::save_data_folder_for(config, crate::mods_config::default_save_data_dir().as_deref())
     }
 
     pub fn toggle_optimizer_ignore(&mut self, package_id: &str) {
@@ -1223,11 +1267,38 @@ impl App {
         let mut ids: Vec<String> = list
             .ids
             .iter()
-            .filter(|id| self.find_mod(id).is_none())
-            .filter_map(|id| list.steam_id(id).map(str::to_string))
+            .enumerate()
+            .filter(|(_, id)| self.find_mod(id).is_none())
+            .filter_map(|(i, id)| self.workshop_id_for(id, list.steam_id(id), list.names.get(i).map(String::as_str)))
             .collect();
+        ids.sort();
         ids.dedup();
         ids
+    }
+
+    /// D1: a mod's Workshop ID: the one its file remembers, else from the Workshop ID index
+    /// (the mod's name tells re-uploads apart).
+    pub fn workshop_id_for(&self, package_id: &str, known: Option<&str>, name_hint: Option<&str>) -> Option<String> {
+        known.map(str::to_string).or_else(|| {
+            self.workshop_index
+                .as_ref()?
+                .lookup(package_id, name_hint)
+                .map(str::to_string)
+        })
+    }
+
+    /// Downloads RimSort's Workshop database (~47 MB) in the background and keeps an index.
+    pub fn download_workshop_index(&mut self) {
+        if self.workshop_index_rx.is_some() {
+            return;
+        }
+        self.status_message = self.i18n.get(TranslationKey::WorkshopDbDownloading).to_string();
+        self.workshop_index_rx = Some(self.spawn_task(|| (true, crate::workshop_db::download())));
+    }
+
+    /// The index is being read or downloaded.
+    pub fn workshop_index_busy(&self) -> bool {
+        self.workshop_index_rx.is_some()
     }
 
     /// F6: subscribes to every missing mod of the set that has a Workshop ID, in one
@@ -1474,8 +1545,9 @@ impl App {
             .ids
             .iter()
             .filter(|id| self.find_mod(id).is_none())
-            .filter_map(|id| save.steam_id(id).map(str::to_string))
+            .filter_map(|id| self.workshop_id_for(id, save.steam_id(id), save.name_of(id)))
             .collect();
+        ids.sort();
         ids.dedup();
         ids
     }
