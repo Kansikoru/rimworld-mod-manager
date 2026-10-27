@@ -904,6 +904,28 @@ pub struct TextureSummary {
     pub up_to_date: usize,
     pub foreign_dds: usize,
     pub same_name: usize,
+    /// Pixels of the textures that will really be compressed (O2: video memory estimate).
+    pub pixels: u64,
+}
+
+impl TextureSummary {
+    /// Video memory of those textures as plain RGBA with mipmaps, and as DDS (at most: BC7,
+    /// 1 byte per pixel; opaque ones become BC1, half that), in bytes. Mipmaps add a third.
+    pub fn vram_estimate(&self) -> (u64, u64) {
+        let with_mips = |bytes: u64| bytes + bytes / 3;
+        (with_mips(self.pixels * 4), with_mips(self.pixels))
+    }
+}
+
+/// Pixels a texture adds to the estimate: 0 if it stays PNG (same rules as `encode_texture`).
+/// Only the file header is read.
+fn compressed_pixels(path: &Path) -> u64 {
+    match image::image_dimensions(path) {
+        Ok((w, h)) if !(w < MIN_TEXTURE_SIDE && h < MIN_TEXTURE_SIDE) && w % 4 == 0 && h % 4 == 0 => {
+            u64::from(w) * u64::from(h)
+        }
+        _ => 0,
+    }
 }
 
 pub fn texture_summary(mod_dirs: &[PathBuf], force: bool, want_flipped: bool) -> TextureSummary {
@@ -914,6 +936,7 @@ pub fn texture_summary(mod_dirs: &[PathBuf], force: bool, want_flipped: bool) ->
         up_to_date: plan.up_to_date,
         foreign_dds: plan.foreign_dds,
         same_name: plan.same_name,
+        pixels: plan.to_convert.par_iter().map(|p| compressed_pixels(p)).sum(),
     }
 }
 
@@ -950,10 +973,35 @@ pub fn rollback_dds(mod_dirs: &[PathBuf]) -> RollbackResult {
 }
 
 pub fn rollback_with_manifest(mod_dirs: &[PathBuf], manifest: &Path) -> RollbackResult {
+    rollback_in(mod_dirs, manifest, false)
+}
+
+/// `folder\` in lower case with `\` separators, to tell whether a path is inside it.
+fn dir_prefix(dir: &Path) -> String {
+    let mut key = path_key(dir).replace('/', "\\");
+    if !key.ends_with('\\') {
+        key.push('\\');
+    }
+    key
+}
+
+/// Rollback; with `only_these`, only the DDS inside `mod_dirs` (e.g. one mod) are undone
+/// and the rest of the log is kept as it is (O1).
+pub fn rollback_in(mod_dirs: &[PathBuf], manifest: &Path, only_these: bool) -> RollbackResult {
     let mut res = RollbackResult::default();
+    // Entries that stay in the log: failed ones, and (with `only_these`) other mods'.
     let mut failed: Vec<ManifestEntry> = Vec::new();
+    let roots: Vec<String> = mod_dirs.iter().map(|d| dir_prefix(d)).collect();
+    let inside = |p: &Path| {
+        let key = path_key(p).replace('/', "\\");
+        roots.iter().any(|root| key.starts_with(root.as_str()))
+    };
 
     for entry in read_manifest(manifest) {
+        if only_these && !inside(&entry.dds) {
+            failed.push(entry);
+            continue;
+        }
         let mut ok = true;
         if let Some(ref backup) = entry.backup {
             if backup.is_file() && !entry.source.exists() {
@@ -1013,9 +1061,10 @@ pub fn delete_files(paths: &[PathBuf]) -> (usize, usize) {
     })
 }
 
-pub fn rollback_dds_async(mod_dirs: Vec<PathBuf>, tx: mpsc::Sender<RollbackResult>) {
+/// Rollback in a background thread; `only_these`: see `rollback_in`.
+pub fn rollback_dds_async(mod_dirs: Vec<PathBuf>, only_these: bool, tx: mpsc::Sender<RollbackResult>) {
     std::thread::spawn(move || {
-        let res = rollback_dds(&mod_dirs);
+        let res = rollback_in(&mod_dirs, &manifest_path(), only_these);
         let _ = tx.send(res);
     });
 }
@@ -1381,6 +1430,62 @@ mod tests {
 
         assert_eq!(delete_files(&res.unlogged), (1, 0));
         assert!(!legacy_dds.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vram_estimate_counts_only_textures_that_get_compressed() {
+        let dir = temp_dir("vram");
+        write_png(&dir.join("big.png"), 256, 128, 255); // compressed: 32768 px
+        write_png(&dir.join("tiny.png"), 32, 32, 255); // < 64 px: stays PNG
+        write_png(&dir.join("odd.png"), 130, 64, 255); // not a multiple of 4: stays PNG
+        assert_eq!(compressed_pixels(&dir.join("big.png")), 256 * 128);
+        assert_eq!(compressed_pixels(&dir.join("tiny.png")), 0);
+        assert_eq!(compressed_pixels(&dir.join("odd.png")), 0);
+
+        let summary = TextureSummary {
+            pixels: 3 * 1024 * 1024,
+            ..Default::default()
+        };
+        // RGBA: 4 bytes per pixel + a third for mipmaps; BC7: 1 byte per pixel + a third.
+        assert_eq!(summary.vram_estimate(), (16 * 1024 * 1024, 4 * 1024 * 1024));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rollback_of_one_mod_keeps_the_others() {
+        let dir = temp_dir("rollback_one");
+        let manifest = dir.join("manifest.tsv");
+        // Two mods, one of them a prefix of the other's name ("Mod" / "Mod2").
+        let mut entries = Vec::new();
+        let mut files = Vec::new();
+        for name in ["Mod", "Mod2"] {
+            let tex = dir.join(name).join("Textures").join("Things");
+            std::fs::create_dir_all(&tex).unwrap();
+            let (source, dds) = (tex.join("a.png"), tex.join("a.dds"));
+            let backup = dir.join("backup").join(name).join("a.png");
+            std::fs::create_dir_all(backup.parent().unwrap()).unwrap();
+            std::fs::write(&backup, b"png").unwrap();
+            std::fs::write(&dds, b"dds").unwrap();
+            entries.push(ManifestEntry {
+                dds: dds.clone(),
+                source: source.clone(),
+                backup: Some(backup),
+                source_fp: None,
+                flipped: Some(false),
+            });
+            files.push((source, dds));
+        }
+        append_manifest(&manifest, &entries).unwrap();
+
+        let res = rollback_in(&[dir.join("Mod")], &manifest, true);
+        assert_eq!((res.restored, res.removed, res.errors), (1, 1, 0));
+        assert!(files[0].0.is_file() && !files[0].1.exists(), "Mod rolled back");
+        assert!(!files[1].0.exists() && files[1].1.is_file(), "Mod2 untouched");
+        let left = read_manifest(&manifest);
+        assert_eq!(left.len(), 1, "Mod2 stays in the log");
+        assert_eq!(left[0].dds, files[1].1);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

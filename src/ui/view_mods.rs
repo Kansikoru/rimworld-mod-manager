@@ -758,6 +758,28 @@ fn filters_toggle(app: &mut App, ui: &mut Ui) {
     }
 }
 
+/// T2: the modpack translation search found a translation for this mod (not subscribed yet).
+/// Returns whether it was clicked (opens the results on the Translations tab).
+fn translation_badge(
+    ui: &mut Ui,
+    title: Option<&String>,
+    lang: crate::models::TranslationTargetLang,
+    t: crate::i18n::I18n,
+) -> bool {
+    let Some(title) = title else { return false };
+    let Some(resp) = tag_if_fits(
+        ui,
+        &fmt(t.get(TranslationKey::TransHintBadge), &[lang.code()]),
+        THEME.accent_cyan,
+    ) else {
+        return false;
+    };
+    resp.interact(egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(fmt(t.get(TranslationKey::TransHintHover), &[lang.label(), title]))
+        .clicked()
+}
+
 /// Row of category chips above the lists: "All" + every category that some mod has, with counts.
 /// Clicking chips toggles them; a mod is shown if it has any selected category.
 fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
@@ -1022,6 +1044,10 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
     let game_mm = app.steam_paths.game_major_minor();
     let update_map = app.mod_updates.as_ref().map(|r| r.mods.clone()).unwrap_or_default();
+    // T2: mods the modpack translation search found a translation for.
+    let trans_hints = app.translation_hints();
+    let trans_lang = app.batch_lang;
+    let mut open_translations = false;
     let game_data = app.steam_paths.game_data_path.clone();
 
     // Header: title, count; on the right — search and move up / down for the selected mod.
@@ -1343,6 +1369,14 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                     }
                                     version_badge(ui, m, game_mm.as_deref(), t);
                                     update_badge(ui, update_map.get(&m.package_id.to_lowercase()), t);
+                                    if translation_badge(
+                                        ui,
+                                        trans_hints.get(&m.package_id.to_lowercase()),
+                                        trans_lang,
+                                        t,
+                                    ) {
+                                        open_translations = true;
+                                    }
                                 }
                                 // Listed in ModsConfig.xml but not found by the scanner: kept on save, not dropped.
                                 if mod_info_opt.is_none() {
@@ -1535,6 +1569,9 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
             let _ = app.icon_tx.send((pkg_id, path));
         }
     }
+    if open_translations {
+        app.open_batch_translations();
+    }
 
     if let Some(pkg_id) = toggle_ignore_id {
         app.toggle_optimizer_ignore(&pkg_id);
@@ -1574,6 +1611,10 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     let panel_rect = ui.max_rect();
     let game_mm = app.steam_paths.game_major_minor();
     let update_map = app.mod_updates.as_ref().map(|r| r.mods.clone()).unwrap_or_default();
+    // T2: mods the modpack translation search found a translation for.
+    let trans_hints = app.translation_hints();
+    let trans_lang = app.batch_lang;
+    let mut open_translations = false;
     // "x_steam" in ModsConfig refers to the Workshop copy of "x": it is active too.
     let active_set: HashSet<String> = app
         .active_mods
@@ -1783,6 +1824,14 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                                     category_badges(ui, &m.categories, t, 2);
                                     version_badge(ui, m, game_mm.as_deref(), t);
                                     update_badge(ui, update_map.get(&m.package_id.to_lowercase()), t);
+                                    if translation_badge(
+                                        ui,
+                                        trans_hints.get(&m.package_id.to_lowercase()),
+                                        trans_lang,
+                                        t,
+                                    ) {
+                                        open_translations = true;
+                                    }
                                 }
                                 let right_rect = finish_row(ui, &left_ui, &split);
 
@@ -1866,6 +1915,9 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
         if let Some(path) = preview_opt {
             let _ = app.icon_tx.send((pkg_id, path));
         }
+    }
+    if open_translations {
+        app.open_batch_translations();
     }
 
     if let Some(pkg_id) = toggle_ignore_id {

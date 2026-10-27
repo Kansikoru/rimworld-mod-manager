@@ -174,7 +174,15 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
                         if secondary_button_icon(ui, ICON_SEARCH, t.get(TranslationKey::OptBtnScan)).clicked() {
                             app.scan_texture_counts();
                         }
-                        if secondary_button_icon(ui, ICON_UNDO, t.get(TranslationKey::OptBtnRollback)).clicked() {
+                        // With "Selected mod" chosen, rollback undoes only that mod (O1).
+                        if app.opt_scope == OptimizeScope::SelectedOnly {
+                            if secondary_button_icon(ui, ICON_UNDO, t.get(TranslationKey::OptBtnRollbackSelected))
+                                .on_hover_text(t.get(TranslationKey::OptBtnRollbackSelectedHint))
+                                .clicked()
+                            {
+                                app.rollback_selected_mod_textures();
+                            }
+                        } else if secondary_button_icon(ui, ICON_UNDO, t.get(TranslationKey::OptBtnRollback)).clicked() {
                             app.rollback_textures();
                         }
                     });

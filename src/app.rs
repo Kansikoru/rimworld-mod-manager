@@ -116,6 +116,8 @@ pub enum ModListDialog {
 /// Translations of one mod found by the modpack-wide search.
 #[derive(Debug, Clone)]
 pub struct ModTranslations {
+    /// The mod's package ID (lowercase): its row in the mod list gets a hint (T2).
+    pub package_id: String,
     pub mod_name: String,
     pub items: Vec<WorkshopItemResult>,
 }
@@ -2172,7 +2174,7 @@ impl App {
 
         let mut skipped = 0;
         let mut seen = std::collections::HashSet::new();
-        let mut candidates: Vec<(String, Option<String>)> = Vec::new();
+        let mut candidates: Vec<(String, String, Option<String>)> = Vec::new();
         for id in &self.active_mods {
             let Some(m) = self.find_mod(id) else { continue };
             if self.is_official_mod(m) || m.is_translation_mod || !seen.insert(m.package_id.to_lowercase()) {
@@ -2182,7 +2184,7 @@ impl App {
                 skipped += 1;
                 continue;
             }
-            candidates.push((m.name.clone(), m.steam_item_id.clone()));
+            candidates.push((m.package_id.to_lowercase(), m.name.clone(), m.steam_item_id.clone()));
         }
 
         self.batch_results.clear();
@@ -2225,7 +2227,7 @@ impl App {
                             break;
                         }
                         let i = next.fetch_add(1, Ordering::Relaxed);
-                        let Some((name, steam_id)) = candidates.get(i) else {
+                        let Some((package_id, name, steam_id)) = candidates.get(i) else {
                             break;
                         };
                         let query = format!("{} {}", name, lang.search_suffix());
@@ -2240,6 +2242,7 @@ impl App {
                                 );
                                 if !items.is_empty() {
                                     let _ = tx.send(BatchSearchMsg::Found(ModTranslations {
+                                        package_id: package_id.clone(),
                                         mod_name: name.clone(),
                                         items,
                                     }));
@@ -2266,6 +2269,22 @@ impl App {
                 ctx.request_repaint();
             }
         });
+    }
+
+    /// T2: mods for which the last modpack search found a translation that isn't subscribed
+    /// yet: lowercase package ID -> the best match's title.
+    pub fn translation_hints(&self) -> std::collections::HashMap<String, String> {
+        self.batch_results
+            .iter()
+            .filter(|r| !r.items.iter().any(|i| self.batch_subscribed.contains(&i.id)))
+            .filter_map(|r| r.items.first().map(|best| (r.package_id.clone(), best.title.clone())))
+            .collect()
+    }
+
+    /// Opens the Translations tab on the modpack search results.
+    pub fn open_batch_translations(&mut self) {
+        self.show_batch_results = true;
+        self.current_tab = AppTab::Translations;
     }
 
     pub fn stop_batch_translation_search(&mut self) {
@@ -2602,9 +2621,28 @@ impl App {
             .cloned()
             .collect();
         let (tx, rx) = channel();
-        rollback_dds_async(dirs_from_mods(&mods), tx);
+        rollback_dds_async(dirs_from_mods(&mods), false, tx);
         self.opt_rollback_rx = Some(rx);
         self.status_message = tr!("Откат текстур...", "Rolling back textures...").to_string();
+    }
+
+    /// O1: rolls back only the mod selected on the Mods tab; other mods' DDS stay.
+    pub fn rollback_selected_mod_textures(&mut self) {
+        let t = self.i18n;
+        let Some(m) = self
+            .selected_mod_id
+            .as_deref()
+            .and_then(|id| self.find_mod(id))
+            .filter(|m| !self.is_official_mod(m))
+            .cloned()
+        else {
+            self.status_message = t.get(TranslationKey::OptRollbackPickMod).to_string();
+            return;
+        };
+        let (tx, rx) = channel();
+        rollback_dds_async(dirs_from_mods(std::slice::from_ref(&m)), true, tx);
+        self.opt_rollback_rx = Some(rx);
+        self.status_message = fmt(t.get(TranslationKey::OptRollbackOneRunning), &[&m.name]);
     }
 
     /// Whether a background optimizer task (scan, rollback, conversion) is running.
@@ -2631,6 +2669,16 @@ impl App {
                     self.status_message.push_str(&fmt(
                         self.i18n.get(TranslationKey::OptSameNameSkipped),
                         &[&s.same_name.to_string()],
+                    ));
+                }
+                // O2: video memory estimate. Not on 1.7: the game compresses textures to BC7
+                // itself there, so DDS only speed up loading.
+                if s.pixels > 0 && !crate::optimizer::engine_wants_flipped(self.steam_paths.engine) {
+                    let (plain, dds) = s.vram_estimate();
+                    let mb = |b: u64| (b as f64 / 1_048_576.0).round().to_string();
+                    self.status_message.push_str(&fmt(
+                        self.i18n.get(TranslationKey::OptVramEstimate),
+                        &[&mb(plain), &mb(dds)],
                     ));
                 }
                 self.opt_scan_rx = None;
