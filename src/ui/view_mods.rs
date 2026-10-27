@@ -125,7 +125,9 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
             (ICON_REFRESH, t.get(TranslationKey::BtnRescanMods)),
             (ICON_CHECK_ALL, t.get(TranslationKey::BtnEnableAll)),
             (ICON_X_ALL, t.get(TranslationKey::BtnDisableAll)),
+            (ICON_STEAM, t.get(TranslationKey::UpdatesBtn)),
         ];
+        let checking_updates = app.checking_mod_updates();
         if !app.is_details_panel_visible {
             library.push((ICON_INFO, t.get(TranslationKey::ModsBtnInfoPanel)));
         }
@@ -174,13 +176,24 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
 
         for (i, (icon, text)) in library.iter().enumerate() {
             let label = if compact { "" } else { *text };
+            let busy = (i == 0 && scanning) || (i == 3 && checking_updates);
             let clicked = ui
-                .add_enabled_ui(!(i == 0 && scanning), |ui| {
+                .add_enabled_ui(!busy, |ui| {
                     let resp = secondary_button_icon(ui, icon.clone(), label);
-                    if compact { resp.on_hover_text(*text) } else { resp }.clicked()
+                    let hint = if i == 3 {
+                        t.get(TranslationKey::UpdatesBtnHint)
+                    } else {
+                        *text
+                    };
+                    if compact || i == 3 {
+                        resp.on_hover_text(hint)
+                    } else {
+                        resp
+                    }
+                    .clicked()
                 })
                 .inner;
-            if i == 0 && scanning {
+            if busy {
                 ui.spinner();
             }
             if clicked {
@@ -188,6 +201,7 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
                     0 => app.rescan_mods(),
                     1 => app.activate_all_mods(),
                     2 => app.deactivate_all_mods(),
+                    3 => app.check_mod_updates(),
                     _ => {
                         app.is_details_panel_visible = true;
                         app.is_details_panel_collapsed = false;
@@ -606,6 +620,27 @@ fn version_badge(ui: &mut Ui, m: &ModInfo, game_mm: Option<&str>, t: crate::i18n
     }
 }
 
+/// Sky-blue "update" badge: the Workshop has a newer version of the mod.
+fn update_badge(ui: &mut Ui, update: Option<&crate::mod_updates::ModUpdate>, t: crate::i18n::I18n) {
+    let Some(u) = update else { return };
+    let text = if u.newer_supports_game {
+        t.get(TranslationKey::UpdatesBadgeVersion)
+    } else {
+        t.get(TranslationKey::UpdatesBadge)
+    };
+    if let Some(resp) = tag_if_fits(ui, text, THEME.accent_info) {
+        let mut hint = fmt(
+            t.get(TranslationKey::UpdatesBadgeHint),
+            &[&local_date_time(u.remote_time)],
+        );
+        if u.estimated {
+            hint.push('\n');
+            hint.push_str(t.get(TranslationKey::UpdatesEstimated));
+        }
+        resp.on_hover_text(hint);
+    }
+}
+
 /// Row of category chips above the lists: "All" + every category that some mod has, with counts.
 /// Clicking chips toggles them; a mod is shown if it has any selected category.
 fn render_category_filter(app: &mut App, ui: &mut Ui) {
@@ -620,9 +655,17 @@ fn render_category_filter(app: &mut App, ui: &mut Ui) {
         return;
     }
 
+    let game_mm = app.steam_paths.game_major_minor();
+    let no_version = app
+        .all_mods
+        .iter()
+        .filter(|m| crate::version_check::supports_version(m, game_mm.as_deref()) == Some(false))
+        .count();
+    let updates = app.mod_updates.as_ref().map(|r| r.outdated_count()).unwrap_or(0);
+
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
-        let all_selected = app.category_filter.is_empty();
+        let all_selected = app.category_filter.is_empty() && !app.filter_updates && !app.filter_no_version;
         if chip(
             ui,
             None,
@@ -633,6 +676,40 @@ fn render_category_filter(app: &mut App, ui: &mut Ui) {
         .clicked()
         {
             app.category_filter.clear();
+            app.filter_updates = false;
+            app.filter_no_version = false;
+        }
+        // Status filters: a newer Workshop version, no support for the installed game version.
+        if updates > 0
+            && chip(
+                ui,
+                Some((ICON_STEAM, THEME.accent_info)),
+                t.get(TranslationKey::UpdatesChip),
+                updates,
+                app.filter_updates,
+            )
+            .on_hover_text(t.get(TranslationKey::UpdatesChipHint))
+            .clicked()
+        {
+            app.filter_updates = !app.filter_updates;
+        }
+        if no_version > 0 {
+            let label = fmt(
+                t.get(TranslationKey::NoVersionChip),
+                &[game_mm.as_deref().unwrap_or("?")],
+            );
+            if chip(
+                ui,
+                Some((ICON_STATUS_WARNING, THEME.accent_amber)),
+                &label,
+                no_version,
+                app.filter_no_version,
+            )
+            .on_hover_text(t.get(TranslationKey::NoVersionChipHint))
+            .clicked()
+            {
+                app.filter_no_version = !app.filter_no_version;
+            }
         }
         for cat in ModCategory::ALL {
             let Some(n) = counts.get(&cat) else {
@@ -813,6 +890,7 @@ fn render_mod_icon_pill(
 fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
     let game_mm = app.steam_paths.game_major_minor();
+    let update_map = app.mod_updates.as_ref().map(|r| r.mods.clone()).unwrap_or_default();
     let game_data = app.steam_paths.game_data_path.clone();
 
     // Header: title, count; on the right — search and move up / down for the selected mod.
@@ -886,6 +964,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                 || display_name.to_lowercase().contains(&query_lower)
                 || pkg_id.to_lowercase().contains(&query_lower))
                 && passes_category_filter(&app.category_filter, mod_opt)
+                && app.passes_extra_filters(mod_opt, game_mm.as_deref())
         })
         .map(|(i, _)| i)
         .collect();
@@ -1128,6 +1207,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                         category_badges(ui, &m.categories, t, 2);
                                     }
                                     version_badge(ui, m, game_mm.as_deref(), t);
+                                    update_badge(ui, update_map.get(&m.package_id.to_lowercase()), t);
                                 }
                                 // Listed in ModsConfig.xml but not found by the scanner: kept on save, not dropped.
                                 if mod_info_opt.is_none() {
@@ -1358,6 +1438,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     // Whole panel: drop zone for disabling dragged active mods.
     let panel_rect = ui.max_rect();
     let game_mm = app.steam_paths.game_major_minor();
+    let update_map = app.mod_updates.as_ref().map(|r| r.mods.clone()).unwrap_or_default();
     // "x_steam" in ModsConfig refers to the Workshop copy of "x": it is active too.
     let active_set: HashSet<String> = app
         .active_mods
@@ -1404,6 +1485,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                 || m.package_id.to_lowercase().contains(&query_lower)
                 || m.author.to_lowercase().contains(&query_lower))
                 && passes_category_filter(&app.category_filter, Some(m))
+                && app.passes_extra_filters(Some(m), game_mm.as_deref())
         })
         .collect();
     // Visible IDs for Shift-range selection
@@ -1564,6 +1646,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
 
                                     category_badges(ui, &m.categories, t, 2);
                                     version_badge(ui, m, game_mm.as_deref(), t);
+                                    update_badge(ui, update_map.get(&m.package_id.to_lowercase()), t);
                                 }
                                 let right_rect = finish_row(ui, &left_ui, &split);
 

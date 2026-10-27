@@ -196,6 +196,8 @@ pub struct App {
     batch_search_after_scan: bool,
     /// RWMM_TAB=bisect: open the broken-mod search once the mods are scanned (screenshots).
     bisect_after_scan: bool,
+    /// RWMM_TAB=mods-updates: check the Workshop for updates once the mods are scanned (screenshots).
+    updates_after_scan: bool,
 
     // Optimizer State
     pub opt_scope: OptimizeScope,
@@ -278,6 +280,14 @@ pub struct App {
     saves_loaded_at: Option<std::time::Instant>,
     pub selected_save: Option<String>,
     pub saves_search: String,
+
+    // Mod updates (F10): the last Workshop check, and the list filters for it.
+    pub mod_updates: Option<crate::mod_updates::UpdateReport>,
+    mod_updates_rx: Option<Receiver<Result<crate::mod_updates::UpdateReport, String>>>,
+    /// Show only mods with a newer Workshop version.
+    pub filter_updates: bool,
+    /// Show only mods that don't declare the installed game version.
+    pub filter_no_version: bool,
 
     // Broken-mod search (F8). The session is saved to bisect.json after every change,
     // so it survives closing the program in the middle.
@@ -463,6 +473,7 @@ impl App {
             show_batch_results: false,
             batch_search_after_scan: false,
             bisect_after_scan: false,
+            updates_after_scan: false,
 
             opt_scope: OptimizeScope::AllInstalled,
             opt_force: false,
@@ -519,6 +530,10 @@ impl App {
             // RWMM_SAVE=<name> opens that save on the Saves tab (screenshots).
             selected_save: std::env::var("RWMM_SAVE").ok().filter(|s| !s.is_empty()),
             saves_search: String::new(),
+            mod_updates: None,
+            mod_updates_rx: None,
+            filter_updates: false,
+            filter_no_version: false,
             // An unfinished search opens again where it stopped.
             bisect_open: bisect_session.is_some(),
             bisect: bisect_session,
@@ -559,6 +574,7 @@ impl App {
         }
         app.batch_search_after_scan = start_view == "translations-batch";
         app.bisect_after_scan = start_view == "bisect";
+        app.updates_after_scan = start_view == "mods-updates";
         app
     }
 
@@ -592,6 +608,30 @@ impl App {
 
     /// Picks up finished background tasks (called every frame).
     fn poll_background_tasks(&mut self) {
+        if let Some(rx) = &self.mod_updates_rx {
+            if let Ok(result) = rx.try_recv() {
+                self.mod_updates_rx = None;
+                let t = self.i18n;
+                match result {
+                    Ok(report) => {
+                        let n = report.outdated_count();
+                        self.status_message = if n == 0 {
+                            fmt(t.get(TranslationKey::UpdatesNone), &[&report.checked.to_string()])
+                        } else {
+                            fmt(
+                                t.get(TranslationKey::UpdatesFound),
+                                &[&n.to_string(), &report.checked.to_string()],
+                            )
+                        };
+                        if n == 0 {
+                            self.filter_updates = false;
+                        }
+                        self.mod_updates = Some(report);
+                    }
+                    Err(e) => self.status_message = fmt(t.get(TranslationKey::UpdatesError), &[&e]),
+                }
+            }
+        }
         if let Some(rx) = &self.saves_rx {
             if let Ok(saves) = rx.try_recv() {
                 self.saves_rx = None;
@@ -1049,6 +1089,9 @@ impl App {
         if std::mem::take(&mut self.bisect_after_scan) {
             self.open_bisect();
         }
+        if std::mem::take(&mut self.updates_after_scan) {
+            self.check_mod_updates();
+        }
         if self.rescan_keep_status {
             self.rescan_keep_status = false;
         } else {
@@ -1414,6 +1457,68 @@ impl App {
             .collect();
         ids.dedup();
         ids
+    }
+
+    // ----- Mod updates (F10) -----
+
+    /// Asks the Workshop in the background which installed mods have a newer version.
+    /// Covers Workshop mods and, on a game without Steam, local copies kept in folders
+    /// named by their Workshop ID.
+    pub fn check_mod_updates(&mut self) {
+        if self.mod_updates_rx.is_some() {
+            return;
+        }
+        let items: Vec<crate::mod_updates::CheckItem> = self
+            .all_mods
+            .iter()
+            .filter(|m| !self.is_official_mod(m))
+            .filter_map(|m| {
+                let workshop_id = m.steam_item_id.clone().or_else(|| {
+                    m.dir_path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .filter(|n| crate::modlists::is_workshop_id(n))
+                        .map(str::to_string)
+                })?;
+                Some(crate::mod_updates::CheckItem {
+                    package_id: m.package_id.clone(),
+                    workshop_id,
+                    dir: m.dir_path.clone(),
+                    local_versions: m.supported_versions.clone(),
+                })
+            })
+            .collect();
+        let t = self.i18n;
+        if items.is_empty() {
+            self.status_message = t.get(TranslationKey::UpdatesNothing).to_string();
+            return;
+        }
+        let acf = self
+            .steam_paths
+            .workshop_path
+            .as_deref()
+            .and_then(crate::mod_updates::acf_path);
+        let game = self.steam_paths.game_major_minor();
+        self.status_message = fmt(t.get(TranslationKey::UpdatesChecking), &[&items.len().to_string()]);
+        self.mod_updates_rx = Some(self.spawn_task(move || crate::mod_updates::check(items, acf, game)));
+    }
+
+    pub fn checking_mod_updates(&self) -> bool {
+        self.mod_updates_rx.is_some()
+    }
+
+    /// What the last check found for a mod (only mods with a newer version).
+    pub fn mod_update(&self, package_id: &str) -> Option<&crate::mod_updates::ModUpdate> {
+        self.mod_updates
+            .as_ref()
+            .and_then(|r| r.mods.get(&package_id.to_lowercase()))
+    }
+
+    /// The "updates" and "no support for this version" filters of the mod lists.
+    pub fn passes_extra_filters(&self, m: Option<&ModInfo>, game_mm: Option<&str>) -> bool {
+        let has_update = m.is_some_and(|m| self.mod_update(&m.package_id).is_some());
+        let lacks_version = m.is_some_and(|m| crate::version_check::supports_version(m, game_mm) == Some(false));
+        (has_update || !self.filter_updates) && (lacks_version || !self.filter_no_version)
     }
 
     // ----- Broken-mod search (F8) -----

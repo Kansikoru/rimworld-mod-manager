@@ -10,6 +10,7 @@ pub mod game_install;
 pub mod i18n;
 pub mod icon_cache;
 pub mod matcher;
+pub mod mod_updates;
 pub mod models;
 pub mod modlists;
 pub mod mods_config;
