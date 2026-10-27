@@ -63,7 +63,7 @@ pub fn render_steamcmd_window(app: &mut App, ctx: &egui::Context) {
                     inner_margin: egui::Margin::same(6.0),
                     rounding: Rounding::same(6.0),
                     fill: THEME.bg_dark,
-                    stroke: egui::Stroke::new(1.0, THEME.border_subtle),
+                    stroke: egui::Stroke::new(1.0_f32, THEME.border_subtle),
                     ..Default::default()
                 }
                 .show(ui, |ui| {
@@ -272,7 +272,7 @@ pub fn render_steamcmd_window(app: &mut App, ctx: &egui::Context) {
                     inner_margin: egui::Margin::same(8.0),
                     rounding: Rounding::same(6.0),
                     fill: THEME.bg_dark,
-                    stroke: egui::Stroke::new(1.0, THEME.border_subtle),
+                    stroke: egui::Stroke::new(1.0_f32, THEME.border_subtle),
                     ..Default::default()
                 }
                 .show(ui, |ui| {

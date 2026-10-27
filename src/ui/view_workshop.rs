@@ -359,11 +359,11 @@ fn card(
         return response;
     }
     let (fill, stroke) = if selected {
-        (THEME.bg_surface_hover, Stroke::new(1.5, THEME.accent_purple))
+        (THEME.bg_surface_hover, Stroke::new(1.5_f32, THEME.accent_purple))
     } else if response.hovered() {
-        (THEME.bg_surface_hover, Stroke::new(1.0, THEME.border_strong))
+        (THEME.bg_surface_hover, Stroke::new(1.0_f32, THEME.border_strong))
     } else {
-        (THEME.bg_card, Stroke::new(1.0, THEME.border_subtle))
+        (THEME.bg_card, Stroke::new(1.0_f32, THEME.border_subtle))
     };
     ui.painter().rect(rect, Rounding::same(8.0), fill, stroke);
 
