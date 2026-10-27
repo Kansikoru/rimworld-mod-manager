@@ -6,14 +6,14 @@ use std::sync::Arc;
 use eframe::egui::{self, Rounding};
 
 use crate::analyzer::{analyze_rimworld_log, detect_rimworld_log_paths, LogReport};
+use crate::categories::ModCategory;
 use crate::cleaner::{delete_translation_mods, unsubscribe_and_delete_single};
 use crate::community_rules::CommunityDatabase;
 use crate::dependencies::{validate_dependencies, DependencyProblem, DependencyReport};
-use crate::categories::ModCategory;
 use crate::game_install::known_launch_flags;
 use crate::i18n::{fmt, tr, I18n, Language, TranslationKey};
 use crate::matcher::{classify_and_link_translations, filter_and_rank_workshop_translations};
-use crate::models::{is_protected_package_id, is_optimizer_blacklisted, ModInfo, TranslationTargetLang};
+use crate::models::{is_optimizer_blacklisted, is_protected_package_id, ModInfo, TranslationTargetLang};
 use crate::mods_config::{get_default_mods_config_path, load_active_mods, save_active_mods};
 use crate::optimizer::{
     default_cpu_threads, dirs_from_mods, rollback_dds_async, run_optimization, texture_summary_async,
@@ -21,9 +21,7 @@ use crate::optimizer::{
 };
 use crate::scanner::scan_mods;
 use crate::sorter::sort_load_order_with_db;
-use crate::steam::{
-    detect_steam_paths, launch_rimworld, subscribe_workshop_item_native, SteamPaths,
-};
+use crate::steam::{detect_steam_paths, launch_rimworld, subscribe_workshop_item_native, SteamPaths};
 use crate::ui::icons::*;
 use crate::ui::theme::THEME;
 use crate::workshop_search::{search_steam_workshop, WorkshopItemResult};
@@ -50,11 +48,10 @@ pub fn find_mod_in<'a>(all_mods: &'a [ModInfo], id: &str) -> Option<&'a ModInfo>
 
 /// Empty filter shows everything; otherwise the mod needs at least one of the categories.
 /// Mods that are not on disk (`None`) are hidden while a filter is active.
-pub fn passes_category_filter(
-    filter: &std::collections::HashSet<ModCategory>,
-    m: Option<&ModInfo>,
-) -> bool {
-    filter.is_empty() || m.map(|m| m.categories.iter().any(|c| filter.contains(c))).unwrap_or(false)
+pub fn passes_category_filter(filter: &std::collections::HashSet<ModCategory>, m: Option<&ModInfo>) -> bool {
+    filter.is_empty()
+        || m.map(|m| m.categories.iter().any(|c| filter.contains(c)))
+            .unwrap_or(false)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,9 +86,18 @@ pub enum PendingQuestion {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModListDialog {
     /// Save the current load order as a new set.
-    SaveAs { name: String, error: Option<String> },
-    Rename { from: String, name: String, error: Option<String> },
-    Delete { name: String },
+    SaveAs {
+        name: String,
+        error: Option<String>,
+    },
+    Rename {
+        from: String,
+        name: String,
+        error: Option<String>,
+    },
+    Delete {
+        name: String,
+    },
 }
 
 /// Translations of one mod found by the modpack-wide search.
@@ -103,9 +109,16 @@ pub struct ModTranslations {
 
 /// Messages from the modpack-wide translation search.
 pub enum BatchSearchMsg {
-    Progress { done: usize, total: usize },
+    Progress {
+        done: usize,
+        total: usize,
+    },
     Found(ModTranslations),
-    Done { searched: usize, errors: usize, cancelled: bool },
+    Done {
+        searched: usize,
+        errors: usize,
+        cancelled: bool,
+    },
 }
 
 /// Mods being dragged with the mouse (F1).
@@ -565,10 +578,7 @@ impl App {
 
     /// Runs `job` on a background thread; the result arrives on the returned channel
     /// and the UI is woken up to show it.
-    fn spawn_task<T: Send + 'static>(
-        &self,
-        job: impl FnOnce() -> T + Send + 'static,
-    ) -> Receiver<T> {
+    fn spawn_task<T: Send + 'static>(&self, job: impl FnOnce() -> T + Send + 'static) -> Receiver<T> {
         let (tx, rx) = channel();
         let ctx = self.repaint_ctx.clone();
         std::thread::spawn(move || {
@@ -804,11 +814,17 @@ impl App {
         self.i18n = I18n::new(lang);
         if let Some(ref report) = self.log_report {
             self.status_message = if report.has_hard_crash {
-                self.i18n.get(TranslationKey::CrashSummaryHardCrash).replace("{}", &report.culprits.len().to_string())
+                self.i18n
+                    .get(TranslationKey::CrashSummaryHardCrash)
+                    .replace("{}", &report.culprits.len().to_string())
             } else if !report.culprits.is_empty() {
-                self.i18n.get(TranslationKey::CrashSummaryCulprits).replace("{}", &report.culprits.len().to_string())
+                self.i18n
+                    .get(TranslationKey::CrashSummaryCulprits)
+                    .replace("{}", &report.culprits.len().to_string())
             } else if report.total_errors > 0 {
-                self.i18n.get(TranslationKey::CrashSummaryErrorsOnly).replace("{}", &report.total_errors.to_string())
+                self.i18n
+                    .get(TranslationKey::CrashSummaryErrorsOnly)
+                    .replace("{}", &report.total_errors.to_string())
             } else {
                 self.i18n.get(TranslationKey::CrashSummaryClean).to_string()
             };
@@ -843,10 +859,7 @@ impl App {
     /// Adds or removes a category of a mod by hand (right-click menu). Saved to disk.
     pub fn toggle_mod_category(&mut self, pkg_id: &str, cat: ModCategory) {
         let key = pkg_id.to_lowercase();
-        let current = self
-            .find_mod(pkg_id)
-            .map(|m| m.categories.clone())
-            .unwrap_or_default();
+        let current = self.find_mod(pkg_id).map(|m| m.categories.clone()).unwrap_or_default();
         let mut cats = self.category_overrides.get(&key).cloned().unwrap_or(current);
         if let Some(pos) = cats.iter().position(|c| *c == cat) {
             cats.remove(pos);
@@ -865,10 +878,9 @@ impl App {
 
     fn apply_category_overrides(&mut self) {
         crate::categories::assign_categories(&mut self.all_mods, &self.category_overrides);
-        if let Err(e) = crate::categories::save_overrides(
-            &crate::categories::overrides_path(),
-            &self.category_overrides,
-        ) {
+        if let Err(e) =
+            crate::categories::save_overrides(&crate::categories::overrides_path(), &self.category_overrides)
+        {
             self.status_message = tr!("Не удалось сохранить категории: {}", "Could not save categories: {}", e);
         }
     }
@@ -953,12 +965,12 @@ impl App {
         } else {
             self.opt_ignore_list.insert(lower);
         }
-        
+
         if let Some(local_appdata) = std::env::var_os("LOCALAPPDATA") {
             let ignore_path = std::path::PathBuf::from(local_appdata)
                 .join("RimWorldModManager")
                 .join("optimizer_ignore.txt");
-            
+
             let content = self.opt_ignore_list.iter().cloned().collect::<Vec<_>>().join("\n");
             let _ = std::fs::write(&ignore_path, content);
         }
@@ -989,8 +1001,13 @@ impl App {
             crate::scanner::resolve_versioned_fields(&mut unique, game_mm.as_deref());
             classify_and_link_translations(&mut unique);
             crate::categories::assign_categories(&mut unique, &overrides);
-            let optimizer_dds = crate::optimizer::count_wrong_orientation(&crate::optimizer::manifest_path(), want_flipped);
-            RescanResult { mods: unique, duplicates, optimizer_dds }
+            let optimizer_dds =
+                crate::optimizer::count_wrong_orientation(&crate::optimizer::manifest_path(), want_flipped);
+            RescanResult {
+                mods: unique,
+                duplicates,
+                optimizer_dds,
+            }
         }));
     }
 
@@ -1017,7 +1034,8 @@ impl App {
             // Keep IDs that were not found on disk: they stay in ModsConfig.xml on save
             // and are shown as "not on disk" instead of being silently dropped.
             let on_disk = load_active_mods(&config_p);
-            if let Some(list) = active_after_rescan(self.has_unsaved_changes(), self.reload_active_from_disk, &on_disk) {
+            if let Some(list) = active_after_rescan(self.has_unsaved_changes(), self.reload_active_from_disk, &on_disk)
+            {
                 self.active_mods = list;
             }
             self.reload_active_from_disk = false;
@@ -1056,9 +1074,11 @@ impl App {
     /// Writes the load order to ModsConfig.xml. Returns whether it was saved.
     pub fn save_config(&mut self) -> bool {
         let Some(config_p) = self.mods_config_path.clone() else {
-            self.status_message =
-                tr!("ModsConfig.xml не найден — укажите его в Настройках", "ModsConfig.xml not found — set it in Settings")
-                    .to_string();
+            self.status_message = tr!(
+                "ModsConfig.xml не найден — укажите его в Настройках",
+                "ModsConfig.xml not found — set it in Settings"
+            )
+            .to_string();
             return false;
         };
         match save_active_mods(&config_p, &self.active_mods) {
@@ -1077,8 +1097,11 @@ impl App {
                 true
             }
             Err(e) => {
-                self.status_message =
-                    tr!("Ошибка сохранения ModsConfig.xml: {}", "Could not save ModsConfig.xml: {}", e);
+                self.status_message = tr!(
+                    "Ошибка сохранения ModsConfig.xml: {}",
+                    "Could not save ModsConfig.xml: {}",
+                    e
+                );
                 false
             }
         }
@@ -1149,7 +1172,9 @@ impl App {
         if self.steam_rx.is_some() {
             return;
         }
-        let Some(list) = self.modlists.iter().find(|l| l.name == name) else { return };
+        let Some(list) = self.modlists.iter().find(|l| l.name == name) else {
+            return;
+        };
         let ids = self.modlist_missing_workshop_ids(list);
         self.subscribe_workshop_ids(ids);
     }
@@ -1182,12 +1207,16 @@ impl App {
             self.status_message = t.get(TranslationKey::SetsNoFolder).to_string();
             return;
         };
-        let file_name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let file_name = file
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
         let Some(list) = crate::modlists::read_shared(file) else {
             self.status_message = fmt(t.get(TranslationKey::SetsImportBad), &[&file_name]);
             return;
         };
-        let base = crate::modlists::check_name(&list.name).unwrap_or_else(|_| t.get(TranslationKey::SetsImportedName).to_string());
+        let base = crate::modlists::check_name(&list.name)
+            .unwrap_or_else(|_| t.get(TranslationKey::SetsImportedName).to_string());
         let name = crate::modlists::unique_name(&dir, &base);
         let entries: Vec<crate::modlists::ModListEntry> = list
             .ids
@@ -1208,12 +1237,18 @@ impl App {
                 }
             })
             .collect();
-        let version = list.game_version.clone().unwrap_or_else(|| self.game_version_for_sets());
+        let version = list
+            .game_version
+            .clone()
+            .unwrap_or_else(|| self.game_version_for_sets());
         match crate::modlists::write_rml(&crate::modlists::path_for(&dir, &name), &version, &entries) {
             Ok(()) => {
                 self.refresh_modlists();
                 self.selected_modlist = Some(name.clone());
-                self.status_message = fmt(t.get(TranslationKey::SetsImported), &[&name, &entries.len().to_string()]);
+                self.status_message = fmt(
+                    t.get(TranslationKey::SetsImported),
+                    &[&name, &entries.len().to_string()],
+                );
             }
             Err(e) => self.status_message = fmt(t.get(TranslationKey::SetsWriteError), &[&e.to_string()]),
         }
@@ -1222,9 +1257,14 @@ impl App {
     /// F5: copies the set's `.rml` file to where the user chose.
     pub fn export_modlist(&mut self, name: &str, target: &Path) {
         let t = self.i18n;
-        let Some(list) = self.modlists.iter().find(|l| l.name == name) else { return };
+        let Some(list) = self.modlists.iter().find(|l| l.name == name) else {
+            return;
+        };
         self.status_message = match std::fs::copy(&list.path, target) {
-            Ok(_) => fmt(t.get(TranslationKey::SetsExported), &[name, &target.display().to_string()]),
+            Ok(_) => fmt(
+                t.get(TranslationKey::SetsExported),
+                &[name, &target.display().to_string()],
+            ),
             Err(e) => fmt(t.get(TranslationKey::SetsWriteError), &[&e.to_string()]),
         };
     }
@@ -1286,7 +1326,11 @@ impl App {
 
     /// The save was made on another major game version than the installed one.
     pub fn save_other_version(&self, save: &crate::saves::SaveInfo) -> bool {
-        let installed = self.steam_paths.game_version.as_deref().and_then(crate::game_install::major_minor);
+        let installed = self
+            .steam_paths
+            .game_version
+            .as_deref()
+            .and_then(crate::game_install::major_minor);
         let saved = save.game_version.as_deref().and_then(crate::game_install::major_minor);
         matches!((installed, saved), (Some(a), Some(b)) if a != b)
     }
@@ -1294,7 +1338,9 @@ impl App {
     /// "Enable as in the save": the save's mods in its order, as unsaved changes
     /// (ModsConfig.xml changes only on "Save Order"; mods not on disk are kept).
     pub fn load_save_mods(&mut self, name: &str) {
-        let Some(save) = self.saves.iter().find(|s| s.name == name) else { return };
+        let Some(save) = self.saves.iter().find(|s| s.name == name) else {
+            return;
+        };
         let mut ids = Vec::with_capacity(save.ids.len());
         for id in &save.ids {
             add_active_id(&mut ids, id);
@@ -1312,7 +1358,9 @@ impl App {
             self.status_message = t.get(TranslationKey::SetsNoFolder).to_string();
             return;
         };
-        let Some(save) = self.saves.iter().find(|s| s.name == name) else { return };
+        let Some(save) = self.saves.iter().find(|s| s.name == name) else {
+            return;
+        };
         let entries: Vec<crate::modlists::ModListEntry> = save
             .ids
             .iter()
@@ -1331,9 +1379,13 @@ impl App {
                 }
             })
             .collect();
-        let base = crate::modlists::check_name(name).unwrap_or_else(|_| t.get(TranslationKey::SetsImportedName).to_string());
+        let base =
+            crate::modlists::check_name(name).unwrap_or_else(|_| t.get(TranslationKey::SetsImportedName).to_string());
         let set_name = crate::modlists::unique_name(&dir, &base);
-        let version = save.game_version.clone().unwrap_or_else(|| self.game_version_for_sets());
+        let version = save
+            .game_version
+            .clone()
+            .unwrap_or_else(|| self.game_version_for_sets());
         match crate::modlists::write_rml(&crate::modlists::path_for(&dir, &set_name), &version, &entries) {
             Ok(()) => {
                 self.refresh_modlists();
@@ -1346,7 +1398,9 @@ impl App {
 
     /// Subscribes to the save's mods that are not installed and have a Workshop ID.
     pub fn subscribe_save_missing(&mut self, name: &str) {
-        let Some(save) = self.saves.iter().find(|s| s.name == name) else { return };
+        let Some(save) = self.saves.iter().find(|s| s.name == name) else {
+            return;
+        };
         let ids = self.save_missing_workshop_ids(save);
         self.subscribe_workshop_ids(ids);
     }
@@ -1383,9 +1437,9 @@ impl App {
                     || lower.starts_with("ludeon.rimworld.")
                     || lower == "brrainz.harmony"
                     || lower == "zetrith.prepatcher"
-                    || self.find_mod(id).is_some_and(|m| {
-                        self.is_official_mod(m) || m.categories.contains(&ModCategory::Framework)
-                    })
+                    || self
+                        .find_mod(id)
+                        .is_some_and(|m| self.is_official_mod(m) || m.categories.contains(&ModCategory::Framework))
             })
             .map(|id| id.to_lowercase())
             .collect()
@@ -1403,7 +1457,11 @@ impl App {
                 let declared = m.dependency_alternatives.get(&dep).cloned().unwrap_or_default();
                 let choice = std::iter::once(dep.clone())
                     .chain(declared.into_iter().map(|a| a.to_lowercase()))
-                    .chain(crate::dependencies::dependency_substitutes(&dep).iter().map(|s| s.to_string()))
+                    .chain(
+                        crate::dependencies::dependency_substitutes(&dep)
+                            .iter()
+                            .map(|s| s.to_string()),
+                    )
                     .find(|candidate| present.contains(candidate));
                 if let Some(c) = choice {
                     needs.push(c);
@@ -1478,7 +1536,9 @@ impl App {
             self.bisect_note = Some(why);
             return;
         }
-        let (Some(search), Some(config)) = (self.bisect.as_ref(), self.mods_config_path.clone()) else { return };
+        let (Some(search), Some(config)) = (self.bisect.as_ref(), self.mods_config_path.clone()) else {
+            return;
+        };
         let enabled = search.enabled();
         // One backup at the first launch; later steps don't push real backups out.
         let first = search.history.is_empty() && !search.applied;
@@ -1528,7 +1588,9 @@ impl App {
             return;
         }
         let Some(search) = self.bisect.as_ref() else { return };
-        let Some(config) = self.mods_config_path.clone() else { return };
+        let Some(config) = self.mods_config_path.clone() else {
+            return;
+        };
         let t = self.i18n;
         let mut order = search.original.clone();
         let mut message = t.get(TranslationKey::BisectRestored).to_string();
@@ -1563,7 +1625,9 @@ impl App {
 
     /// A mod's display name: the installed mod's name, else its ID.
     pub fn mod_display_name(&self, id: &str) -> String {
-        self.find_mod(id).map(|m| m.name.clone()).unwrap_or_else(|| id.to_string())
+        self.find_mod(id)
+            .map(|m| m.name.clone())
+            .unwrap_or_else(|| id.to_string())
     }
 
     /// Whether a Steam request (subscribe, check) is running now.
@@ -1587,7 +1651,10 @@ impl App {
     pub fn duplicate_modlist(&mut self, name: &str) {
         let Some(dir) = self.modlists_folder() else { return };
         let copy = crate::modlists::copy_name(&dir, name, self.i18n.get(TranslationKey::SetsCopyWord));
-        match std::fs::copy(crate::modlists::path_for(&dir, name), crate::modlists::path_for(&dir, &copy)) {
+        match std::fs::copy(
+            crate::modlists::path_for(&dir, name),
+            crate::modlists::path_for(&dir, &copy),
+        ) {
             Ok(_) => {
                 self.refresh_modlists();
                 self.selected_modlist = Some(copy.clone());
@@ -1634,7 +1701,9 @@ impl App {
 
     /// Loads a set into the list as unsaved changes: ModsConfig.xml changes only on "Save Order".
     pub fn load_modlist(&mut self, name: &str) {
-        let Some(list) = self.modlists.iter().find(|l| l.name == name).cloned() else { return };
+        let Some(list) = self.modlists.iter().find(|l| l.name == name).cloned() else {
+            return;
+        };
         let mut ids = Vec::with_capacity(list.ids.len());
         for id in &list.ids {
             add_active_id(&mut ids, id);
@@ -1648,7 +1717,9 @@ impl App {
     /// Saves the current load order as a new set. The error text is shown in the dialog.
     pub fn save_modlist_as(&mut self, raw_name: &str) -> Result<(), String> {
         let name = crate::modlists::check_name(raw_name).map_err(|p| self.name_problem_text(p))?;
-        let dir = self.modlists_folder().ok_or_else(|| self.i18n.get(TranslationKey::SetsNoFolder).to_string())?;
+        let dir = self
+            .modlists_folder()
+            .ok_or_else(|| self.i18n.get(TranslationKey::SetsNoFolder).to_string())?;
         let path = crate::modlists::path_for(&dir, &name);
         if path.exists() {
             return Err(self.i18n.get(TranslationKey::SetsNameExists).to_string());
@@ -1671,13 +1742,18 @@ impl App {
             .map_err(|e| fmt(self.i18n.get(TranslationKey::SetsWriteError), &[&e.to_string()]))?;
         self.refresh_modlists();
         self.current_modlist = Some(name.to_string());
-        self.status_message = fmt(self.i18n.get(TranslationKey::SetsSaved), &[name, &entries.len().to_string()]);
+        self.status_message = fmt(
+            self.i18n.get(TranslationKey::SetsSaved),
+            &[name, &entries.len().to_string()],
+        );
         Ok(())
     }
 
     pub fn rename_modlist(&mut self, from: &str, raw_name: &str) -> Result<(), String> {
         let name = crate::modlists::check_name(raw_name).map_err(|p| self.name_problem_text(p))?;
-        let dir = self.modlists_folder().ok_or_else(|| self.i18n.get(TranslationKey::SetsNoFolder).to_string())?;
+        let dir = self
+            .modlists_folder()
+            .ok_or_else(|| self.i18n.get(TranslationKey::SetsNoFolder).to_string())?;
         let target = crate::modlists::path_for(&dir, &name);
         // Changing only the letter case is fine; another existing set is not.
         if target.exists() && !name.eq_ignore_ascii_case(from) {
@@ -1977,7 +2053,9 @@ impl App {
                             break;
                         }
                         let i = next.fetch_add(1, Ordering::Relaxed);
-                        let Some((name, steam_id)) = candidates.get(i) else { break };
+                        let Some((name, steam_id)) = candidates.get(i) else {
+                            break;
+                        };
                         let query = format!("{} {}", name, lang.search_suffix());
                         match search_steam_workshop(&query) {
                             Ok(raw) => {
@@ -1989,7 +2067,10 @@ impl App {
                                     &installed_steam,
                                 );
                                 if !items.is_empty() {
-                                    let _ = tx.send(BatchSearchMsg::Found(ModTranslations { mod_name: name.clone(), items }));
+                                    let _ = tx.send(BatchSearchMsg::Found(ModTranslations {
+                                        mod_name: name.clone(),
+                                        items,
+                                    }));
                                 }
                             }
                             Err(_) => {
@@ -2035,7 +2116,11 @@ impl App {
                     let pos = self.batch_results.partition_point(|r| r.mod_name.to_lowercase() < key);
                     self.batch_results.insert(pos, found);
                 }
-                BatchSearchMsg::Done { searched, errors, cancelled } => finished = Some((searched, errors, cancelled)),
+                BatchSearchMsg::Done {
+                    searched,
+                    errors,
+                    cancelled,
+                } => finished = Some((searched, errors, cancelled)),
             }
         }
         if let Some((searched, errors, cancelled)) = finished {
@@ -2072,7 +2157,11 @@ impl App {
         };
         let ids: Vec<String> = self.batch_checked.drain().collect();
         self.batch_subscribed.extend(ids.iter().cloned());
-        self.status_message = tr!("Подписка на переводы: {}...", "Subscribing to translations: {}...", ids.len());
+        self.status_message = tr!(
+            "Подписка на переводы: {}...",
+            "Subscribing to translations: {}...",
+            ids.len()
+        );
         self.steam_rx = Some(self.spawn_task(move || {
             let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
             match crate::steam::subscribe_workshop_items_batch_native(&dll, &refs) {
@@ -2137,27 +2226,35 @@ impl App {
         }
         if let Some(dll) = self.steam_paths.steam_dll_path.clone() {
             let id = item_id.to_string();
-            self.status_message = tr!("Отправка запроса на подписку #{}...", "Sending subscribe request #{}...", id);
-            self.steam_rx = Some(self.spawn_task(move || match subscribe_workshop_item_native(&dll, &id) {
-                Ok(_) => tr!(
-                    "Запрос на подписку #{} отправлен в Steam — мод скачается в клиенте Steam",
-                    "Subscribe request #{} sent to Steam — the Steam client will download the mod",
-                    id
-                ),
-                Err(e) => tr!("Ошибка подписки: {}", "Subscribe failed: {}", e),
-            }));
+            self.status_message = tr!(
+                "Отправка запроса на подписку #{}...",
+                "Sending subscribe request #{}...",
+                id
+            );
+            self.steam_rx = Some(
+                self.spawn_task(move || match subscribe_workshop_item_native(&dll, &id) {
+                    Ok(_) => tr!(
+                        "Запрос на подписку #{} отправлен в Steam — мод скачается в клиенте Steam",
+                        "Subscribe request #{} sent to Steam — the Steam client will download the mod",
+                        id
+                    ),
+                    Err(e) => tr!("Ошибка подписки: {}", "Subscribe failed: {}", e),
+                }),
+            );
         } else {
             crate::ui::components::open_external(crate::steam::workshop_url(item_id));
-            self.status_message =
-                tr!("Открыта страница Steam Workshop #{}", "Opened Steam Workshop page #{}", item_id);
+            self.status_message = tr!(
+                "Открыта страница Steam Workshop #{}",
+                "Opened Steam Workshop page #{}",
+                item_id
+            );
         }
     }
 
     /// Mod folders for the chosen scope (All / Active / Selected), without Core/DLC,
     /// the blacklist and the user's ignore list. Used by both "Start" and "Scan" (R7).
     fn optimizer_target_dirs(&self) -> Vec<PathBuf> {
-        let active: std::collections::HashSet<String> =
-            self.active_mods.iter().map(|s| s.to_lowercase()).collect();
+        let active: std::collections::HashSet<String> = self.active_mods.iter().map(|s| s.to_lowercase()).collect();
         let selected = self.selected_mod_id.as_deref().map(str::to_lowercase);
         let mods: Vec<ModInfo> = self
             .optimizable_mods()
@@ -2178,9 +2275,11 @@ impl App {
         let dirs = self.optimizer_target_dirs();
 
         if dirs.is_empty() {
-            self.status_message =
-                tr!("Нет выбранных модов для оптимизации текстур", "No mods selected for texture optimization")
-                    .to_string();
+            self.status_message = tr!(
+                "Нет выбранных модов для оптимизации текстур",
+                "No mods selected for texture optimization"
+            )
+            .to_string();
             return;
         }
 
@@ -2197,7 +2296,9 @@ impl App {
             self.opt_force,
             self.opt_delete_source,
             // The side the installed game needs: flipped on 1.7, as the PNG on 1.6.
-            ConvertOptions { flip_vertical: crate::optimizer::engine_wants_flipped(self.steam_paths.engine) },
+            ConvertOptions {
+                flip_vertical: crate::optimizer::engine_wants_flipped(self.steam_paths.engine),
+            },
             self.opt_threads,
             tx,
             self.opt_stop_flag.clone(),
@@ -2258,7 +2359,11 @@ impl App {
         let mut finished = None;
         while let Ok(msg) = rx.try_recv() {
             match msg {
-                crate::optimizer::OrientationMsg::Progress { done, total, current_file } => {
+                crate::optimizer::OrientationMsg::Progress {
+                    done,
+                    total,
+                    current_file,
+                } => {
                     self.opt_done = done;
                     self.opt_total = total;
                     self.opt_current_file = current_file;
@@ -2270,7 +2375,11 @@ impl App {
             self.opt_orient_rx = None;
             self.opt_is_running = false;
             self.opt_errors = s.errors;
-            let key = if s.cancelled { TranslationKey::OptFlipStopped } else { TranslationKey::OptFlipDone };
+            let key = if s.cancelled {
+                TranslationKey::OptFlipStopped
+            } else {
+                TranslationKey::OptFlipDone
+            };
             self.status_message = fmt(
                 self.i18n.get(key),
                 &[&s.fixed.to_string(), &s.already_ok.to_string(), &s.errors.to_string()],
@@ -2301,7 +2410,12 @@ impl App {
     pub fn scan_texture_counts(&mut self) {
         let dirs = self.optimizer_target_dirs();
         let (tx, rx) = channel();
-        texture_summary_async(dirs, self.opt_force, crate::optimizer::engine_wants_flipped(self.steam_paths.engine), tx);
+        texture_summary_async(
+            dirs,
+            self.opt_force,
+            crate::optimizer::engine_wants_flipped(self.steam_paths.engine),
+            tx,
+        );
         self.opt_scan_rx = Some(rx);
         self.status_message = tr!("Подсчёт текстур...", "Counting textures...").to_string();
     }
@@ -2381,10 +2495,7 @@ impl App {
         let log_target = if let Some(ref custom_p) = self.custom_log_path {
             Some(custom_p.clone())
         } else {
-            detect_rimworld_log_paths()
-                .into_iter()
-                .next()
-                .map(|(_, p)| p)
+            detect_rimworld_log_paths().into_iter().next().map(|(_, p)| p)
         };
 
         if self.log_rx.is_some() {
@@ -2402,11 +2513,20 @@ impl App {
 
     fn crash_summary_text(&self, report: &LogReport) -> String {
         if report.has_hard_crash {
-            fmt(self.i18n.get(TranslationKey::CrashSummaryHardCrash), &[&report.culprits.len().to_string()])
+            fmt(
+                self.i18n.get(TranslationKey::CrashSummaryHardCrash),
+                &[&report.culprits.len().to_string()],
+            )
         } else if !report.culprits.is_empty() {
-            fmt(self.i18n.get(TranslationKey::CrashSummaryCulprits), &[&report.culprits.len().to_string()])
+            fmt(
+                self.i18n.get(TranslationKey::CrashSummaryCulprits),
+                &[&report.culprits.len().to_string()],
+            )
         } else if report.total_errors > 0 {
-            fmt(self.i18n.get(TranslationKey::CrashSummaryErrorsOnly), &[&report.total_errors.to_string()])
+            fmt(
+                self.i18n.get(TranslationKey::CrashSummaryErrorsOnly),
+                &[&report.total_errors.to_string()],
+            )
         } else {
             self.i18n.get(TranslationKey::CrashSummaryClean).to_string()
         }
@@ -2438,8 +2558,11 @@ impl App {
         if self.rules_rx.is_some() {
             return;
         }
-        self.status_message =
-            tr!("Загрузка базы правил RimSort с GitHub...", "Downloading RimSort rules from GitHub...").to_string();
+        self.status_message = tr!(
+            "Загрузка базы правил RimSort с GitHub...",
+            "Downloading RimSort rules from GitHub..."
+        )
+        .to_string();
         self.rules_rx = Some(self.spawn_task(crate::community_rules::download_rules));
     }
 
@@ -2462,7 +2585,11 @@ impl App {
                 );
             }
             Err(e) => {
-                self.status_message = tr!("Не удалось обновить базу правил: {}", "Could not update the rules: {}", e)
+                self.status_message = tr!(
+                    "Не удалось обновить базу правил: {}",
+                    "Could not update the rules: {}",
+                    e
+                )
             }
         }
     }
@@ -2472,11 +2599,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Process loaded mod icons
         while let Ok((pkg_id, img)) = self.icon_rx.try_recv() {
-            let handle = ctx.load_texture(
-                &pkg_id,
-                img,
-                Default::default()
-            );
+            let handle = ctx.load_texture(&pkg_id, img, Default::default());
             self.mod_textures.insert(pkg_id, Some(handle));
         }
 
@@ -2522,14 +2645,17 @@ impl eframe::App for App {
                             ));
                         }
                         if s.foreign_dds > 0 {
-                            msg.push_str(&tr!(" | чужих DDS не тронуто: {}", " | author DDS left alone: {}", s.foreign_dds));
+                            msg.push_str(&tr!(
+                                " | чужих DDS не тронуто: {}",
+                                " | author DDS left alone: {}",
+                                s.foreign_dds
+                            ));
                         }
                         self.status_message = msg;
                     }
                     OptimizationMsg::Cancelled => {
                         self.opt_is_running = false;
-                        self.status_message =
-                            tr!("Оптимизация остановлена", "Optimization stopped").to_string();
+                        self.status_message = tr!("Оптимизация остановлена", "Optimization stopped").to_string();
                     }
                 }
             }
@@ -2556,7 +2682,10 @@ impl eframe::App for App {
                     (AppTab::Analyzer, t.get(TranslationKey::TabAnalyzer)),
                     (AppTab::Settings, t.get(TranslationKey::TabSettings)),
                 ];
-                let update_text = self.update_available.as_ref().map(|l| tr!("Вышла {} →", "{} is out →", l.tag));
+                let update_text = self
+                    .update_available
+                    .as_ref()
+                    .map(|l| tr!("Вышла {} →", "{} is out →", l.tag));
                 let bisect_text = (self.bisect.is_some() && !self.bisect_open).then(|| {
                     let step = self.bisect.as_ref().map_or(1, |s| s.stage.answers + 1);
                     fmt(t.get(TranslationKey::BisectHeaderTag), &[&step.to_string()])
@@ -2566,7 +2695,12 @@ impl eframe::App for App {
                 // keeps them as a tooltip), then the tabs get tighter.
                 let title = "RimWorld Mod Manager";
                 let version = concat!("v", env!("CARGO_PKG_VERSION"));
-                let text_w = |s: &str, size: f32| ui.painter().layout_no_wrap(s.to_string(), egui::FontId::proportional(size), egui::Color32::WHITE).size().x;
+                let text_w = |s: &str, size: f32| {
+                    ui.painter()
+                        .layout_no_wrap(s.to_string(), egui::FontId::proportional(size), egui::Color32::WHITE)
+                        .size()
+                        .x
+                };
                 let tags_w: f32 = [&update_text, &bisect_text]
                     .iter()
                     .filter_map(|s| s.as_deref())
@@ -2578,11 +2712,19 @@ impl eframe::App for App {
                 let title_w = text_w(title, 14.0) + text_w(version, 12.0) + 16.0;
                 let avail = ui.available_width();
                 let show_title = fixed + title_w + tabs_w(24.0) <= avail;
-                let tab_pad = if show_title || fixed + tabs_w(24.0) <= avail { 24.0 } else { 14.0 };
+                let tab_pad = if show_title || fixed + tabs_w(24.0) <= avail {
+                    24.0
+                } else {
+                    14.0
+                };
 
                 // Logo in a lavender-tinted square
                 let (logo_rect, logo) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
-                ui.painter().rect_filled(logo_rect, Rounding::same(6.0), crate::ui::theme::tint(THEME.accent_cyan));
+                ui.painter().rect_filled(
+                    logo_rect,
+                    Rounding::same(6.0),
+                    crate::ui::theme::tint(THEME.accent_cyan),
+                );
                 egui::Image::new(ICON_LOGO).paint_at(ui, logo_rect.shrink(4.0));
                 if show_title {
                     ui.label(egui::RichText::new(title).color(THEME.accent_cyan).size(14.0).strong());
@@ -2594,7 +2736,10 @@ impl eframe::App for App {
                     if crate::ui::components::tag(ui, text, THEME.accent_emerald)
                         .interact(egui::Sense::click())
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text(tr!("Открыть страницу новой версии на GitHub", "Open the new version's page on GitHub"))
+                        .on_hover_text(tr!(
+                            "Открыть страницу новой версии на GitHub",
+                            "Open the new version's page on GitHub"
+                        ))
                         .clicked()
                     {
                         crate::ui::components::open_external(&latest.url);
@@ -2613,7 +2758,8 @@ impl eframe::App for App {
                 ui.add_space(16.0);
                 ui.spacing_mut().item_spacing.x = 4.0;
                 for (tab_val, label) in tabs {
-                    if crate::ui::components::nav_tab_padded(ui, label, self.current_tab == tab_val, tab_pad).clicked() {
+                    if crate::ui::components::nav_tab_padded(ui, label, self.current_tab == tab_val, tab_pad).clicked()
+                    {
                         self.current_tab = tab_val;
                     }
                 }
@@ -2634,48 +2780,61 @@ impl eframe::App for App {
             fill: THEME.bg_surface,
             ..Default::default()
         };
-        egui::TopBottomPanel::bottom("bottom_status_bar").frame(status_frame).show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(&self.status_message).color(THEME.text_secondary).size(12.0));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let game = match self.steam_paths.game_version.as_deref() {
-                        Some(v) => format!("RimWorld {v}"),
-                        None => fmt(
-                            self.i18n.get(TranslationKey::AppStatusBarStats),
-                            &[&self.all_mods.len().to_string(), &self.active_mods.len().to_string()],
-                        ),
-                    };
-                    ui.label(egui::RichText::new(game).color(THEME.text_muted).size(12.0));
+        egui::TopBottomPanel::bottom("bottom_status_bar")
+            .frame(status_frame)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(&self.status_message)
+                            .color(THEME.text_secondary)
+                            .size(12.0),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let game = match self.steam_paths.game_version.as_deref() {
+                            Some(v) => format!("RimWorld {v}"),
+                            None => fmt(
+                                self.i18n.get(TranslationKey::AppStatusBarStats),
+                                &[&self.all_mods.len().to_string(), &self.active_mods.len().to_string()],
+                            ),
+                        };
+                        ui.label(egui::RichText::new(game).color(THEME.text_muted).size(12.0));
+                    });
                 });
             });
-        });
 
         // Main area: window background with 16 px side padding.
         let central_frame = egui::Frame {
-            inner_margin: egui::Margin { left: 16.0, right: 16.0, top: 8.0, bottom: 12.0 },
+            inner_margin: egui::Margin {
+                left: 16.0,
+                right: 16.0,
+                top: 8.0,
+                bottom: 12.0,
+            },
             fill: THEME.bg_dark,
             ..Default::default()
         };
-        egui::CentralPanel::default().frame(central_frame).show(ctx, |ui| match self.current_tab {
-            AppTab::Mods => crate::ui::view_mods::render_mods_view(self, ui),
-            AppTab::Sets => crate::ui::view_sets::render_sets_view(self, ui),
-            AppTab::Saves => crate::ui::view_saves::render_saves_view(self, ui),
-            AppTab::Translations => crate::ui::view_translations::render_translations_view(self, ui),
-            // Long pages scroll as a whole, so nothing below the window edge is cut off.
-            AppTab::Optimizer => {
-                egui::ScrollArea::vertical()
-                    .id_salt("optimizer_page_scroll")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| crate::ui::view_optimizer::render_optimizer_view(self, ui));
-            }
-            AppTab::Analyzer => crate::ui::view_analyzer::render_analyzer_view(self, ui),
-            AppTab::Settings => {
-                egui::ScrollArea::vertical()
-                    .id_salt("settings_page_scroll")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| crate::ui::view_settings::render_settings_view(self, ui));
-            }
-        });
+        egui::CentralPanel::default()
+            .frame(central_frame)
+            .show(ctx, |ui| match self.current_tab {
+                AppTab::Mods => crate::ui::view_mods::render_mods_view(self, ui),
+                AppTab::Sets => crate::ui::view_sets::render_sets_view(self, ui),
+                AppTab::Saves => crate::ui::view_saves::render_saves_view(self, ui),
+                AppTab::Translations => crate::ui::view_translations::render_translations_view(self, ui),
+                // Long pages scroll as a whole, so nothing below the window edge is cut off.
+                AppTab::Optimizer => {
+                    egui::ScrollArea::vertical()
+                        .id_salt("optimizer_page_scroll")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| crate::ui::view_optimizer::render_optimizer_view(self, ui));
+                }
+                AppTab::Analyzer => crate::ui::view_analyzer::render_analyzer_view(self, ui),
+                AppTab::Settings => {
+                    egui::ScrollArea::vertical()
+                        .id_salt("settings_page_scroll")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| crate::ui::view_settings::render_settings_view(self, ui));
+                }
+            });
 
         // Closing the window with an unsaved load order: ask first.
         if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close && self.has_unsaved_changes() {
@@ -2755,7 +2914,11 @@ impl App {
             Secondary,
             Cancel,
         }
-        let mut answer = if ctx.input(|i| i.key_pressed(egui::Key::Escape)) { Answer::Cancel } else { Answer::None };
+        let mut answer = if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            Answer::Cancel
+        } else {
+            Answer::None
+        };
 
         let (title, body, primary, secondary): (&str, String, &str, &str) = match &question {
             PendingQuestion::LaunchUnsaved => (
@@ -2804,7 +2967,11 @@ impl App {
                         .max_height(220.0)
                         .show(ui, |ui| {
                             for p in paths {
-                                ui.label(egui::RichText::new(p.display().to_string()).size(11.0).color(THEME.text_muted));
+                                ui.label(
+                                    egui::RichText::new(p.display().to_string())
+                                        .size(11.0)
+                                        .color(THEME.text_muted),
+                                );
                             }
                         });
                 }
@@ -2817,7 +2984,8 @@ impl App {
                         answer = Answer::Secondary;
                     }
                     if !matches!(question, PendingQuestion::LegacyDds(_))
-                        && crate::ui::components::secondary_button(ui, self.i18n.get(TranslationKey::BtnCancel)).clicked()
+                        && crate::ui::components::secondary_button(ui, self.i18n.get(TranslationKey::BtnCancel))
+                            .clicked()
                     {
                         answer = Answer::Cancel;
                     }
@@ -2852,7 +3020,9 @@ impl App {
 
     /// Window for a mod set action: name field (save as new, rename) or delete confirmation.
     fn render_modlist_dialog(&mut self, ctx: &egui::Context) {
-        let Some(mut dialog) = self.modlist_dialog.clone() else { return };
+        let Some(mut dialog) = self.modlist_dialog.clone() else {
+            return;
+        };
         let t = self.i18n;
         let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
         let mut submit = false;
@@ -2883,7 +3053,9 @@ impl App {
                         }
                         ui.add(
                             egui::Label::new(
-                                egui::RichText::new(t.get(TranslationKey::SetsHint)).color(THEME.text_muted).size(12.0),
+                                egui::RichText::new(t.get(TranslationKey::SetsHint))
+                                    .color(THEME.text_muted)
+                                    .size(12.0),
                             )
                             .wrap(),
                         );
@@ -2895,9 +3067,18 @@ impl App {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     let (text, style) = match &dialog {
-                        ModListDialog::SaveAs { .. } => (t.get(TranslationKey::SetsBtnSave), crate::ui::components::ButtonStyle::Primary),
-                        ModListDialog::Rename { .. } => (t.get(TranslationKey::SetsBtnRename), crate::ui::components::ButtonStyle::Primary),
-                        ModListDialog::Delete { .. } => (t.get(TranslationKey::SetsBtnDelete), crate::ui::components::ButtonStyle::Danger),
+                        ModListDialog::SaveAs { .. } => (
+                            t.get(TranslationKey::SetsBtnSave),
+                            crate::ui::components::ButtonStyle::Primary,
+                        ),
+                        ModListDialog::Rename { .. } => (
+                            t.get(TranslationKey::SetsBtnRename),
+                            crate::ui::components::ButtonStyle::Primary,
+                        ),
+                        ModListDialog::Delete { .. } => (
+                            t.get(TranslationKey::SetsBtnDelete),
+                            crate::ui::components::ButtonStyle::Danger,
+                        ),
                     };
                     if crate::ui::components::styled_button(ui, None, text, style).clicked() {
                         submit = true;
@@ -2920,7 +3101,11 @@ impl App {
             self.modlist_dialog = match (result, dialog) {
                 (Ok(()), _) => None,
                 (Err(e), ModListDialog::SaveAs { name, .. }) => Some(ModListDialog::SaveAs { name, error: Some(e) }),
-                (Err(e), ModListDialog::Rename { from, name, .. }) => Some(ModListDialog::Rename { from, name, error: Some(e) }),
+                (Err(e), ModListDialog::Rename { from, name, .. }) => Some(ModListDialog::Rename {
+                    from,
+                    name,
+                    error: Some(e),
+                }),
                 (Err(_), other) => Some(other),
             };
         } else if close {
@@ -3042,7 +3227,11 @@ impl App {
 /// "+3 −1 · different order" relative to the current list, or "same as now".
 fn history_diff_label(ui: &mut egui::Ui, diff: crate::mods_config::ListDiff) {
     if diff.is_same() {
-        ui.label(egui::RichText::new(tr!("как сейчас", "same as now")).color(THEME.text_muted).size(12.0));
+        ui.label(
+            egui::RichText::new(tr!("как сейчас", "same as now"))
+                .color(THEME.text_muted)
+                .size(12.0),
+        );
         return;
     }
     let mut parts = Vec::new();
@@ -3055,11 +3244,15 @@ fn history_diff_label(ui: &mut egui::Ui, diff: crate::mods_config::ListDiff) {
     if diff.reordered {
         parts.push(tr!("другой порядок", "different order").to_string());
     }
-    ui.label(egui::RichText::new(parts.join(" · ")).color(THEME.accent_amber).size(12.0))
-        .on_hover_text(tr!(
-            "По сравнению с текущим списком: + моды, которые вернутся, − моды, которые уберутся",
-            "Compared with the current list: + mods that come back, − mods that go away"
-        ));
+    ui.label(
+        egui::RichText::new(parts.join(" · "))
+            .color(THEME.accent_amber)
+            .size(12.0),
+    )
+    .on_hover_text(tr!(
+        "По сравнению с текущим списком: + моды, которые вернутся, − моды, которые уберутся",
+        "Compared with the current list: + mods that come back, − mods that go away"
+    ));
 }
 
 #[cfg(test)]
@@ -3069,13 +3262,28 @@ mod tests {
     #[test]
     fn lookup_by_index_understands_case_and_steam_suffix() {
         let mods = vec![
-            ModInfo { package_id: "Brrainz.Harmony".into(), ..Default::default() },
-            ModInfo { package_id: "UnlimitedHugs.HugsLib".into(), ..Default::default() },
+            ModInfo {
+                package_id: "Brrainz.Harmony".into(),
+                ..Default::default()
+            },
+            ModInfo {
+                package_id: "UnlimitedHugs.HugsLib".into(),
+                ..Default::default()
+            },
         ];
-        let index: std::collections::HashMap<String, usize> =
-            mods.iter().enumerate().map(|(i, m)| (m.package_id.to_lowercase(), i)).collect();
-        assert_eq!(lookup_mod(&index, &mods, "brrainz.harmony").map(|m| m.package_id.as_str()), Some("Brrainz.Harmony"));
-        assert_eq!(lookup_mod(&index, &mods, "unlimitedhugs.hugslib_steam").map(|m| m.package_id.as_str()), Some("UnlimitedHugs.HugsLib"));
+        let index: std::collections::HashMap<String, usize> = mods
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (m.package_id.to_lowercase(), i))
+            .collect();
+        assert_eq!(
+            lookup_mod(&index, &mods, "brrainz.harmony").map(|m| m.package_id.as_str()),
+            Some("Brrainz.Harmony")
+        );
+        assert_eq!(
+            lookup_mod(&index, &mods, "unlimitedhugs.hugslib_steam").map(|m| m.package_id.as_str()),
+            Some("UnlimitedHugs.HugsLib")
+        );
         assert!(lookup_mod(&index, &mods, "someone.missing").is_none());
     }
 
@@ -3091,9 +3299,21 @@ mod tests {
     #[test]
     fn unsaved_order_survives_rescan() {
         let disk = vec!["brrainz.harmony".to_string(), "ludeon.rimworld".to_string()];
-        assert_eq!(active_after_rescan(true, false, &disk), None, "unsaved changes are kept");
-        assert_eq!(active_after_rescan(false, false, &disk), Some(disk.clone()), "no changes: follow the file");
-        assert_eq!(active_after_rescan(true, true, &disk), Some(disk), "other config picked: file wins");
+        assert_eq!(
+            active_after_rescan(true, false, &disk),
+            None,
+            "unsaved changes are kept"
+        );
+        assert_eq!(
+            active_after_rescan(false, false, &disk),
+            Some(disk.clone()),
+            "no changes: follow the file"
+        );
+        assert_eq!(
+            active_after_rescan(true, true, &disk),
+            Some(disk),
+            "other config picked: file wins"
+        );
     }
 
     #[test]

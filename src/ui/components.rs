@@ -43,7 +43,9 @@ const BADGE_ICON: f32 = 14.0;
 
 /// Small pill with text (category, version, status). `bg` is usually `tint(fg)`.
 pub fn badge(ui: &mut Ui, text: &str, bg: Color32, fg: Color32) -> Response {
-    let galley = ui.painter().layout_no_wrap(text.to_string(), egui::FontId::proportional(12.0), fg);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), egui::FontId::proportional(12.0), fg);
     let (rect, response) = ui.allocate_exact_size(galley.size() + BADGE_PAD * 2.0, Sense::hover());
     if ui.is_rect_visible(rect) {
         ui.painter().rect(rect, Rounding::same(6.0), bg, Stroke::NONE);
@@ -108,15 +110,23 @@ pub fn icon_tag_if_fits(ui: &mut Ui, icon: ImageSource<'static>, text: &str, col
 /// Badge pill with an SVG icon (tinted with `fg`) in front of the text.
 pub fn icon_badge(ui: &mut Ui, icon: ImageSource<'static>, text: &str, bg: Color32, fg: Color32) -> Response {
     let gap = if text.is_empty() { 0.0 } else { 5.0 };
-    let galley = ui.painter().layout_no_wrap(text.to_string(), egui::FontId::proportional(12.0), fg);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), egui::FontId::proportional(12.0), fg);
     let content_h = galley.size().y.max(BADGE_ICON);
-    let size = Vec2::new(BADGE_PAD.x * 2.0 + BADGE_ICON + gap + galley.size().x, BADGE_PAD.y * 2.0 + content_h);
+    let size = Vec2::new(
+        BADGE_PAD.x * 2.0 + BADGE_ICON + gap + galley.size().x,
+        BADGE_PAD.y * 2.0 + content_h,
+    );
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
     if ui.is_rect_visible(rect) {
         ui.painter().rect(rect, Rounding::same(6.0), bg, Stroke::NONE);
         let icon_center = Pos2::new(rect.min.x + BADGE_PAD.x + BADGE_ICON / 2.0, rect.center().y);
         paint_icon(ui, icon, icon_center, BADGE_ICON, fg);
-        let text_pos = Pos2::new(rect.min.x + BADGE_PAD.x + BADGE_ICON + gap, rect.center().y - galley.size().y / 2.0);
+        let text_pos = Pos2::new(
+            rect.min.x + BADGE_PAD.x + BADGE_ICON + gap,
+            rect.center().y - galley.size().y / 2.0,
+        );
         ui.painter().galley(text_pos, galley, fg);
     }
     response
@@ -152,7 +162,11 @@ pub fn styled_button_width(ui: &Ui, has_icon: bool, text: &str) -> f32 {
             .size()
             .x
     };
-    let icon_w = if has_icon { 16.0 + if text.is_empty() { 0.0 } else { 8.0 } } else { 0.0 };
+    let icon_w = if has_icon {
+        16.0 + if text.is_empty() { 0.0 } else { 8.0 }
+    } else {
+        0.0
+    };
     12.0 * 2.0 + icon_w + text_w
 }
 
@@ -171,8 +185,20 @@ fn styled_button_sized(
 ) -> Response {
     let font = egui::FontId::new(12.0, egui::FontFamily::Proportional);
     let (fill, hover_fill, stroke, fg, hover_fg) = match style {
-        ButtonStyle::Primary => (THEME.accent_purple, THEME.accent_purple_hover, THEME.accent_purple, THEME.text_primary, THEME.text_primary),
-        ButtonStyle::Secondary => (THEME.bg_card, THEME.bg_surface_hover, THEME.border_strong, THEME.text_secondary, THEME.text_primary),
+        ButtonStyle::Primary => (
+            THEME.accent_purple,
+            THEME.accent_purple_hover,
+            THEME.accent_purple,
+            THEME.text_primary,
+            THEME.text_primary,
+        ),
+        ButtonStyle::Secondary => (
+            THEME.bg_card,
+            THEME.bg_surface_hover,
+            THEME.border_strong,
+            THEME.text_secondary,
+            THEME.text_primary,
+        ),
         ButtonStyle::Success => (
             tint(THEME.accent_emerald),
             mix(THEME.bg_card, THEME.accent_emerald, 0.28),
@@ -189,7 +215,11 @@ fn styled_button_sized(
         ),
     };
     let galley = ui.painter().layout_no_wrap(text.to_string(), font, fg);
-    let icon_w = if icon.is_some() { 16.0 + if text.is_empty() { 0.0 } else { 8.0 } } else { 0.0 };
+    let icon_w = if icon.is_some() {
+        16.0 + if text.is_empty() { 0.0 } else { 8.0 }
+    } else {
+        0.0
+    };
     let size = Vec2::new(pad * 2.0 + icon_w + galley.size().x, height);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     if ui.is_rect_visible(rect) {
@@ -197,14 +227,19 @@ fn styled_button_sized(
         let hovered = enabled && response.hovered();
         let dim = |c: Color32| if enabled { c } else { c.gamma_multiply(0.45) };
         let bg = if hovered { hover_fill } else { fill };
-        ui.painter().rect(rect, Rounding::same(6.0), dim(bg), Stroke::new(1.0_f32, dim(stroke)));
+        ui.painter()
+            .rect(rect, Rounding::same(6.0), dim(bg), Stroke::new(1.0_f32, dim(stroke)));
         let color = dim(if hovered { hover_fg } else { fg });
         let mut x = rect.min.x + pad;
         if let Some(icon) = icon {
             paint_icon(ui, icon, Pos2::new(x + 8.0, rect.center().y), 16.0, color);
             x += icon_w;
         }
-        ui.painter().galley(Pos2::new(snap(ui, x), snap(ui, rect.center().y - galley.size().y / 2.0)), galley, color);
+        ui.painter().galley(
+            Pos2::new(snap(ui, x), snap(ui, rect.center().y - galley.size().y / 2.0)),
+            galley,
+            color,
+        );
     }
     if ui.is_enabled() {
         response.on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -253,9 +288,16 @@ pub fn icon_button(ui: &mut Ui, icon: ImageSource<'static>, size: Vec2, tint_col
     if ui.is_rect_visible(rect) {
         let hovered = response.hovered();
         if hovered {
-            ui.painter().rect_filled(rect, Rounding::same(4.0), THEME.bg_surface_hover);
+            ui.painter()
+                .rect_filled(rect, Rounding::same(4.0), THEME.bg_surface_hover);
         }
-        paint_icon(ui, icon, rect.center(), size.x, if hovered { THEME.text_primary } else { tint_color });
+        paint_icon(
+            ui,
+            icon,
+            rect.center(),
+            size.x,
+            if hovered { THEME.text_primary } else { tint_color },
+        );
     }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -266,8 +308,17 @@ pub fn boxed_icon_button(ui: &mut Ui, icon: ImageSource<'static>) -> Response {
     if ui.is_rect_visible(rect) {
         let hovered = response.hovered();
         let fill = if hovered { THEME.bg_surface_hover } else { THEME.bg_card };
-        ui.painter().rect(rect, Rounding::same(6.0), fill, Stroke::new(1.0_f32, THEME.border_strong));
-        let color = if hovered { THEME.text_primary } else { THEME.text_secondary };
+        ui.painter().rect(
+            rect,
+            Rounding::same(6.0),
+            fill,
+            Stroke::new(1.0_f32, THEME.border_strong),
+        );
+        let color = if hovered {
+            THEME.text_primary
+        } else {
+            THEME.text_secondary
+        };
         paint_icon(ui, icon, rect.center(), 16.0, color);
     }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -281,18 +332,28 @@ pub fn nav_tab(ui: &mut Ui, label: &str, active: bool) -> Response {
 
 /// `nav_tab` with the given total side padding (smaller in a narrow window).
 pub fn nav_tab_padded(ui: &mut Ui, label: &str, active: bool, pad: f32) -> Response {
-    let color = if active { THEME.accent_cyan } else { THEME.text_secondary };
-    let galley = ui.painter().layout_no_wrap(label.to_string(), egui::FontId::proportional(13.0), color);
+    let color = if active {
+        THEME.accent_cyan
+    } else {
+        THEME.text_secondary
+    };
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_string(), egui::FontId::proportional(13.0), color);
     let size = Vec2::new(galley.size().x + pad, 40.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let half = pad / 2.0;
     if ui.is_rect_visible(rect) {
         let hovered = response.hovered();
         if active || hovered {
-            ui.painter().rect_filled(rect, Rounding::same(6.0), THEME.bg_surface_hover);
+            ui.painter()
+                .rect_filled(rect, Rounding::same(6.0), THEME.bg_surface_hover);
         }
         let text_color = if hovered && !active { THEME.text_primary } else { color };
-        let pos = Pos2::new(snap(ui, rect.min.x + half), snap(ui, rect.center().y - galley.size().y / 2.0));
+        let pos = Pos2::new(
+            snap(ui, rect.min.x + half),
+            snap(ui, rect.center().y - galley.size().y / 2.0),
+        );
         ui.painter().galley(pos, galley, text_color);
         if active {
             let line = Rect::from_min_max(
@@ -306,31 +367,61 @@ pub fn nav_tab_padded(ui: &mut Ui, label: &str, active: bool, pad: f32) -> Respo
 }
 
 /// Filter chip: label + muted count; selected = lavender on 18% lavender.
-pub fn chip(ui: &mut Ui, icon: Option<(ImageSource<'static>, Color32)>, label: &str, count: usize, selected: bool) -> Response {
+pub fn chip(
+    ui: &mut Ui,
+    icon: Option<(ImageSource<'static>, Color32)>,
+    label: &str,
+    count: usize,
+    selected: bool,
+) -> Response {
     let label_font = egui::FontId::proportional(12.0);
     let (fill, stroke, label_color, count_color) = if selected {
-        (tint(THEME.accent_cyan), THEME.border_strong, THEME.accent_cyan, THEME.accent_cyan)
+        (
+            tint(THEME.accent_cyan),
+            THEME.border_strong,
+            THEME.accent_cyan,
+            THEME.accent_cyan,
+        )
     } else {
-        (THEME.bg_surface, THEME.border_subtle, THEME.text_secondary, THEME.text_muted)
+        (
+            THEME.bg_surface,
+            THEME.border_subtle,
+            THEME.text_secondary,
+            THEME.text_muted,
+        )
     };
-    let label_g = ui.painter().layout_no_wrap(label.to_string(), label_font.clone(), label_color);
+    let label_g = ui
+        .painter()
+        .layout_no_wrap(label.to_string(), label_font.clone(), label_color);
     let count_g = ui.painter().layout_no_wrap(count.to_string(), label_font, count_color);
     let pad = 8.0;
     let icon_w = if icon.is_some() { 14.0 + 6.0 } else { 0.0 };
     let size = Vec2::new(pad * 2.0 + icon_w + label_g.size().x + 6.0 + count_g.size().x, 28.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     if ui.is_rect_visible(rect) {
-        let fill = if response.hovered() && !selected { THEME.bg_surface_hover } else { fill };
-        ui.painter().rect(rect, Rounding::same(6.0), fill, Stroke::new(1.0_f32, stroke));
+        let fill = if response.hovered() && !selected {
+            THEME.bg_surface_hover
+        } else {
+            fill
+        };
+        ui.painter()
+            .rect(rect, Rounding::same(6.0), fill, Stroke::new(1.0_f32, stroke));
         let mut x = rect.min.x + pad;
         if let Some((icon, color)) = icon {
-            paint_icon(ui, icon, Pos2::new(x + 7.0, rect.center().y), 14.0, if selected { THEME.accent_cyan } else { color });
+            paint_icon(
+                ui,
+                icon,
+                Pos2::new(x + 7.0, rect.center().y),
+                14.0,
+                if selected { THEME.accent_cyan } else { color },
+            );
             x += icon_w;
         }
         let y = snap(ui, rect.center().y - label_g.size().y / 2.0);
         let lw = label_g.size().x;
         ui.painter().galley(Pos2::new(snap(ui, x), y), label_g, label_color);
-        ui.painter().galley(Pos2::new(snap(ui, x + lw + 6.0), y), count_g, count_color);
+        ui.painter()
+            .galley(Pos2::new(snap(ui, x + lw + 6.0), y), count_g, count_color);
     }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }

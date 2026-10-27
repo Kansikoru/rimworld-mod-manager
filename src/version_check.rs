@@ -84,7 +84,10 @@ mod tests {
         assert_eq!(supports_version(&old, Some("1.6")), Some(true));
         assert_eq!(supports_version(&old, None), None);
         assert_eq!(supports_version(&m("ludeon.rimworld", &["1.6"]), Some("1.7")), None);
-        assert_eq!(newest_supported(&m("a.b", &["1.10", "1.9", "1.6"])).as_deref(), Some("1.10"));
+        assert_eq!(
+            newest_supported(&m("a.b", &["1.10", "1.9", "1.6"])).as_deref(),
+            Some("1.10")
+        );
     }
 
     #[test]

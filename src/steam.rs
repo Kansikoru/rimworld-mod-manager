@@ -49,7 +49,10 @@ fn fallback_steam_dll() -> Option<PathBuf> {
     if let Some(s_dir) = get_steam_install_dir() {
         candidates.push(s_dir.join("steam_api64.dll"));
     }
-    if let Some(exe_dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
+    if let Some(exe_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+    {
         candidates.push(exe_dir.join("steam_api64.dll"));
     }
     candidates.into_iter().find(|p| p.is_file())
@@ -82,7 +85,7 @@ pub fn detect_steam_paths() -> SteamPaths {
             .join("steamapps")
             .join("workshop")
             .join(format!("appworkshop_{RIMWORLD_APP_ID}.acf"));
-            
+
         if game.is_dir() || acf.is_file() {
             if paths.game_path.is_none() && game.is_dir() {
                 paths.set_game_dir(game.clone());
@@ -345,7 +348,11 @@ pub fn launch_rimworld(steam_paths: &SteamPaths, args: &[String]) -> Result<(), 
 
     match cmd.spawn() {
         Ok(_) => Ok(()),
-        Err(e) => Err(tr!("Не удалось запустить процесс: {}", "Could not start the process: {}", e)),
+        Err(e) => Err(tr!(
+            "Не удалось запустить процесс: {}",
+            "Could not start the process: {}",
+            e
+        )),
     }
 }
 

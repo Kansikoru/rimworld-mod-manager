@@ -3,12 +3,12 @@
 
 use eframe::egui::{self, Ui, Vec2};
 
-use crate::app::App;
-use crate::bisect::{Bisect, Outcome, TestKind};
-use crate::i18n::{fmt, TranslationKey};
 use super::components::*;
 use super::icons::*;
 use super::theme::THEME;
+use crate::app::App;
+use crate::bisect::{Bisect, Outcome, TestKind};
+use crate::i18n::{fmt, TranslationKey};
 
 const WIDTH: f32 = 580.0;
 
@@ -47,7 +47,9 @@ fn muted(ui: &mut Ui, text: &str) {
 
 fn render_setup(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
-    ui.add(egui::Label::new(egui::RichText::new(t.get(TranslationKey::BisectIntro)).color(THEME.text_secondary)).wrap());
+    ui.add(
+        egui::Label::new(egui::RichText::new(t.get(TranslationKey::BisectIntro)).color(THEME.text_secondary)).wrap(),
+    );
     ui.add_space(10.0);
 
     let mut keep = app.bisect_keep.clone().unwrap_or_default();
@@ -96,13 +98,22 @@ fn render_setup(app: &mut App, ui: &mut Ui) {
         .color(THEME.text_primary),
     );
     if app.has_unsaved_changes() {
-        ui.add(egui::Label::new(egui::RichText::new(t.get(TranslationKey::BisectUnsaved)).color(THEME.accent_amber).size(12.0)).wrap());
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(t.get(TranslationKey::BisectUnsaved))
+                    .color(THEME.accent_amber)
+                    .size(12.0),
+            )
+            .wrap(),
+        );
     }
     ui.add_space(8.0);
     ui.horizontal(|ui| {
         let can_start = suspects > 0 && !app.has_unsaved_changes();
         if ui
-            .add_enabled_ui(can_start, |ui| primary_button_icon(ui, ICON_SEARCH, t.get(TranslationKey::BisectStart)))
+            .add_enabled_ui(can_start, |ui| {
+                primary_button_icon(ui, ICON_SEARCH, t.get(TranslationKey::BisectStart))
+            })
             .inner
             .clicked()
         {
@@ -140,7 +151,14 @@ fn render_search(app: &mut App, ui: &mut Ui) {
         .strong(),
     );
     if search.searching_group() {
-        ui.add(egui::Label::new(egui::RichText::new(t.get(TranslationKey::BisectGroupNote)).color(THEME.accent_amber).size(12.0)).wrap());
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(t.get(TranslationKey::BisectGroupNote))
+                    .color(THEME.accent_amber)
+                    .size(12.0),
+            )
+            .wrap(),
+        );
     }
     ui.add_space(6.0);
 
@@ -148,18 +166,28 @@ fn render_search(app: &mut App, ui: &mut Ui) {
     let what = if test.kind == TestKind::BaseOnly {
         fmt(t.get(TranslationKey::BisectBaseTest), &[&enabled.len().to_string()])
     } else {
-        fmt(t.get(TranslationKey::BisectTestOn), &[&test.part.len().to_string(), &enabled.len().to_string()])
+        fmt(
+            t.get(TranslationKey::BisectTestOn),
+            &[&test.part.len().to_string(), &enabled.len().to_string()],
+        )
     };
     ui.add(egui::Label::new(egui::RichText::new(what).color(THEME.text_primary)).wrap());
     if !test.part.is_empty() {
         egui::CollapsingHeader::new(egui::RichText::new(t.get(TranslationKey::BisectShowMods)).size(12.0))
             .id_salt(("bisect_tested", search.stage.answers))
             .show(ui, |ui| {
-                egui::ScrollArea::vertical().id_salt("bisect_tested_scroll").max_height(160.0).show(ui, |ui| {
-                    for id in &test.part {
-                        ui.label(egui::RichText::new(app.mod_display_name(id)).size(12.0).color(THEME.text_secondary));
-                    }
-                });
+                egui::ScrollArea::vertical()
+                    .id_salt("bisect_tested_scroll")
+                    .max_height(160.0)
+                    .show(ui, |ui| {
+                        for id in &test.part {
+                            ui.label(
+                                egui::RichText::new(app.mod_display_name(id))
+                                    .size(12.0)
+                                    .color(THEME.text_secondary),
+                            );
+                        }
+                    });
             });
     }
     ui.add_space(8.0);
@@ -179,12 +207,20 @@ fn render_search(app: &mut App, ui: &mut Ui) {
     });
     let applied = app.bisect.as_ref().is_some_and(|s| s.applied);
     if applied {
-        ui.label(egui::RichText::new(t.get(TranslationKey::BisectApplied)).color(THEME.accent_emerald).size(12.0));
+        ui.label(
+            egui::RichText::new(t.get(TranslationKey::BisectApplied))
+                .color(THEME.accent_emerald)
+                .size(12.0),
+        );
     }
     ui.add_space(10.0);
 
     // 2. The answer
-    ui.label(egui::RichText::new(t.get(TranslationKey::BisectQuestion)).color(THEME.text_primary).strong());
+    ui.label(
+        egui::RichText::new(t.get(TranslationKey::BisectQuestion))
+            .color(THEME.text_primary)
+            .strong(),
+    );
     muted(ui, t.get(TranslationKey::BisectHintCrash));
     ui.add_space(4.0);
     ui.add_enabled_ui(applied, |ui| {
@@ -211,7 +247,9 @@ fn footer(app: &mut App, ui: &mut Ui, search: &Bisect) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         if ui
-            .add_enabled_ui(!search.history.is_empty(), |ui| secondary_button_icon(ui, ICON_UNDO, t.get(TranslationKey::BisectStepBack)))
+            .add_enabled_ui(!search.history.is_empty(), |ui| {
+                secondary_button_icon(ui, ICON_UNDO, t.get(TranslationKey::BisectStepBack))
+            })
             .inner
             .clicked()
         {
@@ -230,8 +268,16 @@ fn render_result(app: &mut App, ui: &mut Ui, search: &Bisect, outcome: &Outcome)
     let t = app.i18n;
     match outcome {
         Outcome::InBase => {
-            ui.label(egui::RichText::new(t.get(TranslationKey::BisectInBaseTitle)).color(THEME.accent_amber).size(16.0).strong());
-            ui.add(egui::Label::new(egui::RichText::new(t.get(TranslationKey::BisectInBase)).color(THEME.text_secondary)).wrap());
+            ui.label(
+                egui::RichText::new(t.get(TranslationKey::BisectInBaseTitle))
+                    .color(THEME.accent_amber)
+                    .size(16.0)
+                    .strong(),
+            );
+            ui.add(
+                egui::Label::new(egui::RichText::new(t.get(TranslationKey::BisectInBase)).color(THEME.text_secondary))
+                    .wrap(),
+            );
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
@@ -239,7 +285,9 @@ fn render_result(app: &mut App, ui: &mut Ui, search: &Bisect, outcome: &Outcome)
                     app.bisect_finish(false);
                 }
                 if ui
-                    .add_enabled_ui(!search.history.is_empty(), |ui| secondary_button_icon(ui, ICON_UNDO, t.get(TranslationKey::BisectStepBack)))
+                    .add_enabled_ui(!search.history.is_empty(), |ui| {
+                        secondary_button_icon(ui, ICON_UNDO, t.get(TranslationKey::BisectStepBack))
+                    })
                     .inner
                     .clicked()
                 {
@@ -257,7 +305,12 @@ fn render_result(app: &mut App, ui: &mut Ui, search: &Bisect, outcome: &Outcome)
             ui.add_space(4.0);
             for id in found {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(app.mod_display_name(id)).color(THEME.text_primary).size(15.0).strong());
+                    ui.label(
+                        egui::RichText::new(app.mod_display_name(id))
+                            .color(THEME.text_primary)
+                            .size(15.0)
+                            .strong(),
+                    );
                     ui.label(egui::RichText::new(id).color(THEME.text_muted).size(11.0));
                     if let Some(steam_id) = app.find_mod(id).and_then(|m| m.steam_item_id.clone()) {
                         if icon_button(ui, ICON_STEAM, Vec2::splat(14.0), THEME.text_muted)
@@ -270,7 +323,13 @@ fn render_result(app: &mut App, ui: &mut Ui, search: &Bisect, outcome: &Outcome)
                 });
             }
             ui.add_space(4.0);
-            muted(ui, &fmt(t.get(TranslationKey::BisectLaunches), &[&search.stage.answers.to_string()]));
+            muted(
+                ui,
+                &fmt(
+                    t.get(TranslationKey::BisectLaunches),
+                    &[&search.stage.answers.to_string()],
+                ),
+            );
             let dependents = search.dependents_of(found);
             if !dependents.is_empty() {
                 ui.add_space(6.0);
@@ -309,7 +368,11 @@ pub fn render_bisect_card(app: &mut App, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.set_width((ui.available_width() - 220.0).max(200.0));
-                ui.label(egui::RichText::new(t.get(TranslationKey::BisectCardTitle)).color(THEME.accent_cyan).strong());
+                ui.label(
+                    egui::RichText::new(t.get(TranslationKey::BisectCardTitle))
+                        .color(THEME.accent_cyan)
+                        .strong(),
+                );
                 muted(ui, t.get(TranslationKey::BisectCardText));
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

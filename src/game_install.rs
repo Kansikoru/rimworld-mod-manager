@@ -65,7 +65,11 @@ pub fn major_minor(version: &str) -> Option<String> {
     let mut parts = version.trim().split(|c: char| c == '.' || c.is_whitespace());
     let major = parts.next()?.trim();
     let minor = parts.next()?.trim();
-    if major.chars().all(|c| c.is_ascii_digit()) && minor.chars().all(|c| c.is_ascii_digit()) && !major.is_empty() && !minor.is_empty() {
+    if major.chars().all(|c| c.is_ascii_digit())
+        && minor.chars().all(|c| c.is_ascii_digit())
+        && !major.is_empty()
+        && !minor.is_empty()
+    {
         Some(format!("{major}.{minor}"))
     } else {
         None
@@ -79,10 +83,7 @@ pub fn game_exe_path(game_dir: &Path, engine: GameEngine) -> Option<PathBuf> {
         GameEngine::Unity => &[UNITY_EXE, WAYLITH_EXE],
         GameEngine::Unknown => &[WAYLITH_EXE, UNITY_EXE],
     };
-    candidates
-        .iter()
-        .map(|name| game_dir.join(name))
-        .find(|p| p.is_file())
+    candidates.iter().map(|name| game_dir.join(name)).find(|p| p.is_file())
 }
 
 /// `steam_api64.dll` shipped with the game: game root (1.7) or Unity plugin folder (1.6).
@@ -125,7 +126,10 @@ pub fn user_data_dir() -> Option<PathBuf> {
 pub fn manager_data_dir() -> PathBuf {
     let dir = if let Some(local) = std::env::var_os("LOCALAPPDATA") {
         PathBuf::from(local).join("RimWorldModManager")
-    } else if let Some(exe_dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
+    } else if let Some(exe_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+    {
         exe_dir.join("RimWorldModManagerData")
     } else {
         PathBuf::from("RimWorldModManagerData")
@@ -183,7 +187,10 @@ pub fn clear_game_caches() -> Result<Vec<String>, String> {
         )
         .to_string());
     }
-    let base = user_data_dir().ok_or(tr!("Папка данных RimWorld не найдена", "RimWorld data folder not found"))?;
+    let base = user_data_dir().ok_or(tr!(
+        "Папка данных RimWorld не найдена",
+        "RimWorld data folder not found"
+    ))?;
     let mut cleared = Vec::new();
     for dir in GAME_CACHE_DIRS {
         let path = base.join(dir);
@@ -288,7 +295,10 @@ mod tests {
         std::fs::create_dir_all(&plugins).unwrap();
         std::fs::write(plugins.join("steam_api64.dll"), b"").unwrap();
         assert_eq!(detect_engine(&dir), GameEngine::Unity);
-        assert_eq!(game_exe_path(&dir, GameEngine::Unity), Some(dir.join("RimWorldWin64.exe")));
+        assert_eq!(
+            game_exe_path(&dir, GameEngine::Unity),
+            Some(dir.join("RimWorldWin64.exe"))
+        );
         assert_eq!(game_steam_dll_path(&dir), Some(plugins.join("steam_api64.dll")));
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -57,8 +57,7 @@ pub fn detect_is_translation(m: &ModInfo) -> bool {
     let name_lower = m.name.to_lowercase();
     let id_lower = m.package_id.to_lowercase();
     crate::models::has_explicit_translation_title_marker(&name_lower)
-        || (crate::models::is_package_id_translation(&id_lower)
-            && crate::models::has_translation_keyword(&name_lower))
+        || (crate::models::is_package_id_translation(&id_lower) && crate::models::has_translation_keyword(&name_lower))
 }
 
 /// Finds the parent / mother mod that this translation mod translates.
@@ -72,10 +71,7 @@ pub fn find_parent_package_id(
     // 0. Check modDependencies (excluding protected IDs)
     for dep in &m.dependencies {
         let dep_lower = dep.to_lowercase();
-        if !is_protected_package_id(&dep_lower)
-            && dep_lower != id_lower
-            && id_to_index.contains_key(&dep_lower)
-        {
+        if !is_protected_package_id(&dep_lower) && dep_lower != id_lower && id_to_index.contains_key(&dep_lower) {
             return Some(dep.clone());
         }
     }
@@ -147,9 +143,8 @@ pub fn clean_name(name: &str) -> String {
         .collect()
 }
 
-static BRACKET_TAG_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"(?i)\[(ru|zh|cn|chs|cht|fr|de)\]|\((ru|zh|cn)\)").unwrap()
-});
+static BRACKET_TAG_RE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)\[(ru|zh|cn|chs|cht|fr|de)\]|\((ru|zh|cn)\)").unwrap());
 
 /// Extracts the candidate base mod title by stripping translation tags and suffixes.
 pub fn extract_base_mod_name(name: &str) -> String {
@@ -251,9 +246,7 @@ pub fn matches_base_mod_title(base_mod_name: &str, candidate_title: &str) -> (bo
 
     let mut matched_count = 0;
     for t in &base_tokens {
-        if cand_tokens.contains(t)
-            || (t.len() >= 4 && cand_tokens.iter().any(|cw| cw.contains(t.as_str())))
-        {
+        if cand_tokens.contains(t) || (t.len() >= 4 && cand_tokens.iter().any(|cw| cw.contains(t.as_str()))) {
             matched_count += 1;
         }
     }
@@ -394,20 +387,14 @@ pub fn filter_and_rank_workshop_translations(
         }
 
         // Add bonus score
-        if item
-            .tags
-            .iter()
-            .any(|t| t.eq_ignore_ascii_case("Translation"))
-        {
+        if item.tags.iter().any(|t| t.eq_ignore_ascii_case("Translation")) {
             score += 15;
         }
         let suffix = target_lang.search_suffix().to_lowercase();
         if !suffix.is_empty() && item.title.to_lowercase().contains(&suffix) {
             score += 15;
         }
-        if crate::models::contains_cyrillic(&item.title)
-            && target_lang == crate::models::TranslationTargetLang::Ru
-        {
+        if crate::models::contains_cyrillic(&item.title) && target_lang == crate::models::TranslationTargetLang::Ru {
             score += 15;
         }
 
@@ -478,10 +465,16 @@ mod tests {
 
         let mut m = with_langs(make_test_mod("foo.bar.ru", "Foo Bar"));
         m.has_assemblies = true;
-        assert!(!detect_is_translation(&m), "Package ID suffix .ru WITH assemblies (no kw)");
+        assert!(
+            !detect_is_translation(&m),
+            "Package ID suffix .ru WITH assemblies (no kw)"
+        );
 
         m.name = "Foo Bar русификатор".to_string();
-        assert!(detect_is_translation(&m), "Package ID suffix .ru WITH assemblies (with kw)");
+        assert!(
+            detect_is_translation(&m),
+            "Package ID suffix .ru WITH assemblies (with kw)"
+        );
 
         let m = with_langs(make_test_mod("foo.bar", "Foo Bar 汉化"));
         assert!(detect_is_translation(&m), "Keyword in name 汉化");
@@ -499,33 +492,55 @@ mod tests {
 
         let mut retexture = with_langs(make_test_mod("someone.retexture.ru", "Retexture [RU]"));
         retexture.has_other_content = true; // Textures/
-        assert!(!detect_is_translation(&retexture), "Textures + Languages is a retexture");
+        assert!(
+            !detect_is_translation(&retexture),
+            "Textures + Languages is a retexture"
+        );
 
         let mut defs_mod = with_langs(make_test_mod("someone.translation.tools", "Translation Tools"));
         defs_mod.has_defs = true;
-        assert!(!detect_is_translation(&defs_mod), "Defs make it a content mod despite the name");
+        assert!(
+            !detect_is_translation(&defs_mod),
+            "Defs make it a content mod despite the name"
+        );
     }
 
     #[test]
     fn test_find_parent_package_id() {
         let mut id_to_index = HashMap::new();
         let mut name_to_id = HashMap::new();
-        
+
         id_to_index.insert("foo.bar".to_string(), 0);
         name_to_id.insert("foobar".to_string(), "foo.bar".to_string());
 
         let mut m = make_test_mod("foo.bar.ru", "Foo Bar Ru");
         m.load_after = vec!["foo.bar".to_string()];
-        assert_eq!(find_parent_package_id(&m, &id_to_index, &name_to_id), Some("foo.bar".to_string()), "Via loadAfter");
+        assert_eq!(
+            find_parent_package_id(&m, &id_to_index, &name_to_id),
+            Some("foo.bar".to_string()),
+            "Via loadAfter"
+        );
 
         let m = make_test_mod("foo.bar.ru", "Foo Bar Ru");
-        assert_eq!(find_parent_package_id(&m, &id_to_index, &name_to_id), Some("foo.bar".to_string()), "Via suffix stripping");
+        assert_eq!(
+            find_parent_package_id(&m, &id_to_index, &name_to_id),
+            Some("foo.bar".to_string()),
+            "Via suffix stripping"
+        );
 
         let m = make_test_mod("zh.foo.bar", "Foo Bar ZH");
-        assert_eq!(find_parent_package_id(&m, &id_to_index, &name_to_id), Some("foo.bar".to_string()), "Via prefix stripping");
+        assert_eq!(
+            find_parent_package_id(&m, &id_to_index, &name_to_id),
+            Some("foo.bar".to_string()),
+            "Via prefix stripping"
+        );
 
         let m = make_test_mod("unknown.mod.ru", "Unknown Mod");
-        assert_eq!(find_parent_package_id(&m, &id_to_index, &name_to_id), None, "No match found");
+        assert_eq!(
+            find_parent_package_id(&m, &id_to_index, &name_to_id),
+            None,
+            "No match found"
+        );
     }
 
     fn item(id: &str, title: &str, tags: &[&str]) -> crate::workshop_search::WorkshopItemResult {
@@ -576,7 +591,8 @@ mod tests {
             ("RimHUD", L::De),
             ("Allow Tool", L::Zh),
         ] {
-            let raw = crate::workshop_search::search_steam_workshop(&format!("{name} {}", lang.search_suffix())).unwrap();
+            let raw =
+                crate::workshop_search::search_steam_workshop(&format!("{name} {}", lang.search_suffix())).unwrap();
             let total = raw.len();
             let kept = translations_for_mod(raw, name, None, lang, &none);
             println!("{name} [{}]: {total} found, kept {}", lang.label(), kept.len());
@@ -611,7 +627,11 @@ mod tests {
     fn new_languages_find_their_translations() {
         use crate::models::TranslationTargetLang as L;
         let found = vec![
-            item("1", "Vanilla Expanded Framework - Japanese Translation", &["Translation"]),
+            item(
+                "1",
+                "Vanilla Expanded Framework - Japanese Translation",
+                &["Translation"],
+            ),
             item("2", "Vanilla Expanded Framework 日本語化", &[]),
             item("3", "Vanilla Expanded Framework - Russian", &["Translation"]),
         ];

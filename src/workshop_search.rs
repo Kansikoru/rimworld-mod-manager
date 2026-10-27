@@ -54,9 +54,7 @@ pub fn search_steam_workshop(query: &str) -> Result<Vec<WorkshopItemResult>, Str
         "https://steamcommunity.com/workshop/browse/?appid=294100&searchtext={encoded_query}&browsesort=textsearch&section=readytouseitems"
     );
 
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(8))
-        .build();
+    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(8)).build();
 
     let html_resp = agent
         .get(&browse_url)
@@ -66,7 +64,11 @@ pub fn search_steam_workshop(query: &str) -> Result<Vec<WorkshopItemResult>, Str
         .map_err(|e| tr!("Нет связи со Steam Workshop: {}", "Can't reach the Steam Workshop: {}", e))?;
 
     let html = html_resp.into_string().map_err(|e| {
-        tr!("Ошибка чтения ответа Steam Workshop: {}", "Could not read the Steam Workshop response: {}", e)
+        tr!(
+            "Ошибка чтения ответа Steam Workshop: {}",
+            "Could not read the Steam Workshop response: {}",
+            e
+        )
     })?;
 
     let mut ids = Vec::new();
@@ -95,10 +97,7 @@ pub fn search_steam_workshop(query: &str) -> Result<Vec<WorkshopItemResult>, Str
         form_params.push((format!("publishedfileids[{i}]"), id.clone()));
     }
 
-    let param_refs: Vec<(&str, &str)> = form_params
-        .iter()
-        .map(|(k, v)| (k.as_str(), v.as_str()))
-        .collect();
+    let param_refs: Vec<(&str, &str)> = form_params.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
 
     let api_resp = agent
         .post(api_url)
@@ -116,7 +115,9 @@ pub fn search_steam_workshop(query: &str) -> Result<Vec<WorkshopItemResult>, Str
                                 continue;
                             }
                             let id = item.publishedfileid.unwrap_or_default();
-                            let title = item.title.unwrap_or_else(|| tr!("Без названия", "Untitled").to_string());
+                            let title = item
+                                .title
+                                .unwrap_or_else(|| tr!("Без названия", "Untitled").to_string());
                             let preview_url = item.preview_url;
                             let mut tags = Vec::new();
                             let mut is_translation = false;

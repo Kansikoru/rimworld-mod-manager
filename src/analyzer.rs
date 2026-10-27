@@ -121,22 +121,13 @@ impl<'a> ModMatcher<'a> {
         let mut matcher = Self::default();
 
         for m in mods {
-            matcher
-                .package_id_map
-                .insert(m.package_id.to_lowercase(), m);
+            matcher.package_id_map.insert(m.package_id.to_lowercase(), m);
             matcher.name_map.insert(m.name.to_lowercase(), m);
 
             if m.dir_path.exists() {
-                for entry in walkdir::WalkDir::new(&m.dir_path)
-                    .max_depth(5)
-                    .into_iter()
-                    .flatten()
-                {
+                for entry in walkdir::WalkDir::new(&m.dir_path).max_depth(5).into_iter().flatten() {
                     let path = entry.path();
-                    let is_dll = path
-                        .extension()
-                        .map(|e| e.eq_ignore_ascii_case("dll"))
-                        .unwrap_or(false);
+                    let is_dll = path.extension().map(|e| e.eq_ignore_ascii_case("dll")).unwrap_or(false);
                     if is_dll && entry.file_type().is_file() {
                         if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                             let owners = matcher.dll_map.entry(stem.to_lowercase()).or_default();
@@ -225,16 +216,28 @@ pub fn detect_rimworld_log_paths() -> Vec<(String, PathBuf)> {
 fn log_paths_in(base: &Path) -> Vec<(String, PathBuf)> {
     let candidates = [
         (
-            tr!("Logs/Player.log (1.7+, последний запуск)", "Logs/Player.log (1.7+, last run)"),
+            tr!(
+                "Logs/Player.log (1.7+, последний запуск)",
+                "Logs/Player.log (1.7+, last run)"
+            ),
             base.join("Logs").join("Player.log"),
         ),
         (
-            tr!("Logs/Player-prev.log (1.7+, предыдущий запуск)", "Logs/Player-prev.log (1.7+, previous run)"),
+            tr!(
+                "Logs/Player-prev.log (1.7+, предыдущий запуск)",
+                "Logs/Player-prev.log (1.7+, previous run)"
+            ),
             base.join("Logs").join("Player-prev.log"),
         ),
-        (tr!("Player.log (1.6, последний запуск)", "Player.log (1.6, last run)"), base.join("Player.log")),
         (
-            tr!("Player-prev.log (1.6, предыдущий запуск)", "Player-prev.log (1.6, previous run)"),
+            tr!("Player.log (1.6, последний запуск)", "Player.log (1.6, last run)"),
+            base.join("Player.log"),
+        ),
+        (
+            tr!(
+                "Player-prev.log (1.6, предыдущий запуск)",
+                "Player-prev.log (1.6, previous run)"
+            ),
             base.join("Player-prev.log"),
         ),
     ];
@@ -280,7 +283,10 @@ const ENGINE_FRAME_PREFIXES: &[&str] = &[
 
 /// A RimWorld 1.7+ log starts with "=== Waylith log ===" and uses "date time LEVEL [Category] text" lines.
 pub fn is_waylith_log(lines: &[&str]) -> bool {
-    lines.iter().take(20).any(|l| l.contains("=== Waylith log ===") || l.starts_with("Runtime:   .NET"))
+    lines
+        .iter()
+        .take(20)
+        .any(|l| l.contains("=== Waylith log ===") || l.starts_with("Runtime:   .NET"))
         || lines.iter().take(200).filter(|l| WAYLITH_ENTRY_RE.is_match(l)).count() >= 3
 }
 
@@ -340,8 +346,7 @@ fn analyze_waylith_entries<'a>(
     culprits_map: &mut HashMap<String, CrashCulprit>,
 ) {
     for entry in parse_waylith_entries(lines) {
-        let is_fatal = matches!(entry.level, "FATAL" | "CRITICAL")
-            || entry.message.contains("Unhandled exception");
+        let is_fatal = matches!(entry.level, "FATAL" | "CRITICAL") || entry.message.contains("Unhandled exception");
         let is_error = is_fatal || entry.level == "ERROR";
         if !is_error {
             continue;
@@ -480,12 +485,7 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
 
                     if let Some(matched_mod) = matcher.find_mod(full_class) {
                         let key = matched_mod.package_id.to_lowercase();
-                        let excerpt = stack_slice
-                            .iter()
-                            .take(25)
-                            .cloned()
-                            .collect::<Vec<_>>()
-                            .join("\n");
+                        let excerpt = stack_slice.iter().take(25).cloned().collect::<Vec<_>>().join("\n");
 
                         culprits_map.insert(
                             key,
@@ -540,11 +540,7 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
                                     package_id: Some(matched_mod.package_id.clone()),
                                     mod_dir: Some(matched_mod.dir_path.clone()),
                                     severity: ErrorSeverity::HardCrash,
-                                    headline: tr!(
-                                        "Вылет игры в моде `{}`",
-                                        "Game crash in mod `{}`",
-                                        matched_mod.name
-                                    ),
+                                    headline: tr!("Вылет игры в моде `{}`", "Game crash in mod `{}`", matched_mod.name),
                                     explanation: tr!(
                                         "Исключение в методе `{}:{}` завершило процесс игры.",
                                         "An exception in `{}:{}` ended the game process.",
@@ -746,10 +742,7 @@ pub fn generate_ai_diagnostic_prompt(report: &LogReport, is_ru: bool) -> String 
                     c.mod_name,
                     c.package_id.as_deref().unwrap_or("неизвестен")
                 ));
-                out.push_str(&format!(
-                    "   Тип: {}\n",
-                    c.severity.badge_text(true)
-                ));
+                out.push_str(&format!("   Тип: {}\n", c.severity.badge_text(true)));
                 out.push_str(&format!("   Ошибка: {}\n", c.headline));
                 out.push_str(&format!("   Подробности: {}\n", c.explanation));
 
@@ -796,10 +789,7 @@ pub fn generate_ai_diagnostic_prompt(report: &LogReport, is_ru: bool) -> String 
                     c.mod_name,
                     c.package_id.as_deref().unwrap_or("unknown")
                 ));
-                out.push_str(&format!(
-                    "   Type: {}\n",
-                    c.severity.badge_text(false)
-                ));
+                out.push_str(&format!("   Type: {}\n", c.severity.badge_text(false)));
                 out.push_str(&format!("   Error: {}\n", c.headline));
                 out.push_str(&format!("   Details: {}\n", c.explanation));
 
@@ -817,7 +807,9 @@ pub fn generate_ai_diagnostic_prompt(report: &LogReport, is_ru: bool) -> String 
         out.push_str("Questions:\n");
         out.push_str("1. What caused the failure?\n");
         out.push_str("2. Which mod is at fault and what does it conflict with?\n");
-        out.push_str("3. What should I do: disable a mod, change the load order, update, or add a compatibility patch?\n");
+        out.push_str(
+            "3. What should I do: disable a mod, change the load order, update, or add a compatibility patch?\n",
+        );
     }
 
     out
@@ -878,7 +870,10 @@ Runtime:   .NET 10.0.13-waylithclr.dev
     fn detects_waylith_format() {
         let lines: Vec<&str> = WAYLITH_LOG.lines().collect();
         assert!(is_waylith_log(&lines));
-        let unity = ["Mono path[0] = 'C:/Games/RimWorld/RimWorldWin64_Data/Managed'", "Initialize engine version: 2022.3.35f1"];
+        let unity = [
+            "Mono path[0] = 'C:/Games/RimWorld/RimWorldWin64_Data/Managed'",
+            "Initialize engine version: 2022.3.35f1",
+        ];
         assert!(!is_waylith_log(&unity));
     }
 
@@ -916,18 +911,31 @@ Runtime:   .NET 10.0.13-waylithclr.dev
             std::fs::write(d.join("Assemblies").join("0Harmony.dll"), b"").unwrap();
         }
         std::fs::write(a.join("Assemblies").join("ModA.dll"), b"").unwrap();
-        let mods = vec![test_mod(&a, "author.moda", "Mod A"), test_mod(&b, "author.modb", "Mod B")];
+        let mods = vec![
+            test_mod(&a, "author.moda", "Mod A"),
+            test_mod(&b, "author.modb", "Mod B"),
+        ];
         let m = ModMatcher::build(&mods);
         assert!(m.find_mod("0Harmony").is_none(), "0Harmony.dll ships in both mods");
-        assert_eq!(m.find_mod("ModA.SomeClass").map(|x| x.package_id.as_str()), Some("author.moda"));
+        assert_eq!(
+            m.find_mod("ModA.SomeClass").map(|x| x.package_id.as_str()),
+            Some("author.moda")
+        );
         // Longest contained packageId wins, deterministically
-        assert_eq!(m.find_mod("x.author.modb.y").map(|x| x.package_id.as_str()), Some("author.modb"));
+        assert_eq!(
+            m.find_mod("x.author.modb.y").map(|x| x.package_id.as_str()),
+            Some("author.modb")
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
     fn prompt_summary_follows_language() {
-        let report = LogReport { total_errors: 3, summary_text: "русский текст".into(), ..Default::default() };
+        let report = LogReport {
+            total_errors: 3,
+            summary_text: "русский текст".into(),
+            ..Default::default()
+        };
         let en = generate_ai_diagnostic_prompt(&report, false);
         assert!(en.contains("Found 3 errors") && !en.contains("русский"));
         assert!(generate_ai_diagnostic_prompt(&report, true).contains("найдено 3 ошибок"));

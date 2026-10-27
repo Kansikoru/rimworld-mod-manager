@@ -5,11 +5,7 @@ use rayon::prelude::*;
 use std::collections::HashSet;
 use std::path::Path;
 
-pub fn scan_mods(
-    workshop_dir: Option<&Path>,
-    local_dir: Option<&Path>,
-    game_data_dir: Option<&Path>,
-) -> Vec<ModInfo> {
+pub fn scan_mods(workshop_dir: Option<&Path>, local_dir: Option<&Path>, game_data_dir: Option<&Path>) -> Vec<ModInfo> {
     let mut targets = Vec::new();
 
     for (dir_opt, origin) in [
@@ -89,8 +85,7 @@ pub fn parse_mod_folder(
     };
 
     let content = scan_content(dir);
-    let (def_stats, cache_entry) =
-        crate::categories::def_stats_for(dir, &content.def_dirs, cache);
+    let (def_stats, cache_entry) = crate::categories::def_stats_for(dir, &content.def_dirs, cache);
 
     let name_lower = meta.name.to_lowercase();
     let info = ModInfo {
@@ -155,43 +150,38 @@ pub fn scan_content(dir: &Path) -> ContentKinds {
     let mut dll_found = false;
 
     {
-        let walker = walkdir::WalkDir::new(dir)
-            .max_depth(4)
-            .into_iter()
-            .filter_entry(|e| {
-                if e.depth() == 0 || !e.file_type().is_dir() {
-                    return true;
+        let walker = walkdir::WalkDir::new(dir).max_depth(4).into_iter().filter_entry(|e| {
+            if e.depth() == 0 || !e.file_type().is_dir() {
+                return true;
+            }
+            let name = e.file_name().to_string_lossy().to_lowercase();
+            match name.as_str() {
+                "languages" | "about" | ".git" | "source" => false,
+                "defs" => {
+                    kinds.has_defs = true;
+                    kinds.def_dirs.push(e.path().to_path_buf());
+                    false // read later, file by file, by the category scanner
                 }
-                let name = e.file_name().to_string_lossy().to_lowercase();
-                match name.as_str() {
-                    "languages" | "about" | ".git" | "source" => false,
-                    "defs" => {
-                        kinds.has_defs = true;
-                        kinds.def_dirs.push(e.path().to_path_buf());
-                        false // read later, file by file, by the category scanner
-                    }
-                    "assemblies" => {
-                        // Counts even if the DLL sits deeper than the walk depth.
-                        kinds.has_assemblies = true;
-                        true
-                    }
-                    other if CONTENT_DIR_NAMES.contains(&other) => {
-                        kinds.has_other = true;
-                        match other {
-                            "patches" => kinds.has_patches = true,
-                            "textures" => kinds.has_textures = true,
-                            _ => {}
-                        }
-                        false // thousands of files inside; the folder itself is enough
-                    }
-                    _ => true,
+                "assemblies" => {
+                    // Counts even if the DLL sits deeper than the walk depth.
+                    kinds.has_assemblies = true;
+                    true
                 }
-            });
+                other if CONTENT_DIR_NAMES.contains(&other) => {
+                    kinds.has_other = true;
+                    match other {
+                        "patches" => kinds.has_patches = true,
+                        "textures" => kinds.has_textures = true,
+                        _ => {}
+                    }
+                    false // thousands of files inside; the folder itself is enough
+                }
+                _ => true,
+            }
+        });
 
         for entry in walker.flatten() {
-            if entry.file_type().is_file()
-                && entry.file_name().to_string_lossy().to_lowercase().ends_with(".dll")
-            {
+            if entry.file_type().is_file() && entry.file_name().to_string_lossy().to_lowercase().ends_with(".dll") {
                 dll_found = true;
             }
         }
@@ -446,8 +436,7 @@ pub fn resolve_versioned_fields(mods: &mut [ModInfo], game_mm: Option<&str>) {
     }
 }
 static BBCODE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"\[/?(b|i|u|list|\*|h1|h2|h3|code|strike|spoiler|url.*?|table|tr|th|td)\]")
-        .unwrap()
+    regex::Regex::new(r"\[/?(b|i|u|list|\*|h1|h2|h3|code|strike|spoiler|url.*?|table|tr|th|td)\]").unwrap()
 });
 
 fn clean_description(desc: &str) -> String {
@@ -650,10 +639,16 @@ mod tests {
         assert_eq!(meta.description, "Line one");
         assert_eq!(meta.supported_versions, vec!["1.5", "1.6"]);
         assert_eq!(meta.dependencies, vec!["brrainz.harmony"]);
-        assert_eq!(meta.dependency_alternatives["brrainz.harmony"], vec!["zetrith.prepatcher"]);
+        assert_eq!(
+            meta.dependency_alternatives["brrainz.harmony"],
+            vec!["zetrith.prepatcher"]
+        );
         assert_eq!(meta.incompatible_with, vec!["bad.mod"]);
         assert_eq!(meta.load_after, vec!["ludeon.rimworld"]);
-        assert_eq!(meta.by_version.dependencies["1.6"], vec!["OskarPotocki.VanillaFactionsExpanded.Core"]);
+        assert_eq!(
+            meta.by_version.dependencies["1.6"],
+            vec!["OskarPotocki.VanillaFactionsExpanded.Core"]
+        );
         assert_eq!(meta.by_version.load_after["1.6"], vec!["a.after16"]);
         assert_eq!(meta.by_version.load_before["1.5"], vec!["b.before15"]);
 
@@ -666,7 +661,10 @@ mod tests {
             ..Default::default()
         }];
         resolve_versioned_fields(&mut mods, Some("1.6"));
-        assert_eq!(mods[0].dependencies, vec!["brrainz.harmony", "OskarPotocki.VanillaFactionsExpanded.Core"]);
+        assert_eq!(
+            mods[0].dependencies,
+            vec!["brrainz.harmony", "OskarPotocki.VanillaFactionsExpanded.Core"]
+        );
         assert_eq!(mods[0].load_after, vec!["ludeon.rimworld", "a.after16"]);
         assert!(mods[0].load_before.is_empty(), "1.5-only loadBefore is not used on 1.6");
     }
@@ -701,7 +699,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("About")).unwrap();
         std::fs::create_dir_all(dir.join("Languages").join("Russian").join("Textures")).unwrap();
-        assert_eq!(scan_content_kinds(&dir), (false, false, false), "translated textures inside Languages don't count");
+        assert_eq!(
+            scan_content_kinds(&dir),
+            (false, false, false),
+            "translated textures inside Languages don't count"
+        );
         std::fs::create_dir_all(dir.join("1.6").join("Patches")).unwrap();
         assert_eq!(scan_content_kinds(&dir), (false, false, true));
         let _ = std::fs::remove_dir_all(&dir);

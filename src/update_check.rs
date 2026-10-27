@@ -80,7 +80,10 @@ fn fetch_latest() -> Result<LatestRelease, String> {
     let text = agent
         .get(LATEST_RELEASE_API)
         // GitHub refuses requests without a User-Agent.
-        .set("User-Agent", concat!("rimworld-mod-manager/", env!("CARGO_PKG_VERSION")))
+        .set(
+            "User-Agent",
+            concat!("rimworld-mod-manager/", env!("CARGO_PKG_VERSION")),
+        )
         .set("Accept", "application/vnd.github+json")
         .call()
         .map_err(|e| e.to_string())?
@@ -95,7 +98,13 @@ fn fetch_latest() -> Result<LatestRelease, String> {
 /// Asks GitHub (background thread) and remembers the answer. `None` when offline.
 pub fn check_now(cache_file: &Path) -> Option<LatestRelease> {
     let latest = fetch_latest().ok()?;
-    save_cache(cache_file, &UpdateCache { checked_at: now_secs(), latest: Some(latest.clone()) });
+    save_cache(
+        cache_file,
+        &UpdateCache {
+            checked_at: now_secs(),
+            latest: Some(latest.clone()),
+        },
+    );
     Some(latest)
 }
 
@@ -119,7 +128,10 @@ mod tests {
     #[test]
     fn checks_once_a_day() {
         let day = 24 * 60 * 60;
-        let cache = UpdateCache { checked_at: 1_000_000, latest: None };
+        let cache = UpdateCache {
+            checked_at: 1_000_000,
+            latest: None,
+        };
         assert!(!needs_check(&cache, 1_000_000 + day - 1));
         assert!(needs_check(&cache, 1_000_000 + day));
         assert!(needs_check(&cache, 999_000), "clock went back");
@@ -131,7 +143,10 @@ mod tests {
         let path = std::env::temp_dir().join(format!("rwmm_update_{}.json", std::process::id()));
         let cache = UpdateCache {
             checked_at: 42,
-            latest: Some(LatestRelease { tag: "v9.9.9".into(), url: "https://example.org".into() }),
+            latest: Some(LatestRelease {
+                tag: "v9.9.9".into(),
+                url: "https://example.org".into(),
+            }),
         };
         save_cache(&path, &cache);
         assert_eq!(load_cache(&path), cache);

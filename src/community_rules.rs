@@ -32,8 +32,7 @@ pub struct CommunityDatabase {
 /// Built-in rules only.
 pub fn get_default_community_db() -> &'static CommunityDatabase {
     DEFAULT_DB.get_or_init(|| {
-        let parsed: HashMap<String, CommunityRule> =
-            serde_json::from_str(DEFAULT_RULES_JSON).unwrap_or_default();
+        let parsed: HashMap<String, CommunityRule> = serde_json::from_str(DEFAULT_RULES_JSON).unwrap_or_default();
         CommunityDatabase {
             rules: parsed.into_iter().map(|(k, v)| (k.to_lowercase(), v)).collect(),
         }
@@ -47,10 +46,7 @@ pub fn local_rules_path() -> PathBuf {
 fn ids_of(value: Option<&serde_json::Value>) -> Vec<String> {
     match value {
         Some(serde_json::Value::Object(map)) => map.keys().map(|k| k.to_lowercase()).collect(),
-        Some(serde_json::Value::Array(arr)) => arr
-            .iter()
-            .filter_map(|v| v.as_str().map(str::to_lowercase))
-            .collect(),
+        Some(serde_json::Value::Array(arr)) => arr.iter().filter_map(|v| v.as_str().map(str::to_lowercase)).collect(),
         _ => Vec::new(),
     }
 }
@@ -81,10 +77,13 @@ pub fn parse_rules_json(text: &str) -> Result<HashMap<String, CommunityRule>, St
         return Ok(out);
     }
 
-    let own: HashMap<String, CommunityRule> = serde_json::from_value(value)
-        .map_err(|_| {
-            tr!("неизвестный формат: нет ключа \"rules\"", "unknown format: no \"rules\" key").to_string()
-        })?;
+    let own: HashMap<String, CommunityRule> = serde_json::from_value(value).map_err(|_| {
+        tr!(
+            "неизвестный формат: нет ключа \"rules\"",
+            "unknown format: no \"rules\" key"
+        )
+        .to_string()
+    })?;
     Ok(own.into_iter().map(|(k, v)| (k.to_lowercase(), v)).collect())
 }
 
@@ -113,7 +112,10 @@ pub fn merge_rules(base: &mut HashMap<String, CommunityRule>, extra: HashMap<Str
 /// Built-in rules + the community file at `path` (if present and valid).
 pub fn load_effective_db_from(path: &Path) -> CommunityDatabase {
     let mut rules = get_default_community_db().rules.clone();
-    if let Some(extra) = std::fs::read_to_string(path).ok().and_then(|t| parse_rules_json(&t).ok()) {
+    if let Some(extra) = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| parse_rules_json(&t).ok())
+    {
         merge_rules(&mut rules, extra);
     }
     CommunityDatabase { rules }
@@ -213,7 +215,12 @@ mod tests {
         let ids: Vec<String> = mods.iter().map(|m| m.package_id.clone()).collect();
         let t = std::time::Instant::now();
         let sorted = crate::sorter::sort_load_order_with_db(&ids, &mods, Some(&db));
-        println!("sorted {} mods with {} rules in {:?}", sorted.len(), db.rules.len(), t.elapsed());
+        println!(
+            "sorted {} mods with {} rules in {:?}",
+            sorted.len(),
+            db.rules.len(),
+            t.elapsed()
+        );
         println!("first 8: {:?}", &sorted[..sorted.len().min(8)]);
         assert_eq!(sorted.len(), ids.len());
     }

@@ -115,11 +115,20 @@ impl Bisect {
         let keep_lower: Vec<String> = keep.iter().map(|k| k.to_lowercase()).collect();
         let base = search.closure(keep_lower.iter().filter(|k| search.original.contains(k)));
         search.base = search.ordered(&base);
-        search.stage.candidates = search.original.iter().filter(|id| !base.contains(*id)).cloned().collect();
+        search.stage.candidates = search
+            .original
+            .iter()
+            .filter(|id| !base.contains(*id))
+            .cloned()
+            .collect();
         if search.stage.candidates.is_empty() {
             search.stage.outcome = Some(Outcome::InBase);
         } else {
-            search.stage.test = Some(Test { kind: TestKind::BaseOnly, part: Vec::new(), other: Vec::new() });
+            search.stage.test = Some(Test {
+                kind: TestKind::BaseOnly,
+                part: Vec::new(),
+                other: Vec::new(),
+            });
         }
         search
     }
@@ -183,9 +192,19 @@ impl Bisect {
         if self.stage.outcome.is_some() {
             return 0;
         }
-        let halvings = |n: usize| if n < 2 { 0 } else { (usize::BITS - (n - 1).leading_zeros()) as usize };
-        let base = usize::from(matches!(self.stage.test.as_ref().map(|t| t.kind), Some(TestKind::BaseOnly)));
-        base + halvings(self.stage.candidates.len()) + self.stage.pending.iter().map(|p| halvings(p.len())).sum::<usize>()
+        let halvings = |n: usize| {
+            if n < 2 {
+                0
+            } else {
+                (usize::BITS - (n - 1).leading_zeros()) as usize
+            }
+        };
+        let base = usize::from(matches!(
+            self.stage.test.as_ref().map(|t| t.kind),
+            Some(TestKind::BaseOnly)
+        ));
+        base + halvings(self.stage.candidates.len())
+            + self.stage.pending.iter().map(|p| halvings(p.len())).sum::<usize>()
     }
 
     /// The user's answer for the current test: is the problem still there?
@@ -205,7 +224,11 @@ impl Bisect {
                 self.settle();
             }
             (TestKind::First, false) => {
-                self.stage.test = Some(Test { kind: TestKind::Second, part: test.other, other: test.part });
+                self.stage.test = Some(Test {
+                    kind: TestKind::Second,
+                    part: test.other,
+                    other: test.part,
+                });
             }
             (TestKind::Second, false) => {
                 // Neither half alone: a mod from each half is needed. Keep this half on
@@ -248,7 +271,11 @@ impl Bisect {
             }
             match self.split(&self.stage.candidates) {
                 Some((part, other)) => {
-                    self.stage.test = Some(Test { kind: TestKind::First, part, other });
+                    self.stage.test = Some(Test {
+                        kind: TestKind::First,
+                        part,
+                        other,
+                    });
                     return;
                 }
                 None => {
@@ -266,11 +293,16 @@ impl Bisect {
         if candidates.len() < 2 {
             return None;
         }
-        let in_part = |on: &HashSet<String>| -> Vec<String> { candidates.iter().filter(|id| on.contains(*id)).cloned().collect() };
+        let in_part = |on: &HashSet<String>| -> Vec<String> {
+            candidates.iter().filter(|id| on.contains(*id)).cloned().collect()
+        };
         let total = candidates.len();
         let consider = |best: &mut Option<Vec<String>>, part: Vec<String>| {
             let score = |n: usize| (2 * n).abs_diff(total);
-            if !part.is_empty() && part.len() < total && best.as_ref().is_none_or(|b| score(part.len()) < score(b.len())) {
+            if !part.is_empty()
+                && part.len() < total
+                && best.as_ref().is_none_or(|b| score(part.len()) < score(b.len()))
+            {
                 *best = Some(part);
             }
         };
@@ -323,7 +355,10 @@ mod tests {
     }
 
     fn reqs(pairs: &[(&str, &[&str])]) -> BTreeMap<String, Vec<String>> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.iter().map(|s| s.to_string()).collect())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.iter().map(|s| s.to_string()).collect()))
+            .collect()
     }
 
     /// Answers until the search ends; every tested load order must include what its mods need.
@@ -373,7 +408,11 @@ mod tests {
         let search = Bisect::new(&all, &["MOD.00".into()], &requires);
         assert_eq!(search.base, ["mod.00", "mod.05"]);
         assert!(!search.stage.candidates.contains(&"mod.05".to_string()));
-        assert_eq!(search.enabled(), ["mod.00", "mod.05"], "the first launch is the base only");
+        assert_eq!(
+            search.enabled(),
+            ["mod.00", "mod.05"],
+            "the first launch is the base only"
+        );
     }
 
     #[test]
@@ -389,8 +428,10 @@ mod tests {
     fn finds_a_mod_that_others_depend_on_and_one_that_depends() {
         let all = ids(20);
         // Every fourth mod needs the one three places before it; mod.19 needs mod.01.
-        let mut pairs: Vec<(String, Vec<String>)> =
-            (4..20).step_by(4).map(|i| (format!("mod.{i:02}"), vec![format!("mod.{:02}", i - 3)])).collect();
+        let mut pairs: Vec<(String, Vec<String>)> = (4..20)
+            .step_by(4)
+            .map(|i| (format!("mod.{i:02}"), vec![format!("mod.{:02}", i - 3)]))
+            .collect();
         pairs.push(("mod.19".into(), vec!["mod.01".into()]));
         let requires: BTreeMap<String, Vec<String>> = pairs.into_iter().collect();
         for culprit in &all {
@@ -407,7 +448,9 @@ mod tests {
             let (x, y) = (all[x].clone(), all[y].clone());
             let mut search = Bisect::new(&all, &[], &BTreeMap::new());
             let outcome = run(&mut search, |on| on.contains(&x) && on.contains(&y));
-            let Outcome::Found(mut found) = outcome else { panic!("not found") };
+            let Outcome::Found(mut found) = outcome else {
+                panic!("not found")
+            };
             found.sort();
             assert_eq!(found, [x, y]);
         }
@@ -419,7 +462,9 @@ mod tests {
         let requires = reqs(&[("mod.02", &["mod.06"]), ("mod.06", &["mod.02"])]);
         let mut search = Bisect::new(&all, &[], &requires);
         let outcome = run(&mut search, |on| on.contains(&"mod.06".to_string()));
-        let Outcome::Found(mut found) = outcome else { panic!("not found") };
+        let Outcome::Found(mut found) = outcome else {
+            panic!("not found")
+        };
         found.sort();
         assert_eq!(found, ["mod.02", "mod.06"]);
     }

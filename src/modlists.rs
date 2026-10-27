@@ -60,7 +60,10 @@ pub fn check_name(name: &str) -> Result<String, NameProblem> {
     if name.chars().count() > 80 {
         return Err(NameProblem::TooLong);
     }
-    if name.chars().any(|c| matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control()) {
+    if name
+        .chars()
+        .any(|c| matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control())
+    {
         return Err(NameProblem::BadCharacters);
     }
     Ok(name.to_string())
@@ -78,7 +81,11 @@ pub fn list_modlists(dir: &Path) -> Vec<ModList> {
     let mut lists: Vec<ModList> = entries
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("rml")))
+        .filter(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("rml"))
+        })
         .filter_map(|p| read_rml(&p))
         .collect();
     lists.sort_by_key(|l| l.name.to_lowercase());
@@ -143,7 +150,15 @@ pub fn read_rml(path: &Path) -> Option<ModList> {
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs());
-    Some(ModList { name, path: path.to_path_buf(), game_version, ids, names, modified, steam_ids })
+    Some(ModList {
+        name,
+        path: path.to_path_buf(),
+        game_version,
+        ids,
+        names,
+        modified,
+        steam_ids,
+    })
 }
 
 /// A set from a file someone shared: a `.rml`, or a `ModsConfig.xml` (its active mods,
@@ -193,7 +208,10 @@ pub fn share_text(title: &str, mods: &[(String, Option<String>)]) -> String {
     let mut out = format!("{title} ({})\n", mods.len());
     for (i, (name, steam_id)) in mods.iter().enumerate() {
         match steam_id {
-            Some(id) => out.push_str(&format!("{}. {name} — https://steamcommunity.com/sharedfiles/filedetails/?id={id}\n", i + 1)),
+            Some(id) => out.push_str(&format!(
+                "{}. {name} — https://steamcommunity.com/sharedfiles/filedetails/?id={id}\n",
+                i + 1
+            )),
             None => out.push_str(&format!("{}. {name}\n", i + 1)),
         }
     }
@@ -243,7 +261,10 @@ pub fn rml_text(game_version: &str, entries: &[ModListEntry]) -> String {
     out.push_str("\t\t<modIds>\n");
     out.push_str(&li(&mut entries.iter().map(|e| e.id.clone()), "\t\t\t"));
     out.push_str("\t\t</modIds>\n\t\t<modSteamIds>\n");
-    out.push_str(&li(&mut entries.iter().map(|e| e.steam_id.clone().unwrap_or_else(|| "0".into())), "\t\t\t"));
+    out.push_str(&li(
+        &mut entries.iter().map(|e| e.steam_id.clone().unwrap_or_else(|| "0".into())),
+        "\t\t\t",
+    ));
     out.push_str("\t\t</modSteamIds>\n\t\t<modNames>\n");
     out.push_str(&li(&mut entries.iter().map(|e| e.name.clone()), "\t\t\t"));
     out.push_str("\t\t</modNames>\n\t</meta>\n\t<modList>\n\t\t<ids>\n");
@@ -278,7 +299,11 @@ mod tests {
     }
 
     fn entry(id: &str, name: &str, steam: Option<&str>) -> ModListEntry {
-        ModListEntry { id: id.into(), name: name.into(), steam_id: steam.map(str::to_string) }
+        ModListEntry {
+            id: id.into(),
+            name: name.into(),
+            steam_id: steam.map(str::to_string),
+        }
     }
 
     #[test]
@@ -317,7 +342,10 @@ mod tests {
         let lists = list_modlists(&dir);
         let names: Vec<&str> = lists.iter().map(|l| l.name.as_str()).collect();
         assert_eq!(names, ["1", "old"], "broken and non-.rml files are skipped");
-        assert_eq!(lists[0].ids, ["zetrith.prepatcher", "brrainz.harmony", "ludeon.rimworld"]);
+        assert_eq!(
+            lists[0].ids,
+            ["zetrith.prepatcher", "brrainz.harmony", "ludeon.rimworld"]
+        );
         assert_eq!(lists[0].game_version.as_deref(), Some("1.6.4871 rev591"));
         assert_eq!(lists[1].ids, ["a.b", "c.d"]);
         let _ = std::fs::remove_dir_all(&dir);
@@ -377,7 +405,10 @@ mod tests {
         assert_eq!(unique_name(&dir, "Friend"), "Friend (2)");
         let _ = std::fs::remove_dir_all(&dir);
 
-        let text = share_text("My pack", &[("Harmony".into(), Some("2009463077".into())), ("Core".into(), None)]);
+        let text = share_text(
+            "My pack",
+            &[("Harmony".into(), Some("2009463077".into())), ("Core".into(), None)],
+        );
         assert_eq!(
             text,
             "My pack (2)\n1. Harmony — https://steamcommunity.com/sharedfiles/filedetails/?id=2009463077\n2. Core\n"
@@ -395,7 +426,8 @@ mod tests {
 
     #[test]
     fn modlists_folder_is_next_to_config() {
-        let cfg = Path::new(r"C:\Users\u\AppData\LocalLow\Ludeon Studios\RimWorld by Ludeon Studios\Config\ModsConfig.xml");
+        let cfg =
+            Path::new(r"C:\Users\u\AppData\LocalLow\Ludeon Studios\RimWorld by Ludeon Studios\Config\ModsConfig.xml");
         assert_eq!(
             modlists_dir(cfg).unwrap(),
             PathBuf::from(r"C:\Users\u\AppData\LocalLow\Ludeon Studios\RimWorld by Ludeon Studios\ModLists")

@@ -37,7 +37,8 @@ pub const ICON_STATUS_WARNING: ImageSource<'static> = egui::include_image!("../.
 pub const ICON_STATUS_ERROR: ImageSource<'static> = egui::include_image!("../../assets/icons/status_error.svg");
 pub const ICON_STATUS_OK: ImageSource<'static> = egui::include_image!("../../assets/icons/status_ok.svg");
 pub const ICON_STATUS_MISSING: ImageSource<'static> = egui::include_image!("../../assets/icons/status_missing.svg");
-pub const ICON_STATUS_NOT_ON_DISK: ImageSource<'static> = egui::include_image!("../../assets/icons/status_not_on_disk.svg");
+pub const ICON_STATUS_NOT_ON_DISK: ImageSource<'static> =
+    egui::include_image!("../../assets/icons/status_not_on_disk.svg");
 pub const ICON_STATUS_DUPLICATE: ImageSource<'static> = egui::include_image!("../../assets/icons/status_duplicate.svg");
 pub const ICON_STATUS_CRASH: ImageSource<'static> = egui::include_image!("../../assets/icons/status_crash.svg");
 pub const ICON_STATUS_LOCAL: ImageSource<'static> = egui::include_image!("../../assets/icons/status_local.svg");

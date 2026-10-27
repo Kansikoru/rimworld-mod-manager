@@ -77,10 +77,16 @@ pub fn is_in_about_folder(path: &Path) -> bool {
 /// Check whether a path is inside a dangerous folder (UI, GUI, Icons, Defs, Pawn).
 pub fn is_in_dangerous_folder(path: &Path) -> bool {
     path.components().any(|c| {
-        c.as_os_str().to_str().map(|s| {
-            let lower = s.to_ascii_lowercase();
-            matches!(lower.as_str(), "ui" | "gui" | "icons" | "defs" | "pawn" | "pawns" | "hair" | "heads" | "bodies" | "apparel")
-        }).unwrap_or(false)
+        c.as_os_str()
+            .to_str()
+            .map(|s| {
+                let lower = s.to_ascii_lowercase();
+                matches!(
+                    lower.as_str(),
+                    "ui" | "gui" | "icons" | "defs" | "pawn" | "pawns" | "hair" | "heads" | "bodies" | "apparel"
+                )
+            })
+            .unwrap_or(false)
     })
 }
 
@@ -109,11 +115,7 @@ fn walk_mod_textures(mod_dir: &Path) -> impl Iterator<Item = PathBuf> {
                 return false;
             }
             let path = entry.path();
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_lowercase();
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
             if ext != "png" && ext != "jpg" && ext != "jpeg" {
                 return false;
             }
@@ -394,7 +396,9 @@ pub fn detect_orientation(dds: &Path, source: &Path) -> Result<Orientation, Stri
     let file = std::fs::File::open(dds).map_err(|e| format!("{}: {}", dds.display(), e))?;
     let dds_file = image_dds::ddsfile::Dds::read(file).map_err(|e| format!("{}: {}", dds.display(), e))?;
     let decoded = image_dds::image_from_dds(&dds_file, 0).map_err(|e| format!("{}: {}", dds.display(), e))?;
-    let src = image::open(source).map_err(|e| format!("{}: {}", source.display(), e))?.to_rgba8();
+    let src = image::open(source)
+        .map_err(|e| format!("{}: {}", source.display(), e))?
+        .to_rgba8();
     if src.dimensions() != decoded.dimensions() {
         return Err(format!("{}: size differs from {}", dds.display(), source.display()));
     }
@@ -413,7 +417,11 @@ pub struct OrientationSummary {
 }
 
 pub enum OrientationMsg {
-    Progress { done: usize, total: usize, current_file: String },
+    Progress {
+        done: usize,
+        total: usize,
+        current_file: String,
+    },
     Done(OrientationSummary),
 }
 
@@ -471,14 +479,23 @@ pub fn fix_orientation_with_manifest(
                 if is_flipped == want_flipped {
                     return Ok(false);
                 }
-                encode_texture(&source, &e.dds, ConvertOptions { flip_vertical: want_flipped })?;
+                encode_texture(
+                    &source,
+                    &e.dds,
+                    ConvertOptions {
+                        flip_vertical: want_flipped,
+                    },
+                )?;
                 Ok(true)
             }));
             match result {
                 Ok(Ok(changed)) => {
                     if changed { &fixed } else { &already_ok }.fetch_add(1, Ordering::Relaxed);
                     if let Ok(mut list) = updated.lock() {
-                        list.push(ManifestEntry { flipped: Some(want_flipped), ..e.clone() });
+                        list.push(ManifestEntry {
+                            flipped: Some(want_flipped),
+                            ..e.clone()
+                        });
                     }
                 }
                 _ => {
@@ -487,12 +504,23 @@ pub fn fix_orientation_with_manifest(
             }
             let n = done.fetch_add(1, Ordering::Relaxed) + 1;
             if n.is_multiple_of(10) || n == total {
-                let current_file = e.dds.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
-                let _ = tx.send(OrientationMsg::Progress { done: n, total, current_file });
+                let current_file = e
+                    .dds
+                    .file_name()
+                    .map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let _ = tx.send(OrientationMsg::Progress {
+                    done: n,
+                    total,
+                    current_file,
+                });
             }
         });
     };
-    match rayon::ThreadPoolBuilder::new().num_threads(max_threads.clamp(1, total_system_threads())).build() {
+    match rayon::ThreadPoolBuilder::new()
+        .num_threads(max_threads.clamp(1, total_system_threads()))
+        .build()
+    {
         Ok(pool) => pool.install(work),
         Err(_) => work(),
     }
@@ -622,9 +650,7 @@ fn texture_backup_root() -> PathBuf {
 // Background Worker
 /// Total logical CPU threads available on this system.
 pub fn total_system_threads() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
 }
 
 pub fn calc_threads_for_percentage(total: usize, pct: usize) -> usize {
@@ -716,9 +742,8 @@ pub fn run_optimization(
                     .unwrap_or_default();
 
                 let source_fp = source_fingerprint(path);
-                let conv_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    optimize_single_texture(path, opts)
-                }));
+                let conv_res =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| optimize_single_texture(path, opts)));
 
                 match conv_res {
                     Ok(Ok(ConvertOutcome::SkippedSize | ConvertOutcome::SkippedSmall)) => {
@@ -863,7 +888,12 @@ pub fn texture_summary(mod_dirs: &[PathBuf], force: bool, want_flipped: bool) ->
 }
 
 /// Runs `texture_summary` in a background thread (walking big mod folders takes a while).
-pub fn texture_summary_async(mod_dirs: Vec<PathBuf>, force: bool, want_flipped: bool, tx: mpsc::Sender<TextureSummary>) {
+pub fn texture_summary_async(
+    mod_dirs: Vec<PathBuf>,
+    force: bool,
+    want_flipped: bool,
+    tx: mpsc::Sender<TextureSummary>,
+) {
     std::thread::spawn(move || {
         let _ = tx.send(texture_summary(&mod_dirs, force, want_flipped));
     });
@@ -988,7 +1018,10 @@ mod tests {
                 Err(err) => println!("skip: {err}"),
             }
         }
-        println!("--- as source: {}, flipped: {}, unclear: {}", counts[0], counts[1], counts[2]);
+        println!(
+            "--- as source: {}, flipped: {}, unclear: {}",
+            counts[0], counts[1], counts[2]
+        );
     }
 
     /// Runs the flip pass on copies of real optimizer DDS (originals untouched):
@@ -1003,14 +1036,26 @@ mod tests {
         for (i, e) in entries.iter().step_by(step).take(30).enumerate() {
             let (dds, png) = (dir.join(format!("{i}.dds")), dir.join(format!("{i}.png")));
             if std::fs::copy(&e.dds, &dds).is_ok() && std::fs::copy(&e.source, &png).is_ok() {
-                copies.push(ManifestEntry { dds, source: png, backup: None, source_fp: None, flipped: e.flipped });
+                copies.push(ManifestEntry {
+                    dds,
+                    source: png,
+                    backup: None,
+                    source_fp: None,
+                    flipped: e.flipped,
+                });
             }
         }
         let manifest = dir.join("dds_manifest.tsv");
         append_manifest(&manifest, &copies).unwrap();
         let (tx, _rx) = mpsc::channel();
         let s = fix_orientation_with_manifest(&manifest, true, 8, &tx, &AtomicBool::new(false));
-        println!("copies: {}, flipped: {}, already right: {}, errors: {}", copies.len(), s.fixed, s.already_ok, s.errors);
+        println!(
+            "copies: {}, flipped: {}, already right: {}, errors: {}",
+            copies.len(),
+            s.fixed,
+            s.already_ok,
+            s.errors
+        );
         let mut wrong = 0;
         for c in &copies {
             match detect_orientation(&c.dds, &c.source) {
@@ -1041,14 +1086,22 @@ mod tests {
         let manifest = dir.join("dds_manifest.tsv");
         append_manifest(
             &manifest,
-            &[entry(kept, None), entry(flipped, Some(true)), entry(dir.join("gone.dds"), None)],
+            &[
+                entry(kept, None),
+                entry(flipped, Some(true)),
+                entry(dir.join("gone.dds"), None),
+            ],
         )
         .unwrap();
         // On 1.7 the old (unflipped) one is wrong, on 1.6 the flipped one; missing files don't count.
         assert_eq!(count_wrong_orientation(&manifest, true), 1);
         assert_eq!(count_wrong_orientation(&manifest, false), 1);
         assert_eq!(count_wrong_orientation(&dir.join("missing.tsv"), true), 0);
-        assert_eq!(read_manifest(&manifest)[1].flipped, Some(true), "orientation survives a save/load");
+        assert_eq!(
+            read_manifest(&manifest)[1].flipped,
+            Some(true),
+            "orientation survives a save/load"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1063,7 +1116,13 @@ mod tests {
         assert_eq!(detect_orientation(&dds, &png).unwrap(), Orientation::AsSource);
 
         let manifest = dir.join("dds_manifest.tsv");
-        let entry = ManifestEntry { dds: dds.clone(), source: png.clone(), backup: None, source_fp: None, flipped: None };
+        let entry = ManifestEntry {
+            dds: dds.clone(),
+            source: png.clone(),
+            backup: None,
+            source_fp: None,
+            flipped: None,
+        };
         append_manifest(&manifest, &[entry]).unwrap();
         let (tx, _rx) = mpsc::channel();
         let stop = AtomicBool::new(false);
@@ -1115,14 +1174,23 @@ mod tests {
         assert_eq!(fourcc, "DXT1", "BC1 uses the classic DXT1 header");
         assert_eq!(mips, 8, "128x64 -> full chain down to 1x1");
 
-        assert_eq!(optimize_single_texture(&transparent, opts).unwrap(), ConvertOutcome::Bc7);
+        assert_eq!(
+            optimize_single_texture(&transparent, opts).unwrap(),
+            ConvertOutcome::Bc7
+        );
         let (fourcc, mips) = dds_info(&transparent.with_extension("dds"));
         assert_eq!(fourcc, "DX10", "BC7 needs the DX10 header");
         assert_eq!(mips, 7);
 
-        assert_eq!(optimize_single_texture(&odd, opts).unwrap(), ConvertOutcome::SkippedSize);
+        assert_eq!(
+            optimize_single_texture(&odd, opts).unwrap(),
+            ConvertOutcome::SkippedSize
+        );
         assert!(!odd.with_extension("dds").exists(), "never stretched, left as PNG");
-        assert_eq!(optimize_single_texture(&tiny, opts).unwrap(), ConvertOutcome::SkippedSmall);
+        assert_eq!(
+            optimize_single_texture(&tiny, opts).unwrap(),
+            ConvertOutcome::SkippedSmall
+        );
         assert!(!dir.join("opaque.dds.tmp").exists());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1144,23 +1212,51 @@ mod tests {
             std::fs::write(p.with_extension("dds"), b"dds").unwrap();
         }
         let entries = vec![
-            ManifestEntry { dds: ours_fresh.with_extension("dds"), source: ours_fresh.clone(), backup: None, source_fp: source_fingerprint(&ours_fresh), flipped: None },
-            ManifestEntry { dds: ours_stale.with_extension("dds"), source: ours_stale.clone(), backup: None, source_fp: Some("1:1".into()), flipped: None },
+            ManifestEntry {
+                dds: ours_fresh.with_extension("dds"),
+                source: ours_fresh.clone(),
+                backup: None,
+                source_fp: source_fingerprint(&ours_fresh),
+                flipped: None,
+            },
+            ManifestEntry {
+                dds: ours_stale.with_extension("dds"),
+                source: ours_stale.clone(),
+                backup: None,
+                source_fp: Some("1:1".into()),
+                flipped: None,
+            },
         ];
         let manifest = manifest_index(entries);
 
         let plan = plan_textures(&[dir.join("Mod")], false, false, &manifest);
-        let mut names: Vec<String> = plan.to_convert.iter().map(|p| p.file_name().unwrap().to_string_lossy().to_string()).collect();
+        let mut names: Vec<String> = plan
+            .to_convert
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
         names.sort();
-        assert_eq!(names, vec!["b.png", "d.png"], "stale ours + brand new; fresh ours and foreign skipped");
+        assert_eq!(
+            names,
+            vec!["b.png", "d.png"],
+            "stale ours + brand new; fresh ours and foreign skipped"
+        );
         assert_eq!((plan.up_to_date, plan.foreign_dds), (1, 1));
 
         let forced = plan_textures(&[dir.join("Mod")], true, false, &manifest);
-        assert_eq!(forced.to_convert.len(), 3, "force re-encodes ours, never the author's DDS");
+        assert_eq!(
+            forced.to_convert.len(),
+            3,
+            "force re-encodes ours, never the author's DDS"
+        );
 
         // On 1.7 the fresh but unflipped DDS is the wrong way up: re-encoded too.
         let on_waylith = plan_textures(&[dir.join("Mod")], false, true, &manifest);
-        assert_eq!(on_waylith.to_convert.len(), 3, "wrong-way-up ours are redone, the author's DDS still never");
+        assert_eq!(
+            on_waylith.to_convert.len(),
+            3,
+            "wrong-way-up ours are redone, the author's DDS still never"
+        );
         assert_eq!(on_waylith.up_to_date, 0);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1194,7 +1290,13 @@ mod tests {
         let manifest = dir.join("manifest.tsv");
         append_manifest(
             &manifest,
-            &[ManifestEntry { dds: dds.clone(), source: source.clone(), backup: Some(backup.clone()), source_fp: None, flipped: None }],
+            &[ManifestEntry {
+                dds: dds.clone(),
+                source: source.clone(),
+                backup: Some(backup.clone()),
+                source_fp: None,
+                flipped: None,
+            }],
         )
         .unwrap();
 

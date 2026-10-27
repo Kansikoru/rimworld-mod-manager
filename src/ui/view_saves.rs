@@ -3,12 +3,12 @@
 
 use eframe::egui::{self, Color32, Rounding, Sense, Stroke, Ui, Vec2};
 
-use crate::app::{App, AppTab};
-use crate::i18n::{fmt, TranslationKey};
-use crate::saves::SaveInfo;
 use super::components::*;
 use super::icons::*;
 use super::theme::THEME;
+use crate::app::{App, AppTab};
+use crate::i18n::{fmt, TranslationKey};
+use crate::saves::SaveInfo;
 
 enum SaveAction {
     Select(String),
@@ -33,7 +33,12 @@ const ROW_H: f32 = 52.0;
 pub fn render_saves_view(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
     app.ensure_saves_loaded();
-    section_header(ui, t.get(TranslationKey::SavesTitle), t.get(TranslationKey::SavesHint), None);
+    section_header(
+        ui,
+        t.get(TranslationKey::SavesTitle),
+        t.get(TranslationKey::SavesHint),
+        None,
+    );
     ui.add_space(8.0);
 
     if app.selected_save.is_none() {
@@ -48,14 +53,22 @@ pub fn render_saves_view(app: &mut App, ui: &mut Ui) {
 
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = gap;
-        ui.allocate_ui_with_layout(Vec2::new(left_w, height), egui::Layout::top_down(egui::Align::Min), |ui| {
-            ui.set_width(left_w);
-            render_list(app, ui, &mut actions);
-        });
-        ui.allocate_ui_with_layout(Vec2::new(right_w, height), egui::Layout::top_down(egui::Align::Min), |ui| {
-            ui.set_width(right_w);
-            render_details(app, ui, &mut actions);
-        });
+        ui.allocate_ui_with_layout(
+            Vec2::new(left_w, height),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_width(left_w);
+                render_list(app, ui, &mut actions);
+            },
+        );
+        ui.allocate_ui_with_layout(
+            Vec2::new(right_w, height),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_width(right_w);
+                render_details(app, ui, &mut actions);
+            },
+        );
     });
 
     for action in actions {
@@ -106,7 +119,11 @@ fn render_list(app: &mut App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
                     ui.label(egui::RichText::new(t.get(TranslationKey::SavesLoading)).color(THEME.text_muted));
                 });
             } else {
-                ui.label(egui::RichText::new(t.get(TranslationKey::SavesNone)).color(THEME.text_secondary).strong());
+                ui.label(
+                    egui::RichText::new(t.get(TranslationKey::SavesNone))
+                        .color(THEME.text_secondary)
+                        .strong(),
+                );
             }
         });
         return;
@@ -139,8 +156,16 @@ fn save_row(app: &App, ui: &mut Ui, save: &SaveInfo, selected: bool) -> egui::Re
         return response;
     }
     let painter = ui.painter().with_clip_rect(rect);
-    let fill = if selected || response.hovered() { THEME.bg_surface_hover } else { THEME.bg_card };
-    let stroke = if selected { Stroke::new(1.5_f32, THEME.accent_cyan) } else { Stroke::new(1.0_f32, THEME.border_subtle) };
+    let fill = if selected || response.hovered() {
+        THEME.bg_surface_hover
+    } else {
+        THEME.bg_card
+    };
+    let stroke = if selected {
+        Stroke::new(1.5_f32, THEME.accent_cyan)
+    } else {
+        Stroke::new(1.0_f32, THEME.border_subtle)
+    };
     painter.rect(rect, Rounding::same(6.0), fill, stroke);
 
     let left = rect.left() + 12.0;
@@ -149,11 +174,20 @@ fn save_row(app: &App, ui: &mut Ui, save: &SaveInfo, selected: bool) -> egui::Re
     // cut with "…" so it never runs under it.
     let missing = save.ids.iter().filter(|id| app.find_mod(id).is_none()).count();
     let (badge, color) = if missing > 0 {
-        (fmt(t.get(TranslationKey::SetsMissingShort), &[&missing.to_string()]), THEME.accent_rose)
+        (
+            fmt(t.get(TranslationKey::SetsMissingShort), &[&missing.to_string()]),
+            THEME.accent_rose,
+        )
     } else if app.save_other_version(save) {
-        (t.get(TranslationKey::SavesOtherVersionShort).to_string(), THEME.accent_amber)
+        (
+            t.get(TranslationKey::SavesOtherVersionShort).to_string(),
+            THEME.accent_amber,
+        )
     } else {
-        (t.get(TranslationKey::SavesAllInstalled).to_string(), THEME.accent_emerald)
+        (
+            t.get(TranslationKey::SavesAllInstalled).to_string(),
+            THEME.accent_emerald,
+        )
     };
     let badge_rect = painter.text(
         egui::pos2(rect.right() - 12.0, rect.top() + 14.0),
@@ -181,7 +215,10 @@ fn save_row(app: &App, ui: &mut Ui, save: &SaveInfo, selected: bool) -> egui::Re
     if let Some(v) = save.game_version.as_deref().and_then(crate::game_install::major_minor) {
         line.push_str(&format!("  ·  {v}"));
     }
-    line.push_str(&format!("  ·  {}", fmt(t.get(TranslationKey::SetsModsCount), &[&save.ids.len().to_string()])));
+    line.push_str(&format!(
+        "  ·  {}",
+        fmt(t.get(TranslationKey::SetsModsCount), &[&save.ids.len().to_string()])
+    ));
     painter.text(
         egui::pos2(left, rect.bottom() - 13.0),
         egui::Align2::LEFT_CENTER,
@@ -194,10 +231,17 @@ fn save_row(app: &App, ui: &mut Ui, save: &SaveInfo, selected: bool) -> egui::Re
 
 fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
     let t = app.i18n;
-    let Some(save) = app.selected_save.as_deref().and_then(|name| app.saves.iter().find(|s| s.name == name)) else {
+    let Some(save) = app
+        .selected_save
+        .as_deref()
+        .and_then(|name| app.saves.iter().find(|s| s.name == name))
+    else {
         card_container(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.add(egui::Label::new(egui::RichText::new(t.get(TranslationKey::SavesSelectHint)).color(THEME.text_muted)).wrap());
+            ui.add(
+                egui::Label::new(egui::RichText::new(t.get(TranslationKey::SavesSelectHint)).color(THEME.text_muted))
+                    .wrap(),
+            );
             ui.add_space(6.0);
             if secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::ModsBtnFolder)).clicked() {
                 actions.push(SaveAction::OpenFolder);
@@ -209,8 +253,20 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
     let cmp = app.save_compare(save);
     let workshop_missing = app.save_missing_workshop_ids(save).len();
 
-    ui.label(egui::RichText::new(&save.name).color(THEME.accent_cyan).size(18.0).strong());
-    ui.add(egui::Label::new(egui::RichText::new(save.path.display().to_string()).color(THEME.text_muted).size(11.0)).truncate());
+    ui.label(
+        egui::RichText::new(&save.name)
+            .color(THEME.accent_cyan)
+            .size(18.0)
+            .strong(),
+    );
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(save.path.display().to_string())
+                .color(THEME.text_muted)
+                .size(11.0),
+        )
+        .truncate(),
+    );
     ui.add_space(8.0);
 
     if app.save_other_version(save) {
@@ -243,9 +299,16 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
             actions.push(SaveAction::ToModlist(name.clone()));
         }
         if workshop_missing > 0 {
-            let label = fmt(t.get(TranslationKey::SetsBtnSubscribeMissing), &[&workshop_missing.to_string()]);
+            let label = fmt(
+                t.get(TranslationKey::SetsBtnSubscribeMissing),
+                &[&workshop_missing.to_string()],
+            );
             let busy = app.steam_busy();
-            if ui.add_enabled_ui(!busy, |ui| primary_button_icon(ui, ICON_STEAM, &label)).inner.clicked() {
+            if ui
+                .add_enabled_ui(!busy, |ui| primary_button_icon(ui, ICON_STEAM, &label))
+                .inner
+                .clicked()
+            {
                 actions.push(SaveAction::SubscribeMissing(name.clone()));
             }
             if busy {
@@ -261,24 +324,71 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
     // Details and the comparison with the current load order
     card_container(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.label(egui::RichText::new(t.get(TranslationKey::SetsDetails)).color(THEME.accent_cyan).strong());
+        ui.label(
+            egui::RichText::new(t.get(TranslationKey::SetsDetails))
+                .color(THEME.accent_cyan)
+                .strong(),
+        );
         ui.add_space(4.0);
-        egui::Grid::new("save_details_grid").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
-            let row = |ui: &mut Ui, label: &str, value: String, color: Color32| {
-                ui.label(egui::RichText::new(label).color(THEME.text_muted));
-                ui.label(egui::RichText::new(value).color(color));
-                ui.end_row();
-            };
-            let num = |n: usize, bad: Color32| if n > 0 { bad } else { THEME.text_primary };
-            row(ui, t.get(TranslationKey::SetsGameVersion), save.game_version.clone().unwrap_or_else(|| "—".into()), THEME.text_primary);
-            row(ui, t.get(TranslationKey::SavesSaved), save.modified.map(local_date_time).unwrap_or_else(|| "—".into()), THEME.text_primary);
-            row(ui, t.get(TranslationKey::SavesSize), format!("{:.1} MB", save.size as f64 / 1_048_576.0), THEME.text_primary);
-            row(ui, t.get(TranslationKey::SetsModCount), save.ids.len().to_string(), THEME.text_primary);
-            row(ui, t.get(TranslationKey::SavesEnabled), cmp.enabled.len().to_string(), THEME.text_primary);
-            row(ui, t.get(TranslationKey::SavesDisabled), cmp.disabled.len().to_string(), num(cmp.disabled.len(), THEME.accent_amber));
-            row(ui, t.get(TranslationKey::SetsMissing), cmp.missing.len().to_string(), num(cmp.missing.len(), THEME.accent_rose));
-            row(ui, t.get(TranslationKey::SavesExtra), cmp.extra.len().to_string(), num(cmp.extra.len(), THEME.accent_amber));
-        });
+        egui::Grid::new("save_details_grid")
+            .num_columns(2)
+            .spacing([16.0, 6.0])
+            .show(ui, |ui| {
+                let row = |ui: &mut Ui, label: &str, value: String, color: Color32| {
+                    ui.label(egui::RichText::new(label).color(THEME.text_muted));
+                    ui.label(egui::RichText::new(value).color(color));
+                    ui.end_row();
+                };
+                let num = |n: usize, bad: Color32| if n > 0 { bad } else { THEME.text_primary };
+                row(
+                    ui,
+                    t.get(TranslationKey::SetsGameVersion),
+                    save.game_version.clone().unwrap_or_else(|| "—".into()),
+                    THEME.text_primary,
+                );
+                row(
+                    ui,
+                    t.get(TranslationKey::SavesSaved),
+                    save.modified.map(local_date_time).unwrap_or_else(|| "—".into()),
+                    THEME.text_primary,
+                );
+                row(
+                    ui,
+                    t.get(TranslationKey::SavesSize),
+                    format!("{:.1} MB", save.size as f64 / 1_048_576.0),
+                    THEME.text_primary,
+                );
+                row(
+                    ui,
+                    t.get(TranslationKey::SetsModCount),
+                    save.ids.len().to_string(),
+                    THEME.text_primary,
+                );
+                row(
+                    ui,
+                    t.get(TranslationKey::SavesEnabled),
+                    cmp.enabled.len().to_string(),
+                    THEME.text_primary,
+                );
+                row(
+                    ui,
+                    t.get(TranslationKey::SavesDisabled),
+                    cmp.disabled.len().to_string(),
+                    num(cmp.disabled.len(), THEME.accent_amber),
+                );
+                row(
+                    ui,
+                    t.get(TranslationKey::SetsMissing),
+                    cmp.missing.len().to_string(),
+                    num(cmp.missing.len(), THEME.accent_rose),
+                );
+                row(
+                    ui,
+                    t.get(TranslationKey::SavesExtra),
+                    cmp.extra.len().to_string(),
+                    num(cmp.extra.len(), THEME.accent_amber),
+                );
+            });
         ui.add_space(4.0);
         let (summary, color) = if cmp.matches() {
             (t.get(TranslationKey::SavesMatches), THEME.accent_emerald)
@@ -318,9 +428,12 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
     card_container(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(
-            egui::RichText::new(fmt(t.get(TranslationKey::SavesModsTitle), &[&save.ids.len().to_string()]))
-                .color(THEME.accent_cyan)
-                .strong(),
+            egui::RichText::new(fmt(
+                t.get(TranslationKey::SavesModsTitle),
+                &[&save.ids.len().to_string()],
+            ))
+            .color(THEME.accent_cyan)
+            .strong(),
         );
         ui.add_space(4.0);
         egui::ScrollArea::vertical()
@@ -342,7 +455,11 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
                                 THEME.text_muted,
                             );
                         }
-                        let text_color = if *state == ModState::Extra { THEME.text_muted } else { THEME.text_primary };
+                        let text_color = if *state == ModState::Extra {
+                            THEME.text_muted
+                        } else {
+                            THEME.text_primary
+                        };
                         ui.add(egui::Label::new(egui::RichText::new(mod_name).color(text_color).size(12.0)).truncate());
                         match state {
                             ModState::Enabled => {}

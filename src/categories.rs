@@ -55,19 +55,97 @@ impl ModCategory {
     pub fn label(&self, lang: Language) -> &'static str {
         let ru = lang == Language::Russian;
         match self {
-            ModCategory::Framework => if ru { "Фреймворк" } else { "Framework" },
-            ModCategory::QoL => if ru { "QoL / интерфейс" } else { "QoL / UI" },
-            ModCategory::Race => if ru { "Расы" } else { "Races" },
-            ModCategory::Faction => if ru { "Фракции" } else { "Factions" },
-            ModCategory::Building => if ru { "Постройки" } else { "Buildings" },
-            ModCategory::Weapon => if ru { "Оружие" } else { "Weapons" },
-            ModCategory::Apparel => if ru { "Одежда" } else { "Apparel" },
-            ModCategory::Animal => if ru { "Животные" } else { "Animals" },
-            ModCategory::Biome => if ru { "Биомы" } else { "Biomes" },
-            ModCategory::Storyteller => if ru { "Рассказчик" } else { "Storyteller" },
-            ModCategory::Patch => if ru { "Патч" } else { "Patch" },
-            ModCategory::Retexture => if ru { "Ретекстур" } else { "Retexture" },
-            ModCategory::Translation => if ru { "Перевод" } else { "Translation" },
+            ModCategory::Framework => {
+                if ru {
+                    "Фреймворк"
+                } else {
+                    "Framework"
+                }
+            }
+            ModCategory::QoL => {
+                if ru {
+                    "QoL / интерфейс"
+                } else {
+                    "QoL / UI"
+                }
+            }
+            ModCategory::Race => {
+                if ru {
+                    "Расы"
+                } else {
+                    "Races"
+                }
+            }
+            ModCategory::Faction => {
+                if ru {
+                    "Фракции"
+                } else {
+                    "Factions"
+                }
+            }
+            ModCategory::Building => {
+                if ru {
+                    "Постройки"
+                } else {
+                    "Buildings"
+                }
+            }
+            ModCategory::Weapon => {
+                if ru {
+                    "Оружие"
+                } else {
+                    "Weapons"
+                }
+            }
+            ModCategory::Apparel => {
+                if ru {
+                    "Одежда"
+                } else {
+                    "Apparel"
+                }
+            }
+            ModCategory::Animal => {
+                if ru {
+                    "Животные"
+                } else {
+                    "Animals"
+                }
+            }
+            ModCategory::Biome => {
+                if ru {
+                    "Биомы"
+                } else {
+                    "Biomes"
+                }
+            }
+            ModCategory::Storyteller => {
+                if ru {
+                    "Рассказчик"
+                } else {
+                    "Storyteller"
+                }
+            }
+            ModCategory::Patch => {
+                if ru {
+                    "Патч"
+                } else {
+                    "Patch"
+                }
+            }
+            ModCategory::Retexture => {
+                if ru {
+                    "Ретекстур"
+                } else {
+                    "Retexture"
+                }
+            }
+            ModCategory::Translation => {
+                if ru {
+                    "Перевод"
+                } else {
+                    "Translation"
+                }
+            }
         }
     }
 
@@ -174,9 +252,19 @@ impl ThingInfo {
         } else if self.category.eq_ignore_ascii_case("building")
             || self.has_building
             || self.thing_class.starts_with("Building")
-            || ["building", "furniture", "bed", "wall", "bench", "table", "chair", "door", "lamp"]
-                .iter()
-                .any(|k| parent.contains(k))
+            || [
+                "building",
+                "furniture",
+                "bed",
+                "wall",
+                "bench",
+                "table",
+                "chair",
+                "door",
+                "lamp",
+            ]
+            .iter()
+            .any(|k| parent.contains(k))
         {
             stats.buildings += 1;
         }
@@ -198,12 +286,12 @@ pub fn parse_defs_xml(xml: &str, stats: &mut DefStats) {
 
     // Handles an opening tag at `level` (1 = <Defs>, 2 = a def, 3 = def field, 4 = sub-field).
     let on_open = |e: &BytesStart,
-                       level: usize,
-                       thing: &mut Option<ThingInfo>,
-                       capture: &mut Option<&'static str>,
-                       in_race: &mut bool,
-                       stats: &mut DefStats,
-                       is_empty: bool| {
+                   level: usize,
+                   thing: &mut Option<ThingInfo>,
+                   capture: &mut Option<&'static str>,
+                   in_race: &mut bool,
+                   stats: &mut DefStats,
+                   is_empty: bool| {
         let name_bytes = e.local_name();
         let name = String::from_utf8_lossy(name_bytes.as_ref()).to_string();
         match level {
@@ -299,7 +387,10 @@ fn xml_files_in(def_dirs: &[PathBuf]) -> Vec<PathBuf> {
         for entry in walkdir::WalkDir::new(dir).into_iter().flatten() {
             let p = entry.path();
             if entry.file_type().is_file()
-                && p.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("xml")).unwrap_or(false)
+                && p.extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.eq_ignore_ascii_case("xml"))
+                    .unwrap_or(false)
             {
                 files.push(p.to_path_buf());
             }
@@ -357,11 +448,7 @@ pub fn save_cache(path: &Path, cache: &DefStatsCache) {
 
 /// Def counts for a mod, from the cache when its Defs files did not change.
 /// Returns the stats and the cache entry to store.
-pub fn def_stats_for(
-    mod_dir: &Path,
-    def_dirs: &[PathBuf],
-    cache: &DefStatsCache,
-) -> (DefStats, DefStatsCacheEntry) {
+pub fn def_stats_for(mod_dir: &Path, def_dirs: &[PathBuf], cache: &DefStatsCache) -> (DefStats, DefStatsCacheEntry) {
     let files = xml_files_in(def_dirs);
     let fp = fingerprint(&files);
     let key = mod_dir.to_string_lossy().to_string();
@@ -379,7 +466,10 @@ pub fn def_stats_for(
             stats.add(&file_stats);
         }
     }
-    let entry = DefStatsCacheEntry { fingerprint: fp, stats: stats.clone() };
+    let entry = DefStatsCacheEntry {
+        fingerprint: fp,
+        stats: stats.clone(),
+    };
     (stats, entry)
 }
 
@@ -389,7 +479,9 @@ fn is_framework_name(name_lower: &str, id_lower: &str) -> bool {
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())
         .collect();
-    words.iter().any(|w| matches!(*w, "framework" | "library" | "lib" | "core" | "api"))
+    words
+        .iter()
+        .any(|w| matches!(*w, "framework" | "library" | "lib" | "core" | "api"))
         || id_lower.ends_with(".core")
         || id_lower.ends_with("lib")
         || id_lower.contains("framework")
@@ -431,8 +523,8 @@ pub fn compute_categories(m: &ModInfo, dependents: usize) -> Vec<ModCategory> {
     content.sort_by_key(|(cat, n)| (headline_rank(cat), std::cmp::Reverse(*n)));
 
     let mut cats: Vec<ModCategory> = Vec::new();
-    let framework = m.has_assemblies
-        && (dependents >= 2 || (is_framework_name(&m.name_lower, &id_lower) && s.total_defs < 40));
+    let framework =
+        m.has_assemblies && (dependents >= 2 || (is_framework_name(&m.name_lower, &id_lower) && s.total_defs < 40));
     if framework {
         cats.push(ModCategory::Framework);
     }
@@ -543,7 +635,14 @@ mod tests {
     fn categories_from_content() {
         let mut race = base_mod("someone.ratkin", "Ratkin Race");
         race.has_assemblies = true;
-        race.def_stats = DefStats { alien_races: 1, apparel: 20, weapons: 5, factions: 2, total_defs: 60, ..Default::default() };
+        race.def_stats = DefStats {
+            alien_races: 1,
+            apparel: 20,
+            weapons: 5,
+            factions: 2,
+            total_defs: 60,
+            ..Default::default()
+        };
         let cats = compute_categories(&race, 0);
         assert_eq!(cats[0], ModCategory::Race, "race is the headline even with fewer defs");
         assert!(cats.contains(&ModCategory::Faction) && cats.contains(&ModCategory::Apparel));

@@ -93,16 +93,10 @@ pub fn dependency_substitutes(dep_lower: &str) -> &'static [&'static str] {
 }
 
 /// Выполняет полную валидацию зависимостей для текущего списка активных модов.
-pub fn validate_dependencies(
-    active_package_ids: &[String],
-    all_mods: &[ModInfo],
-) -> DependencyReport {
+pub fn validate_dependencies(active_package_ids: &[String], all_mods: &[ModInfo]) -> DependencyReport {
     let mut report = DependencyReport::default();
 
-    let installed_map: HashMap<String, &ModInfo> = all_mods
-        .iter()
-        .map(|m| (m.package_id.to_lowercase(), m))
-        .collect();
+    let installed_map: HashMap<String, &ModInfo> = all_mods.iter().map(|m| (m.package_id.to_lowercase(), m)).collect();
 
     let active_indices: HashMap<String, usize> = active_package_ids
         .iter()
@@ -256,14 +250,22 @@ mod tests {
     #[test]
     fn alternatives_and_incompatibilities() {
         let mut needs_lib = m("someone.mod", &["original.lib"]);
-        needs_lib.dependency_alternatives.insert("original.lib".into(), vec!["fork.lib".into()]);
+        needs_lib
+            .dependency_alternatives
+            .insert("original.lib".into(), vec!["fork.lib".into()]);
         needs_lib.incompatible_with = vec!["bad.mod".into()];
         let mods = vec![m("fork.lib", &[]), m("bad.mod", &[]), needs_lib];
 
         let active: Vec<String> = ["fork.lib", "someone.mod"].iter().map(|s| s.to_string()).collect();
-        assert!(validate_dependencies(&active, &mods).is_empty(), "fork satisfies the dependency");
+        assert!(
+            validate_dependencies(&active, &mods).is_empty(),
+            "fork satisfies the dependency"
+        );
 
-        let with_bad: Vec<String> = ["fork.lib", "someone.mod", "bad.mod"].iter().map(|s| s.to_string()).collect();
+        let with_bad: Vec<String> = ["fork.lib", "someone.mod", "bad.mod"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let rep = validate_dependencies(&with_bad, &mods);
         assert_eq!(rep.incompatible_count(), 1);
         assert_eq!(rep.problems[0].dependent_id(), "someone.mod");
@@ -283,7 +285,10 @@ mod tests {
             .collect();
         assert!(validate_dependencies(&active, &mods).is_empty());
 
-        let without_prepatcher: Vec<String> = ["ludeon.rimworld", "someone.mod"].iter().map(|s| s.to_string()).collect();
+        let without_prepatcher: Vec<String> = ["ludeon.rimworld", "someone.mod"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         assert_eq!(validate_dependencies(&without_prepatcher, &mods).disabled_count(), 1);
     }
 }

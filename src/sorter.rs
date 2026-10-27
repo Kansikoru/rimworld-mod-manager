@@ -1,6 +1,6 @@
 use crate::categories::ModCategory;
-use crate::models::{is_protected_package_id, ModInfo};
 use crate::community_rules::CommunityDatabase;
+use crate::models::{is_protected_package_id, ModInfo};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
@@ -24,10 +24,7 @@ impl CommunityRulesExt for ModInfo {
     }
 }
 
-pub fn check_incompatibilities(
-    active_package_ids: &[String],
-    db: &CommunityDatabase,
-) -> ConflictReport {
+pub fn check_incompatibilities(active_package_ids: &[String], db: &CommunityDatabase) -> ConflictReport {
     let mut report = ConflictReport::default();
     let active_set: HashSet<String> = active_package_ids.iter().map(|id| id.to_lowercase()).collect();
 
@@ -110,7 +107,10 @@ pub fn tier_from_categories(categories: &[ModCategory], name_lower: &str) -> Opt
                 .split(|c: char| !c.is_alphanumeric())
                 .filter(|w| !w.is_empty())
                 .collect();
-            if words.iter().any(|w| matches!(*w, "patch" | "patches" | "compatibility" | "compat" | "fix" | "hotfix")) {
+            if words
+                .iter()
+                .any(|w| matches!(*w, "patch" | "patches" | "compatibility" | "compat" | "fix" | "hotfix"))
+            {
                 ModTier::Tier9Patches
             } else {
                 ModTier::Tier8QolBehaviors
@@ -377,10 +377,7 @@ pub fn sort_load_order_with_db(
         return Vec::new();
     }
 
-    let mod_map: HashMap<String, &ModInfo> = all_mods
-        .iter()
-        .map(|m| (m.package_id.to_lowercase(), m))
-        .collect();
+    let mod_map: HashMap<String, &ModInfo> = all_mods.iter().map(|m| (m.package_id.to_lowercase(), m)).collect();
 
     let active_set: HashSet<String> = unique_active.iter().map(|(l, _)| l.clone()).collect();
     let idx_map: HashMap<String, usize> = unique_active
@@ -512,7 +509,7 @@ pub fn sort_load_order_with_db(
             }
         }
     }
-    
+
     // Explicitly order special_early among themselves
     for w in special_early.windows(2) {
         if active_set.contains(w[0]) && active_set.contains(w[1]) {
@@ -526,15 +523,9 @@ pub fn sort_load_order_with_db(
 
     let make_candidate = |pkg_id: &str| -> SortCandidate {
         let eff_tier = if let Some(parent) = parent_of_trans.get(pkg_id) {
-            tier_map
-                .get(parent)
-                .copied()
-                .unwrap_or(ModTier::Tier10Translations)
+            tier_map.get(parent).copied().unwrap_or(ModTier::Tier10Translations)
         } else {
-            tier_map
-                .get(pkg_id)
-                .copied()
-                .unwrap_or(ModTier::Tier5ContentItems)
+            tier_map.get(pkg_id).copied().unwrap_or(ModTier::Tier5ContentItems)
         };
         SortCandidate {
             package_id: pkg_id.to_string(),
@@ -576,10 +567,7 @@ pub fn sort_load_order_with_db(
 
             for (id_lower, _) in &unique_active {
                 if !emitted.contains(id_lower) {
-                    let t = tier_map
-                        .get(id_lower)
-                        .copied()
-                        .unwrap_or(ModTier::Tier5ContentItems);
+                    let t = tier_map.get(id_lower).copied().unwrap_or(ModTier::Tier5ContentItems);
                     let deg = in_degree.get(id_lower).copied().unwrap_or(1);
                     let idx = idx_map.get(id_lower).copied().unwrap_or(0);
                     let key = (t, deg, idx);
@@ -632,8 +620,6 @@ pub fn sort_load_order_with_db(
         .collect()
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -641,7 +627,10 @@ mod tests {
     #[test]
     fn categories_decide_tier_instead_of_name_guessing() {
         // "Quality" contains "ui": the old substring heuristic put such mods into the UI tier.
-        assert_eq!(classify_mod_tier_with_db("a.b", "Quality Builder", false, &[], None), ModTier::Tier7UiCamera);
+        assert_eq!(
+            classify_mod_tier_with_db("a.b", "Quality Builder", false, &[], None),
+            ModTier::Tier7UiCamera
+        );
         assert_eq!(
             classify_mod_tier_with_db("a.b", "Quality Builder", false, &[ModCategory::QoL], None),
             ModTier::Tier8QolBehaviors

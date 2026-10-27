@@ -1,12 +1,12 @@
 use eframe::egui::{self, ProgressBar, Ui};
 
+use super::components::*;
+use super::icons::*;
+use super::theme::THEME;
 use crate::app::App;
 use crate::game_install::GameEngine;
 use crate::i18n::{fmt, tr, TranslationKey};
 use crate::optimizer::OptimizeScope;
-use super::components::*;
-use super::icons::*;
-use super::theme::THEME;
 
 pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
@@ -27,7 +27,11 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
         card_container(ui, |ui| {
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
-                    ui.add(svg_icon(ICON_STATUS_WARNING, egui::Vec2::splat(18.0), THEME.accent_amber));
+                    ui.add(svg_icon(
+                        ICON_STATUS_WARNING,
+                        egui::Vec2::splat(18.0),
+                        THEME.accent_amber,
+                    ));
                     ui.add(
                         egui::Label::new(
                             egui::RichText::new(t.get(TranslationKey::OptWaylithWarning))
@@ -79,7 +83,8 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.add_enabled_ui(!app.optimizer_busy(), |ui| {
-                        if primary_button_icon(ui, ICON_REFRESH, t.get(TranslationKey::OptBtnFixOrientation)).clicked() {
+                        if primary_button_icon(ui, ICON_REFRESH, t.get(TranslationKey::OptBtnFixOrientation)).clicked()
+                        {
                             app.fix_texture_orientation();
                         }
                         if secondary_button_icon(ui, ICON_UNDO, t.get(TranslationKey::OptBtnRollback)).clicked() {
@@ -254,8 +259,8 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
             );
             ui.label(
                 egui::RichText::new(t.get(TranslationKey::OptDdsDesc))
-                .color(THEME.text_secondary)
-                .size(12.0),
+                    .color(THEME.text_secondary)
+                    .size(12.0),
             );
         });
     });

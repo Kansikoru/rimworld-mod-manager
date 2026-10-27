@@ -120,7 +120,11 @@ pub fn list_backups(dir: &Path) -> Vec<ConfigBackup> {
         .filter_map(|e| {
             let path = e.path();
             let saved_at = backup_time(path.file_name()?.to_str()?)?;
-            Some(ConfigBackup { mods: load_active_mods(&path), path, saved_at })
+            Some(ConfigBackup {
+                mods: load_active_mods(&path),
+                path,
+                saved_at,
+            })
         })
         .collect();
     // Zero-padded names: sorting by name is sorting by time.
@@ -168,7 +172,11 @@ pub fn diff_lists(current: &[String], other: &[String]) -> ListDiff {
 /// Writes the active list. IDs are written in lower case, the way RimWorld itself writes
 /// them: RimWorld 1.7 compares them case-sensitively, and a mixed-case ID ("Nals.FacialAnimation")
 /// shows the mod in both the enabled and the disabled list in the game.
-pub fn save_active_mods_with_backup(config_path: &Path, active_mods: &[String], backup_dir: &Path) -> Result<(), String> {
+pub fn save_active_mods_with_backup(
+    config_path: &Path,
+    active_mods: &[String],
+    backup_dir: &Path,
+) -> Result<(), String> {
     if !config_path.exists() {
         return Err(tr!("Файл не найден: {}", "File not found: {}", config_path.display()));
     }
@@ -200,8 +208,13 @@ pub fn write_active_mods(config_path: &Path, active_mods: &[String]) -> Result<(
     }
     let active_mods: &[String] = &unique;
 
-    let content = std::fs::read_to_string(config_path)
-        .map_err(|e| tr!("Ошибка чтения ModsConfig.xml: {}", "Could not read ModsConfig.xml: {}", e))?;
+    let content = std::fs::read_to_string(config_path).map_err(|e| {
+        tr!(
+            "Ошибка чтения ModsConfig.xml: {}",
+            "Could not read ModsConfig.xml: {}",
+            e
+        )
+    })?;
 
     let mut reader = Reader::from_str(&content);
     let mut writer = Writer::new(Cursor::new(Vec::new()));
@@ -235,9 +248,7 @@ pub fn write_active_mods(config_path: &Path, active_mods: &[String]) -> Result<(
                             .map_err(|e| e.to_string())?;
                     }
                 } else if !in_active_mods {
-                    writer
-                        .write_event(Event::Start(e.clone()))
-                        .map_err(|e| e.to_string())?;
+                    writer.write_event(Event::Start(e.clone())).map_err(|e| e.to_string())?;
                 }
             }
             Ok(Event::End(ref e)) => {
@@ -259,9 +270,7 @@ pub fn write_active_mods(config_path: &Path, active_mods: &[String]) -> Result<(
                         }
                         writer.write_event(Event::End(BytesEnd::new("activeMods"))).unwrap();
                     }
-                    writer
-                        .write_event(Event::End(e.clone()))
-                        .map_err(|e| e.to_string())?;
+                    writer.write_event(Event::End(e.clone())).map_err(|e| e.to_string())?;
                 }
             }
             Ok(Event::Empty(ref e)) => {
@@ -304,11 +313,20 @@ pub fn write_active_mods(config_path: &Path, active_mods: &[String]) -> Result<(
 
     let result_bytes = writer.into_inner().into_inner();
     let tmp_path = config_path.with_extension("xml.tmp");
-    std::fs::write(&tmp_path, result_bytes)
-        .map_err(|e| tr!("Ошибка записи ModsConfig.xml: {}", "Could not write ModsConfig.xml: {}", e))?;
+    std::fs::write(&tmp_path, result_bytes).map_err(|e| {
+        tr!(
+            "Ошибка записи ModsConfig.xml: {}",
+            "Could not write ModsConfig.xml: {}",
+            e
+        )
+    })?;
     std::fs::rename(&tmp_path, config_path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp_path);
-        tr!("Ошибка записи ModsConfig.xml: {}", "Could not write ModsConfig.xml: {}", e)
+        tr!(
+            "Ошибка записи ModsConfig.xml: {}",
+            "Could not write ModsConfig.xml: {}",
+            e
+        )
     })?;
 
     Ok(())
@@ -396,18 +414,28 @@ mod tests {
         let dir = temp_dir("save");
         let cfg = dir.join("ModsConfig.xml");
         std::fs::write(&cfg, SAMPLE).unwrap();
-        let mods: Vec<String> =
-            ["ludeon.rimworld", "brrainz.harmony", "BRRAINZ.HARMONY", "Nals.FacialAnimation", "someone.notinstalled"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
+        let mods: Vec<String> = [
+            "ludeon.rimworld",
+            "brrainz.harmony",
+            "BRRAINZ.HARMONY",
+            "Nals.FacialAnimation",
+            "someone.notinstalled",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         // Backups go to the test folder, never to the user's real backups.
         let backups = dir.join("backups");
         save_active_mods_with_backup(&cfg, &mods, &backups).unwrap();
 
         assert_eq!(
             load_active_mods(&cfg),
-            vec!["ludeon.rimworld", "brrainz.harmony", "nals.facialanimation", "someone.notinstalled"],
+            vec![
+                "ludeon.rimworld",
+                "brrainz.harmony",
+                "nals.facialanimation",
+                "someone.notinstalled"
+            ],
             "written in lower case, like the game does"
         );
         let text = std::fs::read_to_string(&cfg).unwrap();
@@ -457,14 +485,25 @@ mod tests {
     fn diff_counts_added_removed_and_order() {
         let v = |ids: &[&str]| ids.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let current = v(&["core", "a", "b", "c"]);
-        assert!(diff_lists(&current, &v(&["Core", "A", "B", "C"])).is_same(), "case doesn't matter");
+        assert!(
+            diff_lists(&current, &v(&["Core", "A", "B", "C"])).is_same(),
+            "case doesn't matter"
+        );
         assert_eq!(
             diff_lists(&current, &v(&["core", "a", "b", "d", "e"])),
-            ListDiff { added: 2, removed: 1, reordered: false }
+            ListDiff {
+                added: 2,
+                removed: 1,
+                reordered: false
+            }
         );
         assert_eq!(
             diff_lists(&current, &v(&["core", "b", "a", "c"])),
-            ListDiff { added: 0, removed: 0, reordered: true }
+            ListDiff {
+                added: 0,
+                removed: 0,
+                reordered: true
+            }
         );
     }
 }

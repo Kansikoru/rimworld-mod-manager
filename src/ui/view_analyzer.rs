@@ -1,11 +1,11 @@
 use eframe::egui::{self, Color32, Rounding, Stroke, Ui};
 
-use crate::analyzer::generate_ai_diagnostic_prompt;
-use crate::app::App;
-use crate::i18n::TranslationKey;
 use super::components::*;
 use super::icons::*;
 use super::theme::THEME;
+use crate::analyzer::generate_ai_diagnostic_prompt;
+use crate::app::App;
+use crate::i18n::TranslationKey;
 
 pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
@@ -35,10 +35,11 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
             if let Some(ref report) = app.log_report {
                 // Also useful when there are errors but no identified culprit.
                 if (!report.culprits.is_empty() || report.total_errors > 0 || report.has_hard_crash)
-                    && success_button_icon(ui, ICON_COPY, t.get(TranslationKey::CrashBtnCopyPrompt)).clicked() {
-                        let prompt = generate_ai_diagnostic_prompt(report, app.is_russian);
-                        ui.output_mut(|o| o.copied_text = prompt);
-                    }
+                    && success_button_icon(ui, ICON_COPY, t.get(TranslationKey::CrashBtnCopyPrompt)).clicked()
+                {
+                    let prompt = generate_ai_diagnostic_prompt(report, app.is_russian);
+                    ui.output_mut(|o| o.copied_text = prompt);
+                }
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -75,11 +76,14 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
                 };
 
                 let summary_text = if report.has_hard_crash {
-                    t.get(TranslationKey::CrashSummaryHardCrash).replace("{}", &report.culprits.len().to_string())
+                    t.get(TranslationKey::CrashSummaryHardCrash)
+                        .replace("{}", &report.culprits.len().to_string())
                 } else if !report.culprits.is_empty() {
-                    t.get(TranslationKey::CrashSummaryCulprits).replace("{}", &report.culprits.len().to_string())
+                    t.get(TranslationKey::CrashSummaryCulprits)
+                        .replace("{}", &report.culprits.len().to_string())
                 } else if report.total_errors > 0 {
-                    t.get(TranslationKey::CrashSummaryErrorsOnly).replace("{}", &report.total_errors.to_string())
+                    t.get(TranslationKey::CrashSummaryErrorsOnly)
+                        .replace("{}", &report.total_errors.to_string())
                 } else {
                     t.get(TranslationKey::CrashSummaryClean).to_string()
                 };
@@ -95,17 +99,8 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
 
                 ui.add(svg_icon(icon, egui::Vec2::splat(22.0), color));
                 ui.vertical(|ui| {
-                    ui.label(
-                        egui::RichText::new(summary_text)
-                            .color(color)
-                            .size(14.0)
-                            .strong(),
-                    );
-                    ui.label(
-                        egui::RichText::new(file_stats)
-                            .color(THEME.text_muted)
-                            .size(12.0),
-                    );
+                    ui.label(egui::RichText::new(summary_text).color(color).size(14.0).strong());
+                    ui.label(egui::RichText::new(file_stats).color(THEME.text_muted).size(12.0));
                 });
             });
         });

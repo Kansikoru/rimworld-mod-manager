@@ -1,12 +1,12 @@
 use eframe::egui::{self, Ui};
 
+use super::components::*;
+use super::icons::*;
+use super::theme::THEME;
 use crate::app::App;
 use crate::game_install::{known_launch_flags, GameEngine};
 use crate::i18n::{fmt, Language, TranslationKey};
 use crate::ui_prefs::{UiFont, TEXT_SCALE_RANGE};
-use super::components::*;
-use super::icons::*;
-use super::theme::THEME;
 
 pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
@@ -89,7 +89,10 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
     card_container(ui, |ui| {
         ui.vertical(|ui| {
             let mut on = app.check_updates;
-            if ui.checkbox(&mut on, t.get(TranslationKey::SettingsUpdateCheck)).changed() {
+            if ui
+                .checkbox(&mut on, t.get(TranslationKey::SettingsUpdateCheck))
+                .changed()
+            {
                 app.check_updates = on;
                 if on {
                     app.start_update_check();
@@ -133,11 +136,7 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
                     .as_ref()
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|| t.get(TranslationKey::SettingsNotFound).to_string());
-                ui.label(
-                    egui::RichText::new(path_str)
-                        .color(THEME.text_muted)
-                        .monospace(),
-                );
+                ui.label(egui::RichText::new(path_str).color(THEME.text_muted).monospace());
                 if secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::SettingsBrowse)).clicked() {
                     if let Some(folder) = rfd::FileDialog::new().pick_folder() {
                         app.set_game_path(folder);
@@ -171,11 +170,7 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
                     .as_ref()
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|| t.get(TranslationKey::SettingsNotFound).to_string());
-                ui.label(
-                    egui::RichText::new(path_str)
-                        .color(THEME.text_muted)
-                        .monospace(),
-                );
+                ui.label(egui::RichText::new(path_str).color(THEME.text_muted).monospace());
                 if secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::SettingsBrowse)).clicked() {
                     if let Some(folder) = rfd::FileDialog::new().pick_folder() {
                         app.set_workshop_path(folder);
@@ -193,11 +188,7 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
                     .as_ref()
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|| t.get(TranslationKey::SettingsNotFound).to_string());
-                ui.label(
-                    egui::RichText::new(path_str)
-                        .color(THEME.text_muted)
-                        .monospace(),
-                );
+                ui.label(egui::RichText::new(path_str).color(THEME.text_muted).monospace());
                 if secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::SettingsBrowse)).clicked() {
                     if let Some(file) = rfd::FileDialog::new()
                         .add_filter("ModsConfig.xml", &["xml"])
@@ -294,7 +285,10 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
 
             ui.add_space(6.0);
 
-            ui.label(t.get(TranslationKey::SettingsDbCount).replace("{}", &app.community_db_rules_count.to_string()));
+            ui.label(
+                t.get(TranslationKey::SettingsDbCount)
+                    .replace("{}", &app.community_db_rules_count.to_string()),
+            );
 
             ui.label(
                 egui::RichText::new(t.get(TranslationKey::SettingsDbHint))

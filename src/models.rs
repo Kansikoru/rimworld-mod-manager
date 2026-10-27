@@ -22,9 +22,7 @@ pub const OPTIMIZER_BLACKLIST: &[&str] = &[
 ];
 
 pub fn is_optimizer_blacklisted(package_id: &str) -> bool {
-    OPTIMIZER_BLACKLIST
-        .iter()
-        .any(|&p| p.eq_ignore_ascii_case(package_id))
+    OPTIMIZER_BLACKLIST.iter().any(|&p| p.eq_ignore_ascii_case(package_id))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -171,18 +169,24 @@ pub fn contains_kana(s: &str) -> bool {
 
 pub fn contains_hangul(s: &str) -> bool {
     s.chars().any(|c| {
-        ('\u{AC00}'..='\u{D7AF}').contains(&c) || ('\u{1100}'..='\u{11FF}').contains(&c) || ('\u{3130}'..='\u{318F}').contains(&c)
+        ('\u{AC00}'..='\u{D7AF}').contains(&c)
+            || ('\u{1100}'..='\u{11FF}').contains(&c)
+            || ('\u{3130}'..='\u{318F}').contains(&c)
     })
 }
 
 /// Letters Ukrainian has and Russian doesn't.
 pub fn contains_ukrainian_letters(s: &str) -> bool {
-    s.chars().any(|c| matches!(c, 'і' | 'ї' | 'є' | 'ґ' | 'І' | 'Ї' | 'Є' | 'Ґ'))
+    s.chars()
+        .any(|c| matches!(c, 'і' | 'ї' | 'є' | 'ґ' | 'І' | 'Ї' | 'Є' | 'Ґ'))
 }
 
 fn has_uk_marker(title: &str) -> bool {
     let lower = title.to_lowercase();
-    contains_ukrainian_letters(title) || lower.contains("ukrain") || lower.contains("україн") || has_code_tag(&lower, "ua")
+    contains_ukrainian_letters(title)
+        || lower.contains("ukrain")
+        || lower.contains("україн")
+        || has_code_tag(&lower, "ua")
 }
 
 impl TranslationTargetLang {
@@ -281,13 +285,27 @@ impl TranslationTargetLang {
             },
             Self::Es => LangSpec {
                 folders: &["spanish", "español"],
-                words: &["spanish", "español", "espanol", "castellano", "traducción", "traduccion"],
+                words: &[
+                    "spanish",
+                    "español",
+                    "espanol",
+                    "castellano",
+                    "traducción",
+                    "traduccion",
+                ],
                 codes: &["es", "esp", "spa"],
                 script: None,
             },
             Self::PtBr => LangSpec {
                 folders: &["portuguese", "português"],
-                words: &["portuguese", "português", "portugues", "brasileiro", "tradução", "traducao"],
+                words: &[
+                    "portuguese",
+                    "português",
+                    "portugues",
+                    "brasileiro",
+                    "tradução",
+                    "traducao",
+                ],
                 codes: &["pt", "br", "ptbr", "pt-br"],
                 script: None,
             },
@@ -408,9 +426,7 @@ impl TranslationTargetLang {
         let title_low = title.to_lowercase();
 
         let is_cyr = contains_cyrillic(title);
-        let has_ru = is_cyr
-            || has_ru_tag_or_keyword(title)
-            || tags.iter().any(|t| t.eq_ignore_ascii_case("Russian"));
+        let has_ru = is_cyr || has_ru_tag_or_keyword(title) || tags.iter().any(|t| t.eq_ignore_ascii_case("Russian"));
 
         let is_zh_chars = contains_chinese_chars(title);
         let has_zh = is_zh_chars
@@ -421,11 +437,9 @@ impl TranslationTargetLang {
                     || t.eq_ignore_ascii_case("Simplified Chinese")
             });
 
-        let has_fr =
-            has_fr_tag_or_keyword(title) || tags.iter().any(|t| t.eq_ignore_ascii_case("French"));
+        let has_fr = has_fr_tag_or_keyword(title) || tags.iter().any(|t| t.eq_ignore_ascii_case("French"));
 
-        let has_de =
-            has_de_tag_or_keyword(title) || tags.iter().any(|t| t.eq_ignore_ascii_case("German"));
+        let has_de = has_de_tag_or_keyword(title) || tags.iter().any(|t| t.eq_ignore_ascii_case("German"));
 
         match self {
             Self::Ru => {
@@ -434,7 +448,11 @@ impl TranslationTargetLang {
                     return false;
                 }
                 // Cyrillic alone isn't Russian: a Ukrainian translation without a Russian marker is not it.
-                if has_uk_marker(title) && !title_low.contains("russian") && !title_low.contains("рус") && !title_low.contains("[ru]") {
+                if has_uk_marker(title)
+                    && !title_low.contains("russian")
+                    && !title_low.contains("рус")
+                    && !title_low.contains("[ru]")
+                {
                     return false;
                 }
                 // If it contains strong Chinese/French/German markers without Cyrillic/Russian, reject
@@ -475,9 +493,7 @@ pub fn contains_chinese_chars(s: &str) -> bool {
 
 /// The text has one of `words` as a whole word ("Rus Dubs Bad Hygiene", "Allow Tool - CN").
 fn has_word(lower: &str, words: &[&str]) -> bool {
-    lower
-        .split(|c: char| !c.is_alphanumeric())
-        .any(|w| words.contains(&w))
+    lower.split(|c: char| !c.is_alphanumeric()).any(|w| words.contains(&w))
 }
 
 pub fn has_ru_tag_or_keyword(s: &str) -> bool {
@@ -621,7 +637,6 @@ pub fn has_de_tag_or_keyword(s: &str) -> bool {
         || lower.contains("übersetzung")
         || lower.contains("uebersetzung")
 }
-
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CommunityRule {

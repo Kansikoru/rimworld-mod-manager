@@ -98,10 +98,7 @@ impl IconDiskCache {
 }
 
 fn to_color_image(rgba: &image::RgbaImage) -> egui::ColorImage {
-    egui::ColorImage::from_rgba_unmultiplied(
-        [rgba.width() as usize, rgba.height() as usize],
-        rgba.as_raw(),
-    )
+    egui::ColorImage::from_rgba_unmultiplied([rgba.width() as usize, rgba.height() as usize], rgba.as_raw())
 }
 
 /// Square thumbnail without distortion: scaled to cover `size`×`size`, then the
@@ -147,7 +144,11 @@ mod tests {
         // undistorted and gives a square.
         let mut wide = image::RgbaImage::new(160, 90);
         for (x, _, p) in wide.enumerate_pixels_mut() {
-            *p = if x < 80 { image::Rgba([255, 0, 0, 255]) } else { image::Rgba([0, 0, 255, 255]) };
+            *p = if x < 80 {
+                image::Rgba([255, 0, 0, 255])
+            } else {
+                image::Rgba([0, 0, 255, 255])
+            };
         }
         let thumb = make_thumbnail(&image::DynamicImage::ImageRgba8(wide), 64);
         assert_eq!(thumb.dimensions(), (64, 64));

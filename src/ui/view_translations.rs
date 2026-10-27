@@ -1,11 +1,11 @@
 use eframe::egui::{self, Rounding, Stroke, Ui};
 
-use crate::app::App;
-use crate::i18n::{tr, TranslationKey};
-use crate::models::{ModInfo, TranslationTargetLang};
 use super::components::*;
 use super::icons::*;
 use super::theme::THEME;
+use crate::app::App;
+use crate::i18n::{tr, TranslationKey};
+use crate::models::{ModInfo, TranslationTargetLang};
 
 pub fn render_translations_view(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
@@ -133,11 +133,7 @@ fn render_installed_translations_column(app: &mut App, ui: &mut Ui) {
                 frame.show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
-                            ui.label(
-                                egui::RichText::new(&m.name)
-                                    .color(THEME.text_primary)
-                                    .strong(),
-                            );
+                            ui.label(egui::RichText::new(&m.name).color(THEME.text_primary).strong());
                             if let Some(ref parent_id) = m.parent_package_id {
                                 ui.label(
                                     egui::RichText::new(tr!("Перевод для: {}", "Translation of: {}", parent_id))
@@ -148,7 +144,10 @@ fn render_installed_translations_column(app: &mut App, ui: &mut Ui) {
                         });
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if icon_button(ui, ICON_TRASH, egui::vec2(14.0, 14.0), THEME.text_muted).on_hover_text(tr!("Удалить и отписаться", "Delete and unsubscribe")).clicked() {
+                            if icon_button(ui, ICON_TRASH, egui::vec2(14.0, 14.0), THEME.text_muted)
+                                .on_hover_text(tr!("Удалить и отписаться", "Delete and unsubscribe"))
+                                .clicked()
+                            {
                                 to_delete_single = Some(m.package_id.clone());
                             }
                             if let Some(ref sid) = m.steam_item_id {
@@ -237,7 +236,12 @@ fn render_workshop_search_column(app: &mut App, ui: &mut Ui) {
         // Leave room for the "Search" button (icon + label + padding), whatever the language.
         let button_w = 12.0 * 2.0 + 16.0 + 8.0 + badge_width(ui, t.get(TranslationKey::TransBtnSearch)) + 4.0;
         let field_w = (ui.available_width() - button_w - 16.0).max(120.0);
-        search_input_width(ui, &mut app.workshop_search_query, t.get(TranslationKey::TransSearchPlaceholder), field_w);
+        search_input_width(
+            ui,
+            &mut app.workshop_search_query,
+            t.get(TranslationKey::TransSearchPlaceholder),
+            field_w,
+        );
         let searching = app.workshop_rx.is_some();
         ui.add_enabled_ui(!searching, |ui| {
             if primary_button_icon(ui, ICON_SEARCH, t.get(TranslationKey::TransBtnSearch)).clicked() {
@@ -252,7 +256,14 @@ fn render_workshop_search_column(app: &mut App, ui: &mut Ui) {
         render_batch_results(app, ui);
         return;
     }
-    if !app.batch_results.is_empty() && ui.link(tr!("← Показать переводы для сборки", "← Back to translations for my mods")).clicked() {
+    if !app.batch_results.is_empty()
+        && ui
+            .link(tr!(
+                "← Показать переводы для сборки",
+                "← Back to translations for my mods"
+            ))
+            .clicked()
+    {
         app.show_batch_results = true;
     }
 
@@ -277,11 +288,7 @@ fn render_workshop_search_column(app: &mut App, ui: &mut Ui) {
                 card_container(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
-                            ui.label(
-                                egui::RichText::new(&item.title)
-                                    .color(THEME.text_primary)
-                                    .strong(),
-                            );
+                            ui.label(egui::RichText::new(&item.title).color(THEME.text_primary).strong());
                             ui.label(
                                 egui::RichText::new(format!("Steam ID: {}", item.id))
                                     .color(THEME.text_muted)
@@ -335,7 +342,13 @@ fn render_batch_results(app: &mut App, ui: &mut Ui) {
         ui.spacing_mut().item_spacing.x = 8.0;
         let n = app.batch_checked.len();
         ui.add_enabled_ui(n > 0 && app.steam_rx.is_none(), |ui| {
-            if success_button_icon(ui, ICON_PLUS, &tr!("Подписаться на отмеченные ({})", "Subscribe to ticked ({})", n)).clicked() {
+            if success_button_icon(
+                ui,
+                ICON_PLUS,
+                &tr!("Подписаться на отмеченные ({})", "Subscribe to ticked ({})", n),
+            )
+            .clicked()
+            {
                 app.subscribe_checked_translations();
             }
         });
@@ -363,9 +376,15 @@ fn render_batch_results(app: &mut App, ui: &mut Ui) {
             if app.batch_results.is_empty() {
                 card_container(ui, |ui| {
                     let text = if app.is_batch_searching() {
-                        tr!("Ищу... Найденные переводы появятся здесь сразу.", "Searching... Found translations show up here right away.")
+                        tr!(
+                            "Ищу... Найденные переводы появятся здесь сразу.",
+                            "Searching... Found translations show up here right away."
+                        )
                     } else if total == 0 {
-                        tr!("Искать нечего: у всех активных модов этот язык уже есть.", "Nothing to search: every active mod already has this language.")
+                        tr!(
+                            "Искать нечего: у всех активных модов этот язык уже есть.",
+                            "Nothing to search: every active mod already has this language."
+                        )
                     } else {
                         tr!("Подходящих переводов не нашлось.", "No matching translations found.")
                     };
@@ -390,7 +409,9 @@ fn render_batch_results(app: &mut App, ui: &mut Ui) {
                                     }
                                 }
                             }
-                            ui.add(egui::Label::new(egui::RichText::new(&item.title).color(THEME.text_primary)).truncate());
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(&item.title).color(THEME.text_primary)).truncate(),
+                            );
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if icon_button(ui, ICON_STEAM, egui::vec2(14.0, 14.0), THEME.text_muted)
                                     .on_hover_text(tr!("Открыть в Мастерской", "Open on the Workshop"))

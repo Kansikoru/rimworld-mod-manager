@@ -55,7 +55,11 @@ pub fn list_saves(dir: &Path) -> Vec<SaveInfo> {
     let mut saves: Vec<SaveInfo> = entries
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("rws")))
+        .filter(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("rws"))
+        })
         .filter_map(|p| read_save(&p))
         .collect();
     saves.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| a.name.cmp(&b.name)));
@@ -305,7 +309,8 @@ mod tests {
 
     #[test]
     fn saves_folder_is_next_to_config() {
-        let cfg = Path::new(r"C:\Users\u\AppData\LocalLow\Ludeon Studios\RimWorld by Ludeon Studios\Config\ModsConfig.xml");
+        let cfg =
+            Path::new(r"C:\Users\u\AppData\LocalLow\Ludeon Studios\RimWorld by Ludeon Studios\Config\ModsConfig.xml");
         assert_eq!(
             saves_dir(cfg).unwrap(),
             PathBuf::from(r"C:\Users\u\AppData\LocalLow\Ludeon Studios\RimWorld by Ludeon Studios\Saves")
@@ -321,7 +326,13 @@ mod tests {
         let started = std::time::Instant::now();
         let saves = list_saves(&dir);
         for s in &saves {
-            println!("{} | {:?} | {} mods | {} MB", s.name, s.game_version, s.ids.len(), s.size / 1_048_576);
+            println!(
+                "{} | {:?} | {} mods | {} MB",
+                s.name,
+                s.game_version,
+                s.ids.len(),
+                s.size / 1_048_576
+            );
         }
         println!("{} saves in {:?}", saves.len(), started.elapsed());
         assert!(!saves.is_empty());
