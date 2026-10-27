@@ -13,9 +13,12 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --check
 
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
@@ -30,3 +33,4 @@ jobs:
         with:
           name: rimworld-mod-manager
           path: target/release/rimworld-mod-manager.exe
+          if-no-files-found: error

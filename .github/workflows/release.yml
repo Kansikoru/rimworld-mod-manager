@@ -2,12 +2,18 @@ name: Release
 
 # Push a tag like v2.0.0 to build the exe, attach it to a GitHub release and
 # upload it to Nexus Mods as a new version of the main file. The bullet list of
-# the tagged "Version X.Y.Z" commit becomes the Nexus changelog for that version.
+# the tagged version commit becomes the Nexus changelog for that version.
+#
+# Before anything is published: the tag must match the Cargo.toml version, and
+# formatting, clippy and the tests must pass (the same checks as CI). After the
+# build the exe is checked (present, not empty, right version) and its SHA-256
+# is attached next to it.
 #
 # Nexus Mods setup (repository Settings > Secrets and variables > Actions):
 #   - secret   NEXUSMODS_API_KEY  - key from https://www.nexusmods.com/settings/api-keys
 #   - variable NEXUS_FILE_ID      - File ID of the main file (its "Advanced" menu)
-# Without the variable the Nexus steps are skipped.
+# Without the variable the Nexus upload is skipped (with a notice); the zip for a
+# manual upload is kept with the run as an artifact either way.
 on:
   push:
     tags: ["v*"]
@@ -22,23 +28,75 @@ jobs:
       - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
+
+      # The tag must name the version the exe carries (Cargo.toml).
+      - name: Tag matches Cargo.toml
+        id: version
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME.TrimStart('v')
+          $line = Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
+          $cargo = $line.Matches[0].Groups[1].Value
+          if ($tag -ne $cargo) {
+            Write-Output "::error title=Version mismatch::Tag v$tag doesn't match the Cargo.toml version $cargo"
+            exit 1
+          }
+          "version=$cargo" >> $env:GITHUB_OUTPUT
+
+      # Same checks as CI: a tag on a broken commit never becomes a release.
+      - name: Formatting
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test
 
       - name: Build
         run: cargo build --release
 
+      # The exe is there, not empty and carries this version; its SHA-256 is published with it.
+      - name: Check the exe
+        shell: pwsh
+        run: |
+          $exe = "target/release/rimworld-mod-manager.exe"
+          $version = "${{ steps.version.outputs.version }}"
+          if (-not (Test-Path $exe)) {
+            Write-Output "::error title=No exe::$exe was not built"
+            exit 1
+          }
+          $item = Get-Item $exe
+          if ($item.Length -lt 1MB) {
+            Write-Output "::error title=Exe too small::$exe is only $($item.Length) bytes"
+            exit 1
+          }
+          $fileVersion = "$($item.VersionInfo.FileVersion)"
+          if (-not $fileVersion.StartsWith($version)) {
+            Write-Output "::error title=Wrong exe version::The exe says '$fileVersion', expected $version"
+            exit 1
+          }
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  rimworld-mod-manager.exe" | Out-File -Encoding ascii "$exe.sha256"
+          "Built rimworld-mod-manager.exe $version ($([math]::Round($item.Length / 1MB, 1)) MB), SHA-256 $hash" >> $env:GITHUB_STEP_SUMMARY
+
       - uses: softprops/action-gh-release@v2
         with:
-          files: target/release/rimworld-mod-manager.exe
+          files: |
+            target/release/rimworld-mod-manager.exe
+            target/release/rimworld-mod-manager.exe.sha256
+          fail_on_unmatched_files: true
           generate_release_notes: true
 
       - name: Pack for Nexus Mods
         id: pack
-        if: ${{ vars.NEXUS_FILE_ID != '' }}
         shell: pwsh
         run: |
-          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          $version = "${{ steps.version.outputs.version }}"
           $zip = "RimWorldModManager-$version.zip"
           Copy-Item assets/fonts/OFL.txt Montserrat-OFL.txt
           Compress-Archive -Path target/release/rimworld-mod-manager.exe, Montserrat-OFL.txt -DestinationPath $zip
@@ -51,8 +109,17 @@ jobs:
           $notes.Trim() >> $env:GITHUB_OUTPUT
           "NOTES_END" >> $env:GITHUB_OUTPUT
 
-      # The GitHub release above is already done; a Nexus failure doesn't undo it.
+      # The zip for a manual Nexus upload, kept with the run.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexus-zip
+          path: ${{ steps.pack.outputs.zip }}
+          if-no-files-found: error
+
+      # The GitHub release above is already done; a Nexus failure doesn't undo it,
+      # but it is reported below so it doesn't go unnoticed.
       - name: Upload to Nexus Mods
+        id: nexus
         if: ${{ vars.NEXUS_FILE_ID != '' }}
         continue-on-error: true
         uses: Nexus-Mods/upload-action@v1.0.0-beta.11
@@ -68,3 +135,17 @@ jobs:
           # "Unique Mod ID" from the file's "Advanced" menu (public, not a secret)
           mod_id: "1821066134328"
           changelog: ${{ steps.pack.outputs.changelog }}
+
+      - name: Nexus upload failed
+        if: ${{ steps.nexus.outcome == 'failure' }}
+        shell: pwsh
+        run: |
+          Write-Output "::warning title=Nexus Mods::The upload failed. The GitHub release is fine; upload the nexus-zip artifact of this run by hand."
+          "Nexus Mods upload FAILED: upload the nexus-zip artifact by hand." >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Nexus upload skipped
+        if: ${{ vars.NEXUS_FILE_ID == '' }}
+        shell: pwsh
+        run: |
+          Write-Output "::notice title=Nexus Mods::Skipped: the NEXUS_FILE_ID variable is not set. Upload the nexus-zip artifact of this run by hand."
+          "Nexus Mods upload skipped (NEXUS_FILE_ID not set): upload the nexus-zip artifact by hand." >> $env:GITHUB_STEP_SUMMARY
