@@ -716,23 +716,39 @@ fn version_badge(ui: &mut Ui, m: &ModInfo, game_mm: Option<&str>, t: crate::i18n
 }
 
 /// Sky-blue "update" badge: the Workshop has a newer version of the mod.
-fn update_badge(ui: &mut Ui, update: Option<&crate::mod_updates::ModUpdate>, t: crate::i18n::I18n) {
-    let Some(u) = update else { return };
+fn update_badge(
+    ui: &mut Ui,
+    update: Option<&crate::mod_updates::ModUpdate>,
+    t: crate::i18n::I18n,
+    clickable: bool,
+) -> bool {
+    let Some(u) = update else { return false };
     let text = if u.newer_supports_game {
         t.get(TranslationKey::UpdatesBadgeVersion)
     } else {
         t.get(TranslationKey::UpdatesBadge)
     };
-    if let Some(resp) = tag_if_fits(ui, text, THEME.accent_info) {
-        let mut hint = fmt(
-            t.get(TranslationKey::UpdatesBadgeHint),
-            &[&local_date_time(u.remote_time)],
-        );
-        if u.estimated {
-            hint.push('\n');
-            hint.push_str(t.get(TranslationKey::UpdatesEstimated));
-        }
+    let Some(resp) = tag_if_fits(ui, text, THEME.accent_info) else {
+        return false;
+    };
+    let mut hint = fmt(
+        t.get(TranslationKey::UpdatesBadgeHint),
+        &[&local_date_time(u.remote_time)],
+    );
+    if u.estimated {
+        hint.push('\n');
+        hint.push_str(t.get(TranslationKey::UpdatesEstimated));
+    }
+    if clickable {
+        hint.push('\n');
+        hint.push_str(t.get(TranslationKey::UpdatesClickHint));
+        resp.interact(egui::Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(hint)
+            .clicked()
+    } else {
         resp.on_hover_text(hint);
+        false
     }
 }
 
@@ -816,6 +832,8 @@ fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
         ui.add_space(6.0);
     }
 
+    let mut shown = false;
+    let mut update_all = false;
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
         let all_selected = app.category_filter.is_empty() && !app.filter_updates && !app.filter_no_version;
@@ -833,8 +851,8 @@ fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
             app.filter_no_version = false;
         }
         // Status filters: a newer Workshop version, no support for the installed game version.
-        if updates > 0
-            && chip(
+        if updates > 0 {
+            if chip(
                 ui,
                 Some((ICON_STEAM, THEME.accent_info)),
                 t.get(TranslationKey::UpdatesChip),
@@ -843,9 +861,21 @@ fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
             )
             .on_hover_text(t.get(TranslationKey::UpdatesChipHint))
             .clicked()
-        {
-            app.filter_updates = !app.filter_updates;
+            {
+                app.filter_updates = !app.filter_updates;
+            }
+            if app.steamcmd_active() {
+                let label = fmt(t.get(TranslationKey::UpdatesBtnUpdateAll), &[&updates.to_string()]);
+                if ui
+                    .add_enabled_ui(!app.steam_busy(), |ui| small_button(ui, &label, ButtonStyle::Primary))
+                    .inner
+                    .clicked()
+                {
+                    update_all = true;
+                }
+            }
         }
+        let _ = &mut shown;
         if no_version > 0 {
             let label = fmt(
                 t.get(TranslationKey::NoVersionChip),
@@ -888,6 +918,9 @@ fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
             }
         }
     });
+    if update_all {
+        app.update_outdated_mods();
+    }
 }
 
 /// Up to `max` category badges (strongest first); the rest are listed in the hover text.
@@ -1104,10 +1137,14 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     let mut move_down_idx = None;
     let mut deactivate_idx = None;
     let mut enable_dep_id = None;
+    let mut download_dep_ws_id = None;
     let mut deactivate_selected = false;
     let mut toggle_ignore_id = None;
     let mut cat_toggle: Option<(String, ModCategory)> = None;
     let mut cat_reset: Option<String> = None;
+    let steamcmd_active = app.steamcmd_active();
+    let steam_busy = app.steam_busy();
+    let workshop_index = app.workshop_index.clone();
 
     // Rows that pass the search and category filter (indices into active_mods), computed once.
     let visible_rows: Vec<usize> = app
@@ -1368,7 +1405,11 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                         category_badges(ui, &m.categories, t, 2);
                                     }
                                     version_badge(ui, m, game_mm.as_deref(), t);
-                                    update_badge(ui, update_map.get(&m.package_id.to_lowercase()), t);
+                                    if let Some(u) = update_map.get(&m.package_id.to_lowercase()) {
+                                        if update_badge(ui, Some(u), t, steamcmd_active) {
+                                            download_dep_ws_id = Some(u.workshop_id.clone());
+                                        }
+                                    }
                                     if translation_badge(
                                         ui,
                                         trans_hints.get(&m.package_id.to_lowercase()),
@@ -1403,12 +1444,39 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                                 enable_dep_id = Some(required_id.clone());
                                             }
                                         }
-                                        DependencyProblem::Missing { .. } => {
-                                            tag_if_fits(
+                                        DependencyProblem::Missing { required_id, .. } => {
+                                            let dep_name = workshop_index
+                                                .as_ref()
+                                                .and_then(|idx| idx.name_for_package(required_id))
+                                                .unwrap_or(required_id.as_str());
+                                            if let Some(resp) = tag_if_fits(
                                                 ui,
                                                 app.i18n.get(TranslationKey::ModsDepNotFound),
                                                 THEME.accent_rose,
-                                            );
+                                            ) {
+                                                resp.on_hover_text(format!("{dep_name} ({required_id})"));
+                                            }
+                                            if let Some(ws_id) = workshop_index
+                                                .as_ref()
+                                                .and_then(|idx| idx.lookup(required_id, None))
+                                                .map(str::to_string)
+                                            {
+                                                if fits(ui, 72.0)
+                                                    && ui
+                                                        .add_enabled_ui(!steam_busy, |ui| {
+                                                            small_button(
+                                                                ui,
+                                                                app.i18n.get(TranslationKey::ModsDepDownload),
+                                                                ButtonStyle::Primary,
+                                                            )
+                                                        })
+                                                        .inner
+                                                        .on_hover_text(format!("{dep_name} (#{ws_id})"))
+                                                        .clicked()
+                                                {
+                                                    download_dep_ws_id = Some(ws_id);
+                                                }
+                                            }
                                         }
                                         DependencyProblem::WrongOrder { .. } => {
                                             tag_if_fits(
@@ -1576,6 +1644,9 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     if let Some(pkg_id) = toggle_ignore_id {
         app.toggle_optimizer_ignore(&pkg_id);
     }
+    if let Some(ws_id) = download_dep_ws_id {
+        app.subscribe_steam_mod(&ws_id);
+    }
     apply_category_actions(app, cat_toggle, cat_reset);
 
     if let Some(req_id) = enable_dep_id {
@@ -1650,6 +1721,8 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     let mut toggle_ignore_id = None;
     let mut cat_toggle: Option<(String, ModCategory)> = None;
     let mut cat_reset: Option<String> = None;
+    let mut download_dep_ws_id: Option<String> = None;
+    let steamcmd_active = app.steamcmd_active();
 
     // Rows that pass the search and category filter, computed once.
     let visible_mods: Vec<&ModInfo> = inactive_mods
@@ -1823,7 +1896,11 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
 
                                     category_badges(ui, &m.categories, t, 2);
                                     version_badge(ui, m, game_mm.as_deref(), t);
-                                    update_badge(ui, update_map.get(&m.package_id.to_lowercase()), t);
+                                    if let Some(u) = update_map.get(&m.package_id.to_lowercase()) {
+                                        if update_badge(ui, Some(u), t, steamcmd_active) {
+                                            download_dep_ws_id = Some(u.workshop_id.clone());
+                                        }
+                                    }
                                     if translation_badge(
                                         ui,
                                         trans_hints.get(&m.package_id.to_lowercase()),
@@ -1922,6 +1999,9 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
 
     if let Some(pkg_id) = toggle_ignore_id {
         app.toggle_optimizer_ignore(&pkg_id);
+    }
+    if let Some(ws_id) = download_dep_ws_id {
+        app.subscribe_steam_mod(&ws_id);
     }
     apply_category_actions(app, cat_toggle, cat_reset);
 
@@ -2105,13 +2185,47 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
             }
 
             // Dependencies list
+            let mut dep_download_ws_id = None;
             if !m.dependencies.is_empty() {
                 ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(6.0, 4.0);
                     ui.label(egui::RichText::new(app.i18n.get(TranslationKey::ModsDependencies)).color(THEME.text_muted).size(12.0));
                     for dep in &m.dependencies {
-                        badge(ui, dep, THEME.bg_dark, THEME.text_secondary);
+                        let installed = app.find_mod(dep);
+                        let label = installed
+                            .map(|im| im.name.as_str())
+                            .or_else(|| {
+                                app.workshop_index
+                                    .as_ref()
+                                    .and_then(|idx| idx.name_for_package(dep))
+                            })
+                            .unwrap_or(dep.as_str());
+                        if installed.is_some() {
+                            badge(ui, label, THEME.bg_dark, THEME.text_secondary).on_hover_text(dep);
+                        } else {
+                            tag(ui, label, THEME.accent_rose).on_hover_text(dep);
+                            if let Some(ws_id) = app.workshop_id_for(dep, None, None) {
+                                if ui
+                                    .add_enabled_ui(!app.steam_busy(), |ui| {
+                                        small_button(
+                                            ui,
+                                            app.i18n.get(TranslationKey::ModsDepDownload),
+                                            ButtonStyle::Primary,
+                                        )
+                                    })
+                                    .inner
+                                    .on_hover_text(format!("{label} (#{ws_id})"))
+                                    .clicked()
+                                {
+                                    dep_download_ws_id = Some(ws_id);
+                                }
+                            }
+                        }
                     }
                 });
+            }
+            if let Some(ws_id) = dep_download_ws_id {
+                app.subscribe_steam_mod(&ws_id);
             }
 
             // Description box

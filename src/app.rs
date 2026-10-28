@@ -112,6 +112,24 @@ pub enum ModListDialog {
     Delete {
         name: String,
     },
+    /// F5: import a Steam Workshop collection by URL (or a list of Workshop links).
+    Collection {
+        url: String,
+        error: Option<String>,
+    },
+}
+
+/// F7: window for renaming or deleting a save file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SaveDialog {
+    Rename {
+        from: String,
+        name: String,
+        error: Option<String>,
+    },
+    Delete {
+        name: String,
+    },
 }
 
 /// Translations of one mod found by the modpack-wide search.
@@ -307,6 +325,7 @@ pub struct App {
     pub selected_modlist: Option<String>,
     pub sets_search: String,
     pub modlist_dialog: Option<ModListDialog>,
+    collection_rx: Option<Receiver<Result<crate::mod_updates::RemoteCollection, String>>>,
 
     // Saves (F7): headers of the game's saves, read in the background.
     pub saves: Vec<crate::saves::SaveInfo>,
@@ -314,6 +333,7 @@ pub struct App {
     saves_loaded_at: Option<std::time::Instant>,
     pub selected_save: Option<String>,
     pub saves_search: String,
+    pub save_dialog: Option<SaveDialog>,
 
     // Mod updates (F10): the last Workshop check, and the list filters for it.
     pub mod_updates: Option<crate::mod_updates::UpdateReport>,
@@ -609,12 +629,14 @@ impl App {
             selected_modlist: std::env::var("RWMM_SET").ok().filter(|s| !s.is_empty()),
             sets_search: String::new(),
             modlist_dialog: None,
+            collection_rx: None,
             saves: Vec::new(),
             saves_rx: None,
             saves_loaded_at: None,
             // RWMM_SAVE=<name> opens that save on the Saves tab (screenshots).
             selected_save: std::env::var("RWMM_SAVE").ok().filter(|s| !s.is_empty()),
             saves_search: String::new(),
+            save_dialog: None,
             mod_updates: None,
             mod_updates_rx: None,
             workshop_index: None,
@@ -841,6 +863,12 @@ impl App {
                 self.status_message = msg;
             }
         }
+        if let Some(rx) = &self.collection_rx {
+            if let Ok(res) = rx.try_recv() {
+                self.collection_rx = None;
+                self.finish_collection_import(res);
+            }
+        }
         self.poll_batch_search();
         self.poll_name_search();
         self.poll_steamcmd();
@@ -882,6 +910,17 @@ impl App {
             .enumerate()
             .map(|(i, m)| (m.package_id.to_lowercase(), i))
             .collect();
+        for (i, m) in self.all_mods.iter().enumerate() {
+            if let Some(ws_id) = m.steam_item_id.clone().or_else(|| {
+                m.dir_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .filter(|n| crate::modlists::is_workshop_id(n))
+                    .map(str::to_string)
+            }) {
+                self.mod_index.entry(format!("workshop.{ws_id}")).or_insert(i);
+            }
+        }
     }
 }
 
@@ -1706,6 +1745,21 @@ impl App {
         self.subscribe_steam_mod(id);
     }
 
+    /// W1: downloads the Workshop item together with its missing dependencies.
+    pub fn download_workshop_items(&mut self, ids: Vec<String>) {
+        if self.steam_busy() || ids.is_empty() {
+            return;
+        }
+        for id in &ids {
+            self.ws_requested.insert(id.clone());
+        }
+        if ids.len() == 1 {
+            self.subscribe_steam_mod(&ids[0]);
+        } else {
+            self.subscribe_workshop_ids(ids);
+        }
+    }
+
     fn poll_steamcmd(&mut self) {
         let Some(rx) = &self.steamcmd_rx else { return };
         let Some(job) = self.steamcmd_job.as_mut() else { return };
@@ -1737,6 +1791,17 @@ impl App {
                 &[&done.to_string(), &failed.to_string()],
             ),
         };
+        let done_ids: std::collections::HashSet<String> = job
+            .items
+            .iter()
+            .filter(|i| {
+                matches!(
+                    i.state,
+                    crate::steamcmd::ItemState::Linked | crate::steamcmd::ItemState::OwnCopy
+                )
+            })
+            .map(|i| i.id.clone())
+            .collect();
         self.steamcmd_rx = None;
         self.status_message = status;
         // Just installed: from now on every "Download" goes through SteamCMD (Settings can
@@ -1749,6 +1814,12 @@ impl App {
             self.status_message = format!("{} | {}", self.status_message, t.get(TranslationKey::SteamCmdNowOn));
         }
         if done > 0 {
+            if let Some(report) = self.mod_updates.as_mut() {
+                report.mods.retain(|_, u| !done_ids.contains(&u.workshop_id));
+                if report.outdated_count() == 0 {
+                    self.filter_updates = false;
+                }
+            }
             self.rescan_mods_keep_status();
         }
     }
@@ -1821,6 +1892,86 @@ impl App {
             ),
             Err(e) => fmt(t.get(TranslationKey::SetsWriteError), &[&e.to_string()]),
         };
+    }
+
+    /// F5: starts importing a Steam Workshop collection (or a list of Workshop links) into a new set.
+    pub fn import_steam_collection(&mut self, raw: &str) -> Result<(), String> {
+        let t = self.i18n;
+        if self.modlists_folder().is_none() {
+            return Err(t.get(TranslationKey::SetsNoFolder).to_string());
+        }
+        if crate::mod_updates::extract_workshop_ids(raw).is_empty() {
+            return Err(t.get(TranslationKey::SetsCollectionBadUrl).to_string());
+        }
+        if self.collection_rx.is_some() {
+            return Ok(());
+        }
+        let input = raw.to_string();
+        self.status_message = t.get(TranslationKey::SetsCollectionLoading).to_string();
+        self.collection_rx = Some(self.spawn_task(move || crate::mod_updates::fetch_collection_or_items(&input)));
+        Ok(())
+    }
+
+    fn finish_collection_import(&mut self, res: Result<crate::mod_updates::RemoteCollection, String>) {
+        let t = self.i18n;
+        let col = match res {
+            Ok(c) => c,
+            Err(e) => {
+                self.status_message = fmt(t.get(TranslationKey::SetsCollectionError), &[&e]);
+                return;
+            }
+        };
+        let Some(dir) = self.modlists_folder() else {
+            self.status_message = t.get(TranslationKey::SetsNoFolder).to_string();
+            return;
+        };
+        let base = crate::modlists::check_name(&col.title)
+            .unwrap_or_else(|_| t.get(TranslationKey::SetsImportedName).to_string());
+        let name = crate::modlists::unique_name(&dir, &base);
+        let entries: Vec<crate::modlists::ModListEntry> = col
+            .items
+            .iter()
+            .map(|(ws_id, ws_title)| {
+                let installed = self.all_mods.iter().find(|m| {
+                    m.steam_item_id.as_deref() == Some(ws_id.as_str())
+                        || m.dir_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n == ws_id)
+                });
+                let idx = self.workshop_index.as_ref();
+                let id = installed
+                    .map(|m| m.package_id.to_lowercase())
+                    .or_else(|| idx.and_then(|i| i.package_for_id(ws_id)).map(str::to_string))
+                    .unwrap_or_else(|| format!("workshop.{ws_id}"));
+                let item_name = installed
+                    .map(|m| m.name.clone())
+                    .or_else(|| (!ws_title.trim().is_empty()).then(|| ws_title.clone()))
+                    .or_else(|| idx.and_then(|i| i.name_for_id(ws_id)).map(str::to_string))
+                    .unwrap_or_else(|| ws_id.clone());
+                crate::modlists::ModListEntry {
+                    id,
+                    name: item_name,
+                    steam_id: Some(ws_id.clone()),
+                }
+            })
+            .collect();
+        let version = self.game_version_for_sets();
+        match crate::modlists::write_rml(&crate::modlists::path_for(&dir, &name), &version, &entries) {
+            Ok(()) => {
+                self.refresh_modlists();
+                self.selected_modlist = Some(name.clone());
+                self.status_message = fmt(
+                    t.get(TranslationKey::SetsImported),
+                    &[&name, &entries.len().to_string()],
+                );
+            }
+            Err(e) => self.status_message = fmt(t.get(TranslationKey::SetsWriteError), &[&e.to_string()]),
+        }
+    }
+
+    pub fn collection_busy(&self) -> bool {
+        self.collection_rx.is_some()
     }
 
     /// F5: the set as text with Workshop links, for a chat or forum.
@@ -1947,6 +2098,60 @@ impl App {
                 self.status_message = fmt(t.get(TranslationKey::SavesToSetDone), &[&set_name]);
             }
             Err(e) => self.status_message = fmt(t.get(TranslationKey::SetsWriteError), &[&e.to_string()]),
+        }
+    }
+
+    /// F7: renames a save file on disk.
+    pub fn rename_save(&mut self, from: &str, raw_name: &str) -> Result<(), String> {
+        let name = crate::modlists::check_name(raw_name).map_err(|p| self.name_problem_text(p))?;
+        let dir = self
+            .saves_folder()
+            .ok_or_else(|| self.i18n.get(TranslationKey::SavesNoFolder).to_string())?;
+        let source = self
+            .saves
+            .iter()
+            .find(|s| s.name == from)
+            .map(|s| s.path.clone())
+            .unwrap_or_else(|| crate::saves::path_for(&dir, from));
+        let target = crate::saves::path_for(&dir, &name);
+        if target.exists() && !name.eq_ignore_ascii_case(from) {
+            return Err(self.i18n.get(TranslationKey::SavesNameExists).to_string());
+        }
+        std::fs::rename(&source, &target)
+            .map_err(|e| fmt(self.i18n.get(TranslationKey::SavesWriteError), &[&e.to_string()]))?;
+        if let Some(save) = self.saves.iter_mut().find(|s| s.name == from) {
+            save.name = name.clone();
+            save.path = target;
+        }
+        if self.selected_save.as_deref() == Some(from) {
+            self.selected_save = Some(name.clone());
+        }
+        self.status_message = fmt(self.i18n.get(TranslationKey::SavesRenamed), &[from, &name]);
+        Ok(())
+    }
+
+    /// F7: moves a save file to the Recycle Bin.
+    pub fn delete_save(&mut self, name: &str) {
+        let Some(path) = self
+            .saves
+            .iter()
+            .find(|s| s.name == name)
+            .map(|s| s.path.clone())
+            .or_else(|| self.saves_folder().map(|d| crate::saves::path_for(&d, name)))
+        else {
+            return;
+        };
+        match crate::cleaner::move_mod_dir_to_trash(&path) {
+            Ok(()) => {
+                self.saves.retain(|s| s.name != name);
+                if self.selected_save.as_deref() == Some(name) {
+                    self.selected_save = self.saves.first().map(|s| s.name.clone());
+                }
+                self.status_message = fmt(self.i18n.get(TranslationKey::SavesDeleted), &[name]);
+            }
+            Err(e) => {
+                self.status_message = fmt(self.i18n.get(TranslationKey::SavesWriteError), &[&e]);
+            }
         }
     }
 
@@ -2208,18 +2413,46 @@ impl App {
             self.status_message = t.get(TranslationKey::UpdatesNothing).to_string();
             return;
         }
-        let acf = self
+        let mut acfs = Vec::new();
+        if let Some(p) = self
             .steam_paths
             .workshop_path
             .as_deref()
-            .and_then(crate::mod_updates::acf_path);
+            .and_then(crate::mod_updates::acf_path)
+        {
+            acfs.push(p);
+        }
+        let steamcmd_acf = self
+            .steamcmd_dir()
+            .join("steamapps")
+            .join("workshop")
+            .join("appworkshop_294100.acf");
+        if steamcmd_acf.is_file() {
+            acfs.push(steamcmd_acf);
+        }
         let game = self.steam_paths.game_major_minor();
         self.status_message = fmt(t.get(TranslationKey::UpdatesChecking), &[&items.len().to_string()]);
-        self.mod_updates_rx = Some(self.spawn_task(move || crate::mod_updates::check(items, acf, game)));
+        self.mod_updates_rx = Some(self.spawn_task(move || crate::mod_updates::check(items, acfs, game)));
     }
 
     pub fn checking_mod_updates(&self) -> bool {
         self.mod_updates_rx.is_some()
+    }
+
+    /// SC1: downloads all outdated Workshop mods again (via SteamCMD or Steam).
+    pub fn update_outdated_mods(&mut self) {
+        let Some(report) = &self.mod_updates else {
+            return;
+        };
+        let mut ids: Vec<String> = report
+            .mods
+            .values()
+            .filter(|u| u.outdated)
+            .map(|u| u.workshop_id.clone())
+            .collect();
+        ids.sort();
+        ids.dedup();
+        self.subscribe_workshop_ids(ids);
     }
 
     /// What the last check found for a mod (only mods with a newer version).
@@ -3784,6 +4017,7 @@ impl eframe::App for App {
         self.render_question(ctx);
         self.render_history_window(ctx);
         self.render_modlist_dialog(ctx);
+        self.render_save_dialog(ctx);
         crate::ui::view_bisect::render_bisect_window(self, ctx);
         crate::ui::view_name_search::render_name_search_window(self, ctx);
         crate::ui::view_steamcmd::render_steamcmd_window(self, ctx);
@@ -3976,6 +4210,7 @@ impl App {
             ModListDialog::SaveAs { .. } => t.get(TranslationKey::SetsDialogSaveTitle),
             ModListDialog::Rename { .. } => t.get(TranslationKey::SetsDialogRenameTitle),
             ModListDialog::Delete { .. } => t.get(TranslationKey::SetsDialogDeleteTitle),
+            ModListDialog::Collection { .. } => t.get(TranslationKey::SetsDialogCollectionTitle),
         };
 
         egui::Window::new(title)
@@ -4009,6 +4244,27 @@ impl App {
                     ModListDialog::Delete { name } => {
                         ui.add(egui::Label::new(fmt(t.get(TranslationKey::SetsDialogDeleteBody), &[name])).wrap());
                     }
+                    ModListDialog::Collection { url, error } => {
+                        ui.label(t.get(TranslationKey::SetsCollectionLabel));
+                        let field = ui.add(egui::TextEdit::singleline(url).desired_width(f32::INFINITY));
+                        if ui.memory(|m| m.focused().is_none()) {
+                            field.request_focus();
+                        }
+                        if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            submit = true;
+                        }
+                        if let Some(e) = error {
+                            ui.label(egui::RichText::new(e.as_str()).color(THEME.accent_rose).size(12.0));
+                        }
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(t.get(TranslationKey::SetsCollectionHint))
+                                    .color(THEME.text_muted)
+                                    .size(12.0),
+                            )
+                            .wrap(),
+                        );
+                    }
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
@@ -4024,6 +4280,10 @@ impl App {
                         ModListDialog::Delete { .. } => (
                             t.get(TranslationKey::SetsBtnDelete),
                             crate::ui::components::ButtonStyle::Danger,
+                        ),
+                        ModListDialog::Collection { .. } => (
+                            t.get(TranslationKey::SetsBtnImport),
+                            crate::ui::components::ButtonStyle::Primary,
                         ),
                     };
                     if crate::ui::components::styled_button(ui, None, text, style).clicked() {
@@ -4043,6 +4303,7 @@ impl App {
                     self.delete_modlist(name);
                     Ok(())
                 }
+                ModListDialog::Collection { url, .. } => self.import_steam_collection(url),
             };
             self.modlist_dialog = match (result, dialog) {
                 (Ok(()), _) => None,
@@ -4052,12 +4313,97 @@ impl App {
                     name,
                     error: Some(e),
                 }),
+                (Err(e), ModListDialog::Collection { url, .. }) => {
+                    Some(ModListDialog::Collection { url, error: Some(e) })
+                }
                 (Err(_), other) => Some(other),
             };
         } else if close {
             self.modlist_dialog = None;
         } else {
             self.modlist_dialog = Some(dialog);
+        }
+    }
+
+    /// F7: window for renaming or deleting a save file.
+    fn render_save_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.save_dialog.clone() else {
+            return;
+        };
+        let t = self.i18n;
+        let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        let mut submit = false;
+        let title = match &dialog {
+            SaveDialog::Rename { .. } => t.get(TranslationKey::SavesDialogRenameTitle),
+            SaveDialog::Delete { .. } => t.get(TranslationKey::SavesDialogDeleteTitle),
+        };
+
+        egui::Window::new(title)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_width(400.0);
+                match &mut dialog {
+                    SaveDialog::Rename { name, error, .. } => {
+                        ui.label(t.get(TranslationKey::SavesNameLabel));
+                        let field = ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY));
+                        if ui.memory(|m| m.focused().is_none()) {
+                            field.request_focus();
+                        }
+                        if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            submit = true;
+                        }
+                        if let Some(e) = error {
+                            ui.label(egui::RichText::new(e.as_str()).color(THEME.accent_rose).size(12.0));
+                        }
+                    }
+                    SaveDialog::Delete { name } => {
+                        ui.add(egui::Label::new(fmt(t.get(TranslationKey::SavesDialogDeleteBody), &[name])).wrap());
+                    }
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let (text, style) = match &dialog {
+                        SaveDialog::Rename { .. } => (
+                            t.get(TranslationKey::SetsBtnRename),
+                            crate::ui::components::ButtonStyle::Primary,
+                        ),
+                        SaveDialog::Delete { .. } => (
+                            t.get(TranslationKey::SetsBtnDelete),
+                            crate::ui::components::ButtonStyle::Danger,
+                        ),
+                    };
+                    if crate::ui::components::styled_button(ui, None, text, style).clicked() {
+                        submit = true;
+                    }
+                    if crate::ui::components::secondary_button(ui, t.get(TranslationKey::BtnCancel)).clicked() {
+                        close = true;
+                    }
+                });
+            });
+
+        if submit {
+            let result = match &dialog {
+                SaveDialog::Rename { from, name, .. } => self.rename_save(from, name),
+                SaveDialog::Delete { name } => {
+                    self.delete_save(name);
+                    Ok(())
+                }
+            };
+            self.save_dialog = match (result, dialog) {
+                (Ok(()), _) => None,
+                (Err(e), SaveDialog::Rename { from, name, .. }) => Some(SaveDialog::Rename {
+                    from,
+                    name,
+                    error: Some(e),
+                }),
+                (Err(_), other) => Some(other),
+            };
+        } else if close {
+            self.save_dialog = None;
+        } else {
+            self.save_dialog = Some(dialog);
         }
     }
 

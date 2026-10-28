@@ -47,6 +47,10 @@ pub fn saves_dir(mods_config: &Path) -> Option<PathBuf> {
     Some(mods_config.parent()?.parent()?.join("Saves"))
 }
 
+pub fn path_for(dir: &Path, name: &str) -> PathBuf {
+    dir.join(format!("{name}.rws"))
+}
+
 /// All saves in the folder, newest first (files without a readable header are skipped).
 pub fn list_saves(dir: &Path) -> Vec<SaveInfo> {
     let Ok(entries) = std::fs::read_dir(dir) else {

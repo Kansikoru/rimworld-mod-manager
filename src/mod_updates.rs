@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const DETAILS_URL: &str = "https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/";
+const COLLECTION_URL: &str = "https://api.steampowered.com/ISteamRemoteStorage/GetCollectionDetails/v1/";
 /// Items per request (Steam accepts more, but smaller requests fail less).
 const BATCH: usize = 100;
 /// File dates are rough: only a difference bigger than this counts as "outdated".
@@ -138,6 +139,129 @@ pub fn fetch_details(ids: &[String]) -> Result<HashMap<String, RemoteItem>, Stri
     Ok(out)
 }
 
+/// A Steam Workshop collection (or a list of Workshop items) with its title and items in order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteCollection {
+    pub title: String,
+    /// `(workshop_id, title)` in order.
+    pub items: Vec<(String, String)>,
+}
+
+/// Extracts Workshop item IDs from a URL, a text with Workshop links, or raw IDs, keeping order.
+pub fn extract_workshop_ids(input: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut rest = input;
+    while let Some(pos) = rest.find("id=") {
+        rest = &rest[pos + 3..];
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if crate::modlists::is_workshop_id(&digits) && seen.insert(digits.clone()) {
+            out.push(digits);
+        }
+    }
+    if !out.is_empty() {
+        return out;
+    }
+    for token in input.split(|c: char| !c.is_ascii_digit()) {
+        if crate::modlists::is_workshop_id(token) && seen.insert(token.to_string()) {
+            out.push(token.to_string());
+        }
+    }
+    out
+}
+
+/// Reads `collectiondetails[0].children` of a `GetCollectionDetails` answer: Workshop IDs in order.
+pub fn parse_collection_children(json: &str) -> Result<Vec<String>, String> {
+    let value: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    let col = value["response"]["collectiondetails"]
+        .as_array()
+        .and_then(|a| a.first())
+        .ok_or("no collectiondetails")?;
+    if col["result"].as_i64() != Some(1) {
+        return Err("collection not found".into());
+    }
+    let children = col["children"].as_array().ok_or("no children")?;
+    let mut indexed: Vec<(usize, i64, String)> = children
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| {
+            let id = c["publishedfileid"].as_str()?;
+            if !crate::modlists::is_workshop_id(id) {
+                return None;
+            }
+            let order = c["sortorder"].as_i64().unwrap_or(i as i64);
+            Some((i, order, id.to_string()))
+        })
+        .collect();
+    indexed.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    let mut seen = std::collections::HashSet::new();
+    let out: Vec<String> = indexed
+        .into_iter()
+        .filter_map(|(_, _, id)| seen.insert(id.clone()).then_some(id))
+        .collect();
+    if out.is_empty() {
+        return Err("empty collection".into());
+    }
+    Ok(out)
+}
+
+/// Fetches a Steam collection (by URL or ID) or a list of Workshop items (from text with links).
+pub fn fetch_collection_or_items(input: &str) -> Result<RemoteCollection, String> {
+    let ids = extract_workshop_ids(input);
+    if ids.is_empty() {
+        return Err("no Workshop ID".into());
+    }
+    if ids.len() == 1 {
+        let col_id = &ids[0];
+        let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).build();
+        let pairs = [("collectioncount", "1"), ("publishedfileids[0]", col_id.as_str())];
+        if let Ok(resp) = agent.post(COLLECTION_URL).send_form(&pairs) {
+            if let Ok(text) = resp.into_string() {
+                if let Ok(children) = parse_collection_children(&text) {
+                    let mut all_ids = vec![col_id.clone()];
+                    all_ids.extend(children.iter().cloned());
+                    let details = fetch_details(&all_ids).unwrap_or_default();
+                    let title = details
+                        .get(col_id)
+                        .map(|d| d.title.trim().to_string())
+                        .filter(|t| !t.is_empty())
+                        .unwrap_or_else(|| format!("Collection {col_id}"));
+                    let items = children
+                        .into_iter()
+                        .map(|id| {
+                            let name = details
+                                .get(&id)
+                                .map(|d| d.title.trim().to_string())
+                                .filter(|t| !t.is_empty())
+                                .unwrap_or_else(|| id.clone());
+                            (id, name)
+                        })
+                        .collect();
+                    return Ok(RemoteCollection { title, items });
+                }
+            }
+        }
+    }
+    let details = fetch_details(&ids)?;
+    let items: Vec<(String, String)> = ids
+        .iter()
+        .map(|id| {
+            let name = details
+                .get(id)
+                .map(|d| d.title.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| id.clone());
+            (id.clone(), name)
+        })
+        .collect();
+    let title = if ids.len() == 1 {
+        items[0].1.clone()
+    } else {
+        String::new()
+    };
+    Ok(RemoteCollection { title, items })
+}
+
 /// `...\steamapps\workshop\content\294100` -> `...\steamapps\workshop\appworkshop_294100.acf`.
 pub fn acf_path(workshop_content_dir: &Path) -> Option<PathBuf> {
     let workshop = workshop_content_dir.parent()?.parent()?;
@@ -263,11 +387,7 @@ pub fn compare(
 }
 
 /// The whole check (network): asks Steam about every item and compares.
-pub fn check(
-    items: Vec<CheckItem>,
-    acf: Option<PathBuf>,
-    game_version: Option<String>,
-) -> Result<UpdateReport, String> {
+pub fn check(items: Vec<CheckItem>, acfs: Vec<PathBuf>, game_version: Option<String>) -> Result<UpdateReport, String> {
     let ids: Vec<String> = {
         let mut ids: Vec<String> = items.iter().map(|i| i.workshop_id.clone()).collect();
         ids.sort();
@@ -275,10 +395,15 @@ pub fn check(
         ids
     };
     let remote = fetch_details(&ids)?;
-    let installed = acf
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .map(|t| parse_acf_installed(&t))
-        .unwrap_or_default();
+    let mut installed = HashMap::new();
+    for path in acfs {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            for (id, t) in parse_acf_installed(&text) {
+                let entry = installed.entry(id).or_insert(0);
+                *entry = (*entry).max(t);
+            }
+        }
+    }
     Ok(compare(
         &items,
         &remote,
@@ -398,6 +523,32 @@ mod tests {
         .unwrap();
         assert!(acf_path(&content).is_some());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn extracts_workshop_ids_and_parses_collection_json() {
+        assert_eq!(
+            extract_workshop_ids("https://steamcommunity.com/sharedfiles/filedetails/?id=2009463077&searchtext="),
+            vec!["2009463077"]
+        );
+        assert_eq!(
+            extract_workshop_ids(
+                "1. Harmony — https://steamcommunity.com/sharedfiles/filedetails/?id=2009463077\n2. Achtung — https://steamcommunity.com/sharedfiles/filedetails/?id=730936602"
+            ),
+            vec!["2009463077", "730936602"]
+        );
+        assert_eq!(extract_workshop_ids("2009463077"), vec!["2009463077"]);
+
+        let col_json = r#"{"response":{"result":1,"resultcount":1,"collectiondetails":[
+            {"publishedfileid":"999","result":1,"children":[
+                {"publishedfileid":"730936602","sortorder":1,"filetype":0},
+                {"publishedfileid":"2009463077","sortorder":0,"filetype":0}
+            ]}
+        ]}}"#;
+        assert_eq!(
+            parse_collection_children(col_json).unwrap(),
+            vec!["2009463077", "730936602"]
+        );
     }
 
     /// Asks the real Steam (run by hand: `cargo test live_workshop_details -- --ignored --nocapture`).

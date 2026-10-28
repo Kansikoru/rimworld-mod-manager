@@ -6,7 +6,7 @@ use eframe::egui::{self, Color32, Rounding, Sense, Stroke, Ui, Vec2};
 use super::components::*;
 use super::icons::*;
 use super::theme::THEME;
-use crate::app::{App, AppTab};
+use crate::app::{App, AppTab, SaveDialog};
 use crate::i18n::{fmt, TranslationKey};
 use crate::saves::SaveInfo;
 
@@ -17,6 +17,7 @@ enum SaveAction {
     SubscribeMissing(String),
     /// D1: the save's missing mods with no link (or just this one) -> "find by name" window.
     FindByName(String, Option<String>),
+    Dialog(SaveDialog),
     Refresh,
     OpenFolder,
     DownloadWorkshopDb,
@@ -125,6 +126,7 @@ fn apply_actions(app: &mut App, actions: Vec<SaveAction>) {
                 app.start_name_search(name, wanted);
             }
             SaveAction::Refresh => app.refresh_saves(),
+            SaveAction::Dialog(dialog) => app.save_dialog = Some(dialog),
             SaveAction::OpenFolder => {
                 if let Some(dir) = app.saves_folder() {
                     open_external(dir);
@@ -183,9 +185,25 @@ fn render_list(app: &mut App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
         .show_rows(ui, ROW_H, shown.len(), |ui, range| {
             for save in &shown[range] {
                 let selected = app.selected_save.as_deref() == Some(save.name.as_str());
-                if save_row(app, ui, save, selected).clicked() {
+                let resp = save_row(app, ui, save, selected);
+                if resp.clicked() {
                     actions.push(SaveAction::Select(save.name.clone()));
                 }
+                let row_name = save.name.clone();
+                resp.context_menu(|ui| {
+                    if ui.button(t.get(TranslationKey::SetsBtnRename)).clicked() {
+                        actions.push(SaveAction::Dialog(SaveDialog::Rename {
+                            from: row_name.clone(),
+                            name: row_name.clone(),
+                            error: None,
+                        }));
+                        ui.close_menu();
+                    }
+                    if ui.button(t.get(TranslationKey::SetsBtnDelete)).clicked() {
+                        actions.push(SaveAction::Dialog(SaveDialog::Delete { name: row_name }));
+                        ui.close_menu();
+                    }
+                });
             }
         });
 }
@@ -371,8 +389,18 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
         {
             actions.push(SaveAction::FindByName(name.clone(), None));
         }
+        if secondary_button(ui, t.get(TranslationKey::SetsBtnRename)).clicked() {
+            actions.push(SaveAction::Dialog(SaveDialog::Rename {
+                from: name.clone(),
+                name: name.clone(),
+                error: None,
+            }));
+        }
         if secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::ModsBtnFolder)).clicked() {
             actions.push(SaveAction::OpenFolder);
+        }
+        if danger_button_icon(ui, ICON_TRASH, t.get(TranslationKey::SetsBtnDelete)).clicked() {
+            actions.push(SaveAction::Dialog(SaveDialog::Delete { name: name.clone() }));
         }
     });
     // Missing mods the save gave no Workshop link for (the game writes ID 0 for many).

@@ -25,6 +25,8 @@ enum WsAction {
     Page(u32),
     Select(Option<String>),
     Download(String),
+    DownloadMany(Vec<String>),
+    DownloadWorkshopDb,
     Console,
 }
 
@@ -163,6 +165,8 @@ fn apply(app: &mut App, actions: Vec<WsAction>) {
             WsAction::Page(p) => app.workshop_page(p),
             WsAction::Select(id) => app.ws_selected = id,
             WsAction::Download(id) => app.download_workshop_item(&id),
+            WsAction::DownloadMany(ids) => app.download_workshop_items(ids),
+            WsAction::DownloadWorkshopDb => app.download_workshop_index(),
             WsAction::Console => app.open_steamcmd_console(),
         }
     }
@@ -445,6 +449,32 @@ fn render_details(
 
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+            let hint = if app.steamcmd_active() {
+                t.get(TranslationKey::WsViaSteamCmd)
+            } else {
+                t.get(TranslationKey::WsViaSteam)
+            };
+            let direct_deps = app
+                .workshop_index
+                .as_ref()
+                .map(|idx| idx.dependencies_of(&item.id))
+                .unwrap_or_default();
+            let all_dep_ids = app
+                .workshop_index
+                .as_ref()
+                .map(|idx| idx.all_dependencies_of(&item.id))
+                .unwrap_or_default();
+            let is_dep_installed = |dep_id: &str| {
+                installed.contains(dep_id)
+                    || app.ws_requested.contains(dep_id)
+                    || app
+                        .workshop_index
+                        .as_ref()
+                        .and_then(|idx| idx.package_for_id(dep_id))
+                        .is_some_and(|pkg| app.find_mod(pkg).is_some())
+            };
+            let missing_deps: Vec<String> = all_dep_ids.into_iter().filter(|id| !is_dep_installed(id)).collect();
+
             match have(item, installed, app) {
                 Have::Installed => {
                     tag(ui, t.get(TranslationKey::WsInstalled), THEME.accent_emerald);
@@ -453,11 +483,6 @@ fn render_details(
                     tag(ui, t.get(TranslationKey::WsRequested), THEME.accent_cyan);
                 }
                 Have::No => {
-                    let hint = if app.steamcmd_active() {
-                        t.get(TranslationKey::WsViaSteamCmd)
-                    } else {
-                        t.get(TranslationKey::WsViaSteam)
-                    };
                     if ui
                         .add_enabled_ui(!app.steam_busy(), |ui| {
                             primary_button_icon(ui, ICON_STEAM, t.get(TranslationKey::WsDownload))
@@ -470,14 +495,97 @@ fn render_details(
                     }
                 }
             }
+            if !missing_deps.is_empty() {
+                let mut to_download = Vec::new();
+                if have(item, installed, app) == Have::No {
+                    to_download.push(item.id.clone());
+                }
+                to_download.extend(missing_deps.clone());
+                let label = fmt(
+                    t.get(TranslationKey::WsDownloadWithDeps),
+                    &[&missing_deps.len().to_string()],
+                );
+                if ui
+                    .add_enabled_ui(!app.steam_busy(), |ui| secondary_button_icon(ui, ICON_STEAM, &label))
+                    .inner
+                    .on_hover_text(hint)
+                    .clicked()
+                {
+                    actions.push(WsAction::DownloadMany(to_download));
+                }
+            }
             if secondary_button(ui, t.get(TranslationKey::NameSearchOpenSteam)).clicked() {
                 open_external(crate::steam::workshop_url(&item.id));
             }
             if app.steam_busy() {
                 ui.spinner();
             }
+            let _ = direct_deps;
         });
         ui.add_space(6.0);
+
+        if let Some(idx) = app.workshop_index.as_ref().filter(|i| !i.dependencies.is_empty()) {
+            let direct_deps = idx.dependencies_of(&item.id);
+            if !direct_deps.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(6.0, 4.0);
+                    ui.label(
+                        egui::RichText::new(t.get(TranslationKey::ModsDependencies))
+                            .color(THEME.text_muted)
+                            .size(12.0),
+                    );
+                    for (dep_id, dep_name) in &direct_deps {
+                        let have_dep = installed.contains(dep_id)
+                            || app.ws_requested.contains(dep_id)
+                            || idx
+                                .package_for_id(dep_id)
+                                .is_some_and(|pkg| app.find_mod(pkg).is_some());
+                        let color = if have_dep {
+                            THEME.accent_emerald
+                        } else {
+                            THEME.accent_amber
+                        };
+                        if tag(ui, dep_name, color)
+                            .interact(Sense::click())
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .on_hover_text(format!("#{dep_id}"))
+                            .clicked()
+                        {
+                            open_external(crate::steam::workshop_url(dep_id));
+                        }
+                    }
+                });
+                ui.add_space(4.0);
+            }
+        } else {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(6.0, 4.0);
+                ui.label(
+                    egui::RichText::new(t.get(TranslationKey::WsDepsNeedDb))
+                        .color(THEME.text_muted)
+                        .size(12.0),
+                );
+                let btn_key = if app.workshop_index.is_some() {
+                    TranslationKey::WorkshopDbUpdateBtn
+                } else {
+                    TranslationKey::WorkshopDbBtn
+                };
+                if ui
+                    .add_enabled_ui(!app.workshop_index_busy(), |ui| {
+                        small_button(ui, t.get(btn_key), ButtonStyle::Secondary)
+                    })
+                    .inner
+                    .on_hover_text(t.get(TranslationKey::WorkshopDbBtnHint))
+                    .clicked()
+                {
+                    actions.push(WsAction::DownloadWorkshopDb);
+                }
+                if app.workshop_index_busy() {
+                    ui.spinner();
+                }
+            });
+            ui.add_space(4.0);
+        }
 
         let muted = |ui: &mut Ui, text: String| {
             ui.label(egui::RichText::new(text).color(THEME.text_secondary).size(12.0));

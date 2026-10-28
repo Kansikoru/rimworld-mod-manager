@@ -165,8 +165,12 @@ fn render_cards(app: &mut App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
         ui.spacing_mut().item_spacing.x = 8.0;
         let new_label = t.get(TranslationKey::SetsNewFromCurrent);
         let import_label = t.get(TranslationKey::SetsBtnImport);
-        let buttons_w = styled_button_width(ui, true, new_label) + styled_button_width(ui, true, import_label) + 16.0;
-        let search_w = (ui.available_width() - buttons_w).max(140.0);
+        let col_label = t.get(TranslationKey::SetsBtnCollection);
+        let buttons_w = styled_button_width(ui, true, new_label)
+            + styled_button_width(ui, true, import_label)
+            + styled_button_width(ui, true, col_label)
+            + 24.0;
+        let search_w = (ui.available_width() - buttons_w).max(120.0);
         search_input_width(ui, &mut app.sets_search, t.get(TranslationKey::SetsSearch), search_w);
         if primary_button_icon(ui, ICON_PLUS, new_label).clicked() {
             let default = fmt(
@@ -188,6 +192,22 @@ fn render_cards(app: &mut App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
             {
                 actions.push(SetAction::Import(file));
             }
+        }
+        if ui
+            .add_enabled_ui(!app.collection_busy(), |ui| {
+                secondary_button_icon(ui, ICON_STEAM, col_label)
+            })
+            .inner
+            .on_hover_text(t.get(TranslationKey::SetsCollectionHint))
+            .clicked()
+        {
+            actions.push(SetAction::Dialog(ModListDialog::Collection {
+                url: String::new(),
+                error: None,
+            }));
+        }
+        if app.collection_busy() {
+            ui.spinner();
         }
     });
     ui.add_space(10.0);

@@ -14,13 +14,19 @@ use std::time::Duration;
 
 pub const STEAM_DB_URL: &str = "https://raw.githubusercontent.com/RimSort/Steam-Workshop-Database/main/steamDB.json";
 
-/// Package ID -> the Workshop items that carry it.
+/// Package ID -> the Workshop items that carry it, and dependencies of Workshop items.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkshopIndex {
     /// The database's own version (unix time of its build).
     pub version: u64,
     /// Lowercase package ID -> (Workshop ID, mod name), sorted by Workshop ID.
     pub by_package: HashMap<String, Vec<(String, String)>>,
+    /// Workshop ID -> required Workshop IDs (`dependencies` from `steamDB.json`).
+    #[serde(default)]
+    pub dependencies: HashMap<String, Vec<String>>,
+    /// Workshop ID -> (lowercase package ID, mod name).
+    #[serde(default)]
+    pub by_id: HashMap<String, (String, String)>,
 }
 
 impl WorkshopIndex {
@@ -38,6 +44,64 @@ impl WorkshopIndex {
             (Some((id, _)), None) => Some(id),
             _ => None,
         }
+    }
+
+    /// A package ID's display name from the database, if known.
+    pub fn name_for_package(&self, package_id: &str) -> Option<&str> {
+        self.by_package
+            .get(&package_id.to_lowercase())?
+            .first()
+            .map(|(_, name)| name.as_str())
+            .filter(|n| !n.is_empty())
+    }
+
+    /// A Workshop item's display name from the database, if known.
+    pub fn name_for_id(&self, workshop_id: &str) -> Option<&str> {
+        self.by_id
+            .get(workshop_id)
+            .map(|(_, name)| name.as_str())
+            .filter(|n| !n.is_empty())
+    }
+
+    /// A Workshop item's lowercase package ID from the database, if known.
+    pub fn package_for_id(&self, workshop_id: &str) -> Option<&str> {
+        self.by_id
+            .get(workshop_id)
+            .map(|(pkg, _)| pkg.as_str())
+            .filter(|p| !p.is_empty())
+    }
+
+    /// Direct Workshop dependencies of an item: `(workshop_id, display_name)`.
+    pub fn dependencies_of(&self, workshop_id: &str) -> Vec<(String, String)> {
+        let Some(deps) = self.dependencies.get(workshop_id) else {
+            return Vec::new();
+        };
+        deps.iter()
+            .map(|dep_id| {
+                let name = self.name_for_id(dep_id).unwrap_or(dep_id).to_string();
+                (dep_id.clone(), name)
+            })
+            .collect()
+    }
+
+    /// All Workshop dependencies of an item (transitive, in breadth-first order).
+    pub fn all_dependencies_of(&self, workshop_id: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        seen.insert(workshop_id.to_string());
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back(workshop_id.to_string());
+        while let Some(cur) = queue.pop_front() {
+            if let Some(deps) = self.dependencies.get(&cur) {
+                for dep in deps {
+                    if seen.insert(dep.clone()) {
+                        out.push(dep.clone());
+                        queue.push_back(dep.clone());
+                    }
+                }
+            }
+        }
+        out
     }
 
     pub fn len(&self) -> usize {
@@ -61,7 +125,7 @@ struct RawDb {
     database: HashMap<String, RawEntry>,
 }
 
-/// Only the fields the index needs; the rest (dependencies, versions...) is skipped.
+/// Only the fields the index needs; the rest (versions...) is skipped.
 #[derive(Deserialize)]
 struct RawEntry {
     #[serde(rename = "packageId")]
@@ -72,24 +136,43 @@ struct RawEntry {
     name: Option<String>,
     #[serde(rename = "steamName")]
     steam_name: Option<String>,
+    #[serde(default)]
+    dependencies: HashMap<String, serde_json::Value>,
 }
 
 /// Builds the index from the database JSON (read as a stream).
 pub fn build_index(reader: impl Read) -> Result<WorkshopIndex, String> {
     let raw: RawDb = serde_json::from_reader(std::io::BufReader::new(reader)).map_err(|e| e.to_string())?;
     let mut by_package: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    let mut dependencies: HashMap<String, Vec<String>> = HashMap::new();
+    let mut by_id: HashMap<String, (String, String)> = HashMap::new();
+    let app_ids: std::collections::HashSet<String> = raw
+        .database
+        .iter()
+        .filter(|(_, e)| e.appid)
+        .map(|(id, _)| id.clone())
+        .collect();
     for (workshop_id, entry) in raw.database {
         if entry.appid || !crate::modlists::is_workshop_id(&workshop_id) {
             continue;
         }
+        let mut deps: Vec<String> = entry
+            .dependencies
+            .into_keys()
+            .filter(|id| crate::modlists::is_workshop_id(id) && !app_ids.contains(id))
+            .collect();
+        deps.sort();
+        deps.dedup();
+        if !deps.is_empty() {
+            dependencies.insert(workshop_id.clone(), deps);
+        }
         let Some(package_id) = entry.package_id.filter(|p| !p.trim().is_empty()) else {
             continue;
         };
+        let pkg_lower = package_id.trim().to_lowercase();
         let name = entry.name.or(entry.steam_name).unwrap_or_default();
-        by_package
-            .entry(package_id.trim().to_lowercase())
-            .or_default()
-            .push((workshop_id, name));
+        by_id.insert(workshop_id.clone(), (pkg_lower.clone(), name.clone()));
+        by_package.entry(pkg_lower).or_default().push((workshop_id, name));
     }
     for items in by_package.values_mut() {
         items.sort();
@@ -97,6 +180,8 @@ pub fn build_index(reader: impl Read) -> Result<WorkshopIndex, String> {
     Ok(WorkshopIndex {
         version: raw.version,
         by_package,
+        dependencies,
+        by_id,
     })
 }
 
@@ -107,7 +192,15 @@ pub fn index_path() -> PathBuf {
 /// The index saved earlier, if any.
 pub fn load() -> Option<WorkshopIndex> {
     let text = std::fs::read_to_string(index_path()).ok()?;
-    serde_json::from_str(&text).ok()
+    let mut index: WorkshopIndex = serde_json::from_str(&text).ok()?;
+    if index.by_id.is_empty() && !index.by_package.is_empty() {
+        for (pkg, items) in &index.by_package {
+            for (ws_id, name) in items {
+                index.by_id.insert(ws_id.clone(), (pkg.clone(), name.clone()));
+            }
+        }
+    }
+    Some(index)
 }
 
 fn save(index: &WorkshopIndex) -> Result<(), String> {
@@ -159,6 +252,12 @@ mod tests {
             "Harmony and some.mod; apps and broken entries are left out"
         );
         assert_eq!(index.lookup("BrrAinz.Harmony", None), Some("2009463077"));
+        assert_eq!(index.name_for_package("brrainz.harmony"), Some("Harmony"));
+        assert_eq!(
+            index.dependencies_of("1111"),
+            vec![("2009463077".to_string(), "Harmony".to_string())]
+        );
+        assert_eq!(index.all_dependencies_of("1111"), vec!["2009463077".to_string()]);
         assert_eq!(
             index.lookup("ludeon.rimworld", None),
             None,
