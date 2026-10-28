@@ -454,11 +454,6 @@ fn render_details(
             } else {
                 t.get(TranslationKey::WsViaSteam)
             };
-            let direct_deps = app
-                .workshop_index
-                .as_ref()
-                .map(|idx| idx.dependencies_of(&item.id))
-                .unwrap_or_default();
             let all_dep_ids = app
                 .workshop_index
                 .as_ref()
@@ -520,7 +515,6 @@ fn render_details(
             if app.steam_busy() {
                 ui.spinner();
             }
-            let _ = direct_deps;
         });
         ui.add_space(6.0);
 

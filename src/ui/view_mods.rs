@@ -832,8 +832,13 @@ fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
         ui.add_space(6.0);
     }
 
-    let mut shown = false;
     let mut update_all = false;
+    // Mods SteamCMD can update (the Steam client updates its own subscriptions).
+    let updatable = if app.steamcmd_active() {
+        app.steamcmd_updatable_ids().len()
+    } else {
+        0
+    };
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
         let all_selected = app.category_filter.is_empty() && !app.filter_updates && !app.filter_no_version;
@@ -864,8 +869,8 @@ fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
             {
                 app.filter_updates = !app.filter_updates;
             }
-            if app.steamcmd_active() {
-                let label = fmt(t.get(TranslationKey::UpdatesBtnUpdateAll), &[&updates.to_string()]);
+            if updatable > 0 {
+                let label = fmt(t.get(TranslationKey::UpdatesBtnUpdateAll), &[&updatable.to_string()]);
                 if ui
                     .add_enabled_ui(!app.steam_busy(), |ui| small_button(ui, &label, ButtonStyle::Primary))
                     .inner
@@ -875,7 +880,6 @@ fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
                 }
             }
         }
-        let _ = &mut shown;
         if no_version > 0 {
             let label = fmt(
                 t.get(TranslationKey::NoVersionChip),
@@ -1406,7 +1410,12 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                     }
                                     version_badge(ui, m, game_mm.as_deref(), t);
                                     if let Some(u) = update_map.get(&m.package_id.to_lowercase()) {
-                                        if update_badge(ui, Some(u), t, steamcmd_active) {
+                                        if update_badge(
+                                            ui,
+                                            Some(u),
+                                            t,
+                                            steamcmd_active && m.origin != ModOrigin::Workshop,
+                                        ) {
                                             download_dep_ws_id = Some(u.workshop_id.clone());
                                         }
                                     }
@@ -1897,7 +1906,12 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                                     category_badges(ui, &m.categories, t, 2);
                                     version_badge(ui, m, game_mm.as_deref(), t);
                                     if let Some(u) = update_map.get(&m.package_id.to_lowercase()) {
-                                        if update_badge(ui, Some(u), t, steamcmd_active) {
+                                        if update_badge(
+                                            ui,
+                                            Some(u),
+                                            t,
+                                            steamcmd_active && m.origin != ModOrigin::Workshop,
+                                        ) {
                                             download_dep_ws_id = Some(u.workshop_id.clone());
                                         }
                                     }

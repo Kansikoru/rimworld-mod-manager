@@ -2439,19 +2439,33 @@ impl App {
         self.mod_updates_rx.is_some()
     }
 
-    /// SC1: downloads all outdated Workshop mods again (via SteamCMD or Steam).
-    pub fn update_outdated_mods(&mut self) {
+    /// SC1: outdated mods SteamCMD can update — the ones in the game's Mods folder. Mods the
+    /// Steam client keeps in its Workshop folder are left to Steam (a SteamCMD copy would
+    /// give the mod twice).
+    pub fn steamcmd_updatable_ids(&self) -> Vec<String> {
         let Some(report) = &self.mod_updates else {
-            return;
+            return Vec::new();
         };
         let mut ids: Vec<String> = report
             .mods
-            .values()
-            .filter(|u| u.outdated)
-            .map(|u| u.workshop_id.clone())
+            .iter()
+            .filter(|(pkg, u)| u.outdated && self.can_update_with_steamcmd(pkg))
+            .map(|(_, u)| u.workshop_id.clone())
             .collect();
         ids.sort();
         ids.dedup();
+        ids
+    }
+
+    /// The mod is on disk outside the Steam client's Workshop folder.
+    pub fn can_update_with_steamcmd(&self, package_id: &str) -> bool {
+        self.find_mod(package_id)
+            .is_some_and(|m| m.origin != crate::models::ModOrigin::Workshop)
+    }
+
+    /// SC1: downloads the outdated mods of the game's Mods folder again (SteamCMD).
+    pub fn update_outdated_mods(&mut self) {
+        let ids = self.steamcmd_updatable_ids();
         self.subscribe_workshop_ids(ids);
     }
 
@@ -2760,7 +2774,13 @@ impl App {
         };
         let mut ids = Vec::with_capacity(list.ids.len());
         for id in &list.ids {
-            add_active_id(&mut ids, id);
+            // A collection imported before the mod was on disk lists it as "workshop.<ID>":
+            // once it's downloaded, the set enables it under its real ID (the game knows no other).
+            let real = id
+                .starts_with("workshop.")
+                .then(|| self.find_mod(id).map(|m| m.package_id.clone()))
+                .flatten();
+            add_active_id(&mut ids, real.as_deref().unwrap_or(id));
         }
         self.active_mods = ids;
         self.validate_deps();
