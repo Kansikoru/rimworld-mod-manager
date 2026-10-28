@@ -1,0 +1,105 @@
+name: Ошибка / Bug report
+description: Что-то работает не так / Something doesn't work right
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо, что сообщаете! Чем подробнее, тем быстрее получится найти и исправить ошибку.
+        Thanks for reporting! The more details, the faster the bug gets found and fixed.
+
+        > **Здесь — только ошибки самой программы.** Конфликты модов между собой, вылеты и ошибки игры из-за модов здесь не разбираются: это вопрос к авторам модов. Чтобы найти такой мод, есть вкладка «Анализатор логов» и кнопка «Найти виновника».
+        >
+        > **Only bugs of the program itself.** Conflicts between mods, game crashes and errors caused by mods aren't handled here — that's for the mods' authors. To find such a mod, use the "Log Analyzer" tab and the "Find the culprit" button.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: Что случилось / What happened
+      description: Что вы видите и что ожидали увидеть / What you see and what you expected instead
+      placeholder: |
+        Нажимаю «Скачать» во вкладке Workshop — окно SteamCMD пишет «не скачан».
+        I press "Download" on the Workshop tab — the SteamCMD window says "not downloaded".
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Как воспроизвести / Steps to reproduce
+      description: По шагам, чтобы ошибку можно было повторить / Step by step, so the bug can be repeated
+      placeholder: |
+        1. Открыть вкладку … / Open the … tab
+        2. Нажать … / Press …
+        3. Появляется … / … appears
+    validations:
+      required: true
+
+  - type: input
+    id: manager-version
+    attributes:
+      label: Версия программы / Manager version
+      description: Видна в шапке программы, рядом с названием / Shown in the program's header, next to its name
+      placeholder: "2.1.1"
+    validations:
+      required: true
+
+  - type: input
+    id: game-version
+    attributes:
+      label: Версия RimWorld / RimWorld version
+      description: Видна в главном меню игры или в файле Version.txt в папке игры / In the game's main menu or Version.txt in the game folder
+      placeholder: "1.6.4871 / 1.7.4984"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: game-source
+    attributes:
+      label: Откуда игра / Where the game is from
+      options:
+        - Steam
+        - GOG
+        - Другая копия без лаунчера / Other copy without a launcher
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mod-downloads
+    attributes:
+      label: Как скачиваются моды / How mods are downloaded
+      options:
+        - Клиент Steam (подписка) / Steam client (subscription)
+        - SteamCMD
+        - Вручную / By hand
+        - Не важно для этой ошибки / Doesn't matter for this bug
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Скриншоты / Screenshots
+      description: |
+        Желательно! Перетащите картинки сюда (Win+Shift+S — снимок части экрана).
+        Very welcome! Drag images here (Win+Shift+S takes a screenshot of part of the screen).
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Логи / Logs
+      description: |
+        Если программа закрылась сама — приложите `%LOCALAPPDATA%\RimWorldModManager\crash_log.txt`.
+        Если ошибка связана с запуском игры через программу — `Player.log`:
+        1.6 — `%USERPROFILE%\AppData\LocalLow\Ludeon Studios\RimWorld by Ludeon Studios\Player.log`,
+        1.7 — там же, в папке `Logs`.
+        Файлы можно просто перетащить сюда.
+        If the program closed by itself — attach `%LOCALAPPDATA%\RimWorldModManager\crash_log.txt`.
+        If the bug is about starting the game from the program — `Player.log`:
+        1.6 — `%USERPROFILE%\AppData\LocalLow\Ludeon Studios\RimWorld by Ludeon Studios\Player.log`,
+        1.7 — the same place, in the `Logs` folder.
+        Files can simply be dragged here.
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Что ещё важно / Anything else
+      description: Сколько модов, что делали перед ошибкой, папки не по умолчанию… / How many mods, what you did before, non-default folders…

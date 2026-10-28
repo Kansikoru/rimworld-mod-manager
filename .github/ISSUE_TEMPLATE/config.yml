@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Конфликты модов, вылеты игры из-за модов / Mod conflicts, game crashes caused by mods
+    url: https://github.com/Kansikoru/rimworld-mod-manager#found-a-bug
+    about: Здесь не разбираются — найдите мод вкладкой «Анализатор логов» и кнопкой «Найти виновника» / Not handled here — find the mod with the Log Analyzer tab and "Find the culprit"

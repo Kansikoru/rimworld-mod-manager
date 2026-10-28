@@ -28,6 +28,18 @@ The ready-to-run program is in the **[Releases](https://github.com/Kansikoru/rim
 
 Settings, cache and backups are kept in `%LOCALAPPDATA%\RimWorldModManager`.
 
+## Found a bug?
+
+[Open an issue](https://github.com/Kansikoru/rimworld-mod-manager/issues/new?template=bug_report.yml) — the form asks for everything needed:
+
+- what happened and how to reproduce it, step by step;
+- the program's version and RimWorld's version;
+- where the game is from: Steam, GOG or another copy without a launcher;
+- screenshots, if you can — they help a lot;
+- `crash_log.txt` from `%LOCALAPPDATA%\RimWorldModManager` if the program closed by itself.
+
+**Only bugs of the program itself.** Conflicts between mods, game crashes and errors caused by mods aren't handled here — that's for the mods' authors. To find such a mod, use the **Log Analyzer** tab and **Find the culprit**.
+
 ## Building
 
 Requires [Rust](https://rustup.rs/) 1.87 or newer.
