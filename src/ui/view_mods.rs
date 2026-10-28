@@ -291,12 +291,44 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
                     }
                     ui.label(egui::RichText::new(summary).color(THEME.accent_amber).strong());
                 });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if secondary_button(ui, t.get(TranslationKey::BtnAutoFixDependencies)).clicked() {
-                        app.auto_fix_dependencies();
+                // Auto-fix only when it has something to do: incompatible mods are the
+                // player's choice (buttons below).
+                if app.dependency_report.auto_fixable() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if secondary_button(ui, t.get(TranslationKey::BtnAutoFixDependencies)).clicked() {
+                            app.auto_fix_dependencies();
+                        }
+                    });
+                }
+            });
+            // Each incompatible pair, with a button to turn off either mod.
+            let mut turn_off: Option<String> = None;
+            for ((a_id, a_name), (b_id, b_name)) in app.dependency_report.incompatible_pairs().into_iter().take(5) {
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(8.0, 6.0);
+                    ui.label(
+                        egui::RichText::new(fmt(t.get(TranslationKey::DepIncompatiblePair), &[&a_name, &b_name]))
+                            .color(THEME.text_secondary)
+                            .size(12.0),
+                    );
+                    for (id, name) in [(&a_id, &a_name), (&b_id, &b_name)] {
+                        if small_button(
+                            ui,
+                            &fmt(t.get(TranslationKey::DepTurnOff), &[&short_name(name, 28)]),
+                            ButtonStyle::Secondary,
+                        )
+                        .on_hover_text(id.as_str())
+                        .clicked()
+                        {
+                            turn_off = Some(id.clone());
+                        }
                     }
                 });
-            });
+            }
+            if let Some(id) = turn_off {
+                app.deactivate_mod(&id);
+            }
         });
         ui.add_space(4.0);
     }
@@ -524,18 +556,41 @@ fn panel_footer(
 }
 
 /// Mod row frame: 34 px card, the selected one lighter with a lavender bar at the left.
-fn mod_row_frame(selected: bool) -> egui::Frame {
+/// A list row: lighter when selected, green when related to the selected mod.
+fn mod_row_frame(selected: bool, related: bool) -> egui::Frame {
+    let (fill, stroke) = if selected {
+        (THEME.bg_surface_hover, Stroke::NONE)
+    } else if related {
+        (
+            super::theme::mix(THEME.bg_card, THEME.accent_emerald, 0.14),
+            Stroke::new(1.0_f32, super::theme::mix(THEME.bg_card, THEME.accent_emerald, 0.6)),
+        )
+    } else {
+        (THEME.bg_card, Stroke::NONE)
+    };
     egui::Frame {
         inner_margin: egui::Margin::symmetric(8.0, 5.0),
         outer_margin: egui::Margin::symmetric(0.0, 1.0),
         rounding: Rounding::same(6.0),
         shadow: egui::epaint::Shadow::NONE,
-        fill: if selected {
-            THEME.bg_surface_hover
-        } else {
-            THEME.bg_card
-        },
-        stroke: Stroke::NONE,
+        fill,
+        stroke,
+    }
+}
+
+/// Green badge on a mod related to the selected one: what it is to it.
+fn relation_badge(ui: &mut Ui, relation: Option<&crate::relations::Relation>, t: crate::i18n::I18n) {
+    use crate::relations::Relation;
+    let Some(r) = relation else { return };
+    let (label, hint) = match r {
+        Relation::Translation => (TranslationKey::RelTranslation, TranslationKey::RelTranslationHint),
+        Relation::Addon => (TranslationKey::RelAddon, TranslationKey::RelAddonHint),
+        Relation::Original => (TranslationKey::RelOriginal, TranslationKey::RelOriginalHint),
+        Relation::Dependency => (TranslationKey::RelDependency, TranslationKey::RelDependencyHint),
+        Relation::Dependent => (TranslationKey::RelDependent, TranslationKey::RelDependentHint),
+    };
+    if let Some(resp) = tag_if_fits(ui, t.get(label), THEME.accent_emerald) {
+        resp.on_hover_text(t.get(hint));
     }
 }
 
@@ -794,6 +849,18 @@ fn translation_badge(
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text(fmt(t.get(TranslationKey::TransHintHover), &[lang.label(), title]))
         .clicked()
+}
+
+/// A mod name cut to `max` characters with "…" (for button labels).
+fn short_name(name: &str, max: usize) -> String {
+    if name.chars().count() <= max {
+        name.to_string()
+    } else {
+        format!(
+            "{}…",
+            name.chars().take(max.saturating_sub(1)).collect::<String>().trim_end()
+        )
+    }
 }
 
 /// F10: badge for a mod that produced errors in the last run's Player.log.
@@ -1104,6 +1171,8 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     let game_mm = app.steam_paths.game_major_minor();
     let update_map = app.mod_updates.as_ref().map(|r| r.mods.clone()).unwrap_or_default();
     let log_culprits = app.log_culprit_map();
+    // Mods related to the selected one: highlighted green, with what they are to it.
+    let related = app.related_to_selected();
     let mut open_analyzer = false;
     // T2: mods the modpack translation search found a translation for.
     let trans_hints = app.translation_hints();
@@ -1257,7 +1326,8 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                     let dep_problem = dep_by_mod.get(&mod_key);
                     let incompatible = matches!(dep_problem, Some(DependencyProblem::Incompatible { .. }));
 
-                    let row = mod_row_frame(is_selected).show(ui, |ui| {
+                    let relation = related.get(&mod_key);
+                    let row = mod_row_frame(is_selected, relation.is_some()).show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 8.0;
                             // Buttons get a fixed slot at the right edge; long names and badges are
@@ -1428,6 +1498,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                 if is_protected {
                                     tag_if_fits(ui, "Core", THEME.accent_amber);
                                 }
+                                relation_badge(ui, relation, t);
                                 if let Some(m) = mod_info_opt {
                                     if !is_protected {
                                         category_badges(ui, &m.categories, t, 2);
@@ -1722,6 +1793,8 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     let game_mm = app.steam_paths.game_major_minor();
     let update_map = app.mod_updates.as_ref().map(|r| r.mods.clone()).unwrap_or_default();
     let log_culprits = app.log_culprit_map();
+    // Mods related to the selected one: highlighted green, with what they are to it.
+    let related = app.related_to_selected();
     let mut open_analyzer = false;
     // T2: mods the modpack translation search found a translation for.
     let trans_hints = app.translation_hints();
@@ -1812,7 +1885,8 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                         let is_selected = app.selected_mod_ids.contains(&m.package_id)
                             || app.selected_mod_id.as_deref() == Some(&m.package_id);
 
-                        let row = mod_row_frame(is_selected).show(ui, |ui| {
+                        let relation = related.get(&m.package_id.to_lowercase());
+                        let row = mod_row_frame(is_selected, relation.is_some()).show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 8.0;
                                 // Fixed slot for the "+" button at the right edge (see the active list).
@@ -1935,6 +2009,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                                         }
                                     });
 
+                                    relation_badge(ui, relation, t);
                                     category_badges(ui, &m.categories, t, 2);
                                     if log_error_badge(ui, log_culprits.get(&m.package_id.to_lowercase()), t) {
                                         open_analyzer = true;

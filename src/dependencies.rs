@@ -76,10 +76,40 @@ impl DependencyReport {
     }
 
     pub fn incompatible_count(&self) -> usize {
+        self.incompatible_pairs().len()
+    }
+
+    /// Incompatible pairs, each once even when both mods declare it:
+    /// `((id, name), (id, name))`.
+    pub fn incompatible_pairs(&self) -> Vec<((String, String), (String, String))> {
+        let mut seen = std::collections::HashSet::new();
         self.problems
             .iter()
-            .filter(|p| matches!(p, DependencyProblem::Incompatible { .. }))
-            .count()
+            .filter_map(|p| match p {
+                DependencyProblem::Incompatible {
+                    dependent_name,
+                    dependent_id,
+                    other_name,
+                    other_id,
+                } => {
+                    let (a, b) = (dependent_id.to_lowercase(), other_id.to_lowercase());
+                    let key = if a <= b { (a, b) } else { (b, a) };
+                    seen.insert(key).then(|| {
+                        (
+                            (dependent_id.clone(), dependent_name.clone()),
+                            (other_id.clone(), other_name.clone()),
+                        )
+                    })
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Something "Auto-fix" can do: enable or sort dependencies (not incompatibilities —
+    /// which of two mods to turn off is the player's choice).
+    pub fn auto_fixable(&self) -> bool {
+        self.missing_count() + self.disabled_count() + self.order_count() > 0
     }
 }
 
@@ -283,6 +313,16 @@ mod tests {
         let rep = validate_dependencies(&with_bad, &mods);
         assert_eq!(rep.incompatible_count(), 1);
         assert_eq!(rep.problems[0].dependent_id(), "someone.mod");
+        assert!(!rep.auto_fixable(), "only the player can pick which mod to turn off");
+
+        // Both mods declare it: still one pair.
+        let mut bad = m("bad.mod", &[]);
+        bad.incompatible_with = vec!["Someone.Mod".into()];
+        let mut needs_lib = mods[2].clone();
+        needs_lib.incompatible_with = vec!["bad.mod".into()];
+        let both = vec![m("fork.lib", &[]), bad, needs_lib];
+        let rep = validate_dependencies(&with_bad, &both);
+        assert_eq!(rep.incompatible_pairs().len(), 1);
     }
 
     #[test]

@@ -105,6 +105,56 @@ pub struct LogReport {
     pub summary_text: String,
     /// Log written by RimWorld 1.7+ (Waylith engine) instead of Unity/Mono.
     pub is_waylith: bool,
+    /// The log's last lines before the crash (empty without a crash): for "Copy for AI",
+    /// which needs the log itself when no mod could be blamed.
+    pub crash_excerpt: String,
+    /// The last different errors in the log, each with a few lines after it.
+    pub recent_errors: Vec<String>,
+}
+
+/// Lines in a log excerpt at most, and characters per line.
+const EXCERPT_LINES: usize = 40;
+const EXCERPT_LINE_CHARS: usize = 300;
+/// Errors kept for "Copy for AI".
+const RECENT_ERRORS: usize = 5;
+
+/// `lines[start..end]` without empty lines, long lines cut, at most the last `EXCERPT_LINES`.
+fn log_excerpt(lines: &[&str], start: usize, end: usize) -> String {
+    let end = end.min(lines.len());
+    let kept: Vec<String> = lines[start.min(end)..end]
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.chars().take(EXCERPT_LINE_CHARS).collect())
+        .collect();
+    kept[kept.len().saturating_sub(EXCERPT_LINES)..].join("\n")
+}
+
+/// The last `RECENT_ERRORS` different errors (newest last), each with up to 5 lines after it.
+fn recent_errors(lines: &[&str], is_waylith: bool) -> Vec<String> {
+    let starts: Vec<(usize, usize)> = if is_waylith {
+        parse_waylith_entries(lines)
+            .into_iter()
+            .filter(|e| matches!(e.level, "ERROR" | "FATAL" | "CRITICAL"))
+            .map(|e| (e.first_line, e.end_line.max(e.first_line + 1)))
+            .collect()
+    } else {
+        lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.contains("Exception:") || l.contains("Error in ") || l.starts_with("Error "))
+            .map(|(i, _)| (i, i + 6))
+            .collect()
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<String> = starts
+        .into_iter()
+        .rev()
+        .filter(|(start, _)| seen.insert(lines[*start].trim().to_string()))
+        .take(RECENT_ERRORS)
+        .map(|(start, end)| log_excerpt(lines, start, end.min(start + 6)))
+        .collect();
+    out.reverse();
+    out
 }
 
 #[derive(Default)]
@@ -355,6 +405,9 @@ fn analyze_waylith_entries<'a>(
         report.total_errors += 1;
         if is_fatal {
             report.has_hard_crash = true;
+            if report.crash_excerpt.is_empty() {
+                report.crash_excerpt = log_excerpt(lines, entry.first_line, entry.end_line.max(entry.first_line + 1));
+            }
         }
 
         let culprit = entry
@@ -461,6 +514,13 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
     }
 
     if let Some(c_idx) = crash_marker_idx {
+        // Unity's crash block starts with "Crash!!!" and goes on with hundreds of lines of
+        // loaded DLLs: what led to the crash is right before "Crash!!!".
+        let block_start = (c_idx.saturating_sub(600)..=c_idx)
+            .rev()
+            .find(|&i| lines[i].trim_start().starts_with("Crash!!!"))
+            .unwrap_or(c_idx);
+        report.crash_excerpt = log_excerpt(&lines, block_start.saturating_sub(EXCERPT_LINES), block_start + 1);
         let start = c_idx.saturating_sub(80);
         let stack_slice = &lines[start..=c_idx];
         let stack_text = stack_slice.join("\n");
@@ -706,9 +766,50 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
     });
 
     report.culprits = culprits;
+    report.recent_errors = recent_errors(&lines, report.is_waylith);
 
     report.summary_text = summary_for(&report, !crate::i18n::is_english());
     report
+}
+
+/// The log itself for "Copy for AI": the lines before the crash, and the last errors when
+/// no mod could be blamed (otherwise the request would carry no data at all).
+fn push_log_data(out: &mut String, report: &LogReport, lang: crate::i18n::Language) {
+    use crate::i18n::TranslationKey;
+    let text = |key: TranslationKey| key.translate(lang);
+    out.push_str(&crate::i18n::fmt(
+        text(TranslationKey::AiErrorsInLog),
+        &[&report.total_errors.to_string()],
+    ));
+    out.push('\n');
+    // Well-known causes, named outright.
+    let excerpt = report.crash_excerpt.to_lowercase();
+    if excerpt.contains("887a0005") || excerpt.contains("device_removed") {
+        out.push_str(text(TranslationKey::AiHintGpuReset));
+        out.push('\n');
+    }
+    if excerpt.contains("could not allocate memory") || excerpt.contains("out of memory") {
+        out.push_str(text(TranslationKey::AiHintOutOfMemory));
+        out.push('\n');
+    }
+    if !report.crash_excerpt.is_empty() {
+        out.push('\n');
+        out.push_str(text(TranslationKey::AiCrashExcerpt));
+        out.push_str("\n```text\n");
+        out.push_str(&report.crash_excerpt);
+        out.push_str("\n```\n");
+    }
+    if report.culprits.is_empty() && !report.recent_errors.is_empty() {
+        out.push('\n');
+        out.push_str(text(TranslationKey::AiRecentErrors));
+        out.push('\n');
+        for e in &report.recent_errors {
+            out.push_str("```text\n");
+            out.push_str(e);
+            out.push_str("\n```\n");
+        }
+    }
+    out.push('\n');
 }
 
 pub fn generate_ai_diagnostic_prompt(report: &LogReport, is_ru: bool) -> String {
@@ -757,6 +858,7 @@ pub fn generate_ai_diagnostic_prompt(report: &LogReport, is_ru: bool) -> String 
             }
         }
 
+        push_log_data(&mut out, report, crate::i18n::Language::Russian);
         out.push_str("Вопросы:\n");
         out.push_str("1. В чём причина сбоя?\n");
         out.push_str("2. Какой мод виноват и с чем он конфликтует?\n");
@@ -804,6 +906,7 @@ pub fn generate_ai_diagnostic_prompt(report: &LogReport, is_ru: bool) -> String 
             }
         }
 
+        push_log_data(&mut out, report, crate::i18n::Language::English);
         out.push_str("Questions:\n");
         out.push_str("1. What caused the failure?\n");
         out.push_str("2. Which mod is at fault and what does it conflict with?\n");
@@ -899,6 +1002,56 @@ Runtime:   .NET 10.0.13-waylithclr.dev
         assert!(c.explanation.contains("AchtungMod.Controller.HandleDrafting"));
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A Unity crash inside the engine (no mod code in the stack): no culprit, but "Copy for
+    /// AI" still carries the log's last lines and the errors before the crash.
+    #[test]
+    fn engine_crash_without_culprit_still_gives_the_ai_the_log() {
+        let base = std::env::temp_dir().join(format!("rwmm_crash_test_{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let log_path = base.join("Player.log");
+        // The crash block: "Crash!!!", then many DLL lines, then the end marker.
+        let dlls: String = (0..300)
+            .map(|i| format!("C:\\WINDOWS\\System32\\lib{i}.dll: size 1\n"))
+            .collect();
+        let log = format!(
+            "Initialize engine version: 2022.3.35f1\n\
+             Exception: Texture is not readable\n  at Verse.ContentFinder.Get\n\
+             d3d11: failed to create 2D texture id=40508 [D3D error was 887a0005]\n\
+             Crash!!!\n{dlls}\
+             ========== END OF STACKTRACE ===========\n"
+        );
+        std::fs::write(&log_path, log).unwrap();
+
+        let report = analyze_rimworld_log(&log_path, &[]);
+        assert!(report.has_hard_crash);
+        assert!(report.culprits.is_empty());
+        assert!(
+            report.crash_excerpt.contains("887a0005"),
+            "what led to the crash, not the DLL list"
+        );
+        assert!(!report.crash_excerpt.contains("lib299.dll"));
+        assert_eq!(report.recent_errors.len(), 1);
+
+        let prompt = generate_ai_diagnostic_prompt(&report, true);
+        assert!(prompt.contains("DXGI_ERROR_DEVICE_REMOVED"), "{prompt}");
+        assert!(prompt.contains("Texture is not readable"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// "Copy for AI" text for the user's own Player.log (run by hand:
+    /// `cargo test --release live_ai_prompt -- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn live_ai_prompt() {
+        let path = detect_rimworld_log_paths()
+            .into_iter()
+            .map(|(_, p)| p)
+            .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+            .expect("no Player.log");
+        let report = analyze_rimworld_log(&path, &[]);
+        println!("{}", generate_ai_diagnostic_prompt(&report, true));
     }
 
     #[test]

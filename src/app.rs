@@ -2932,6 +2932,15 @@ impl App {
         self.bisect_note = None;
     }
 
+    /// Mods related to the selected one (highlighted in both lists).
+    pub fn related_to_selected(&self) -> std::collections::HashMap<String, crate::relations::Relation> {
+        self.selected_mod_id
+            .as_deref()
+            .and_then(|id| self.find_mod(id))
+            .map(|sel| crate::relations::related_mods(sel, &self.all_mods))
+            .unwrap_or_default()
+    }
+
     /// A mod's display name: the installed mod's name, else its ID.
     pub fn mod_display_name(&self, id: &str) -> String {
         self.find_mod(id)
@@ -3132,6 +3141,17 @@ impl App {
         self.validate_deps();
     }
 
+    /// Turns one mod off (incompatible pair in the dependency bar).
+    pub fn deactivate_mod(&mut self, id: &str) {
+        let before = self.active_mods.len();
+        self.active_mods.retain(|a| !a.eq_ignore_ascii_case(id));
+        if self.active_mods.len() != before {
+            self.validate_deps();
+            let name = self.mod_display_name(id);
+            self.status_message = fmt(self.i18n.get(TranslationKey::DepTurnedOff), &[&name]);
+        }
+    }
+
     /// Enables every missing dependency, including dependencies of the mods it just
     /// enabled, then sorts the load order once.
     pub fn auto_fix_dependencies(&mut self) {
@@ -3147,6 +3167,11 @@ impl App {
         } else {
             self.i18n.get(TranslationKey::AppSortedMsg).to_string()
         };
+        if self.dependency_report.incompatible_count() > 0 {
+            self.status_message.push_str(" | ");
+            self.status_message
+                .push_str(self.i18n.get(TranslationKey::DepIncompatibleManual));
+        }
     }
 
     /// Translation mods installed for the language selected on the Translations tab.
