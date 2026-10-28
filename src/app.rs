@@ -21,7 +21,7 @@ use crate::optimizer::{
 };
 use crate::scanner::scan_mods;
 use crate::sorter::sort_load_order_with_db;
-use crate::steam::{detect_steam_paths, launch_rimworld, subscribe_workshop_item_native, SteamPaths};
+use crate::steam::{detect_steam_paths, launch_rimworld, SteamPaths};
 use crate::ui::icons::*;
 use crate::ui::theme::THEME;
 use crate::workshop_search::{search_steam_workshop, WorkshopItemResult};
@@ -299,6 +299,9 @@ pub struct App {
     pub rules_rx: Option<Receiver<Result<usize, String>>>,
     /// Background Steam subscribe request; yields the status message.
     pub steam_rx: Option<Receiver<String>>,
+    /// Progress of the running Steam client download (`GetItemDownloadInfo`).
+    pub steam_progress: Option<crate::steam::SteamDownloadProgress>,
+    steam_progress_rx: Option<Receiver<crate::steam::SteamDownloadProgress>>,
 
     /// Deletion waiting for confirmation (modal window).
     pub pending_delete: Option<PendingDelete>,
@@ -366,6 +369,8 @@ pub struct App {
     pub bisect_filter: String,
     /// Why the last wizard action didn't run (game running, unsaved order...).
     pub bisect_note: Option<String>,
+    /// Watches for RimWorld to exit after a bisect launch and analyzes Player.log.
+    bisect_watch_rx: Option<Receiver<Option<LogReport>>>,
     /// "History" window: ModsConfig.xml backups, newest first (`Some` = window open).
     pub history: Option<Vec<crate::mods_config::ConfigBackup>>,
     /// Look for a new version on GitHub once a day (Settings).
@@ -424,6 +429,8 @@ pub struct App {
     rescan_again: bool,
     pub workshop_rx: Option<Receiver<WorkshopSearchOutcome>>,
     pub log_rx: Option<Receiver<LogReport>>,
+    log_silent: bool,
+    initial_log_checked: bool,
 
     /// Lowercase packageId -> index in `all_mods` (M1: no linear search per row).
     pub mod_index: std::collections::HashMap<String, usize>,
@@ -613,6 +620,8 @@ impl App {
             community_db,
             rules_rx: None,
             steam_rx: None,
+            steam_progress: None,
+            steam_progress_rx: None,
 
             pending_delete: None,
             saved_active_mods: Vec::new(),
@@ -654,6 +663,7 @@ impl App {
             bisect_keep: None,
             bisect_filter: String::new(),
             bisect_note: None,
+            bisect_watch_rx: None,
             check_updates: last_check_updates,
             use_steamcmd,
             use_steamcmd_set,
@@ -693,6 +703,8 @@ impl App {
             rescan_again: false,
             workshop_rx: None,
             log_rx: None,
+            log_silent: false,
+            initial_log_checked: false,
             mod_index: std::collections::HashMap::new(),
             active_row_height: 34.0,
             inactive_row_height: 34.0,
@@ -825,10 +837,36 @@ impl App {
                 }
             }
         }
+        if let Some(rx) = &self.steam_progress_rx {
+            let t = self.i18n;
+            while let Ok(prog) = rx.try_recv() {
+                self.status_message = if prog.bytes_total > 0 || prog.installed > 0 {
+                    fmt(
+                        t.get(TranslationKey::SteamDownloadProgress),
+                        &[
+                            &prog.installed.to_string(),
+                            &prog.total.to_string(),
+                            &prog.percent().to_string(),
+                        ],
+                    )
+                } else {
+                    fmt(
+                        t.get(TranslationKey::SteamDownloadProgressNoPct),
+                        &[&prog.installed.to_string(), &prog.total.to_string()],
+                    )
+                };
+                self.steam_progress = Some(prog);
+            }
+        }
         if let Some(rx) = &self.steam_rx {
             if let Ok(msg) = rx.try_recv() {
                 self.steam_rx = None;
+                self.steam_progress_rx = None;
+                let installed = self.steam_progress.take().map_or(0, |p| p.installed);
                 self.status_message = msg;
+                if installed > 0 {
+                    self.rescan_mods_keep_status();
+                }
             }
         }
         if let Some(rx) = &self.rules_rx {
@@ -840,8 +878,28 @@ impl App {
         if let Some(rx) = &self.log_rx {
             if let Ok(report) = rx.try_recv() {
                 self.log_rx = None;
-                self.status_message = self.crash_summary_text(&report);
+                if !std::mem::take(&mut self.log_silent) {
+                    self.status_message = self.crash_summary_text(&report);
+                }
                 self.log_report = Some(report);
+            }
+        }
+        if let Some(rx) = &self.bisect_watch_rx {
+            if let Ok(opt_report) = rx.try_recv() {
+                self.bisect_watch_rx = None;
+                if let Some(report) = opt_report {
+                    let problem = report.has_hard_crash || !report.culprits.is_empty() || report.total_errors > 0;
+                    self.log_report = Some(report);
+                    if self.bisect.as_ref().is_some_and(|s| s.applied && s.outcome().is_none()) {
+                        self.bisect_answer(problem);
+                        let key = if problem {
+                            TranslationKey::BisectAutoYes
+                        } else {
+                            TranslationKey::BisectAutoNo
+                        };
+                        self.bisect_note = Some(self.i18n.get(key).to_string());
+                    }
+                }
             }
         }
         if let Some(rx) = &self.delete_rx {
@@ -1290,6 +1348,18 @@ impl App {
         if std::mem::take(&mut self.updates_after_scan) {
             self.check_mod_updates();
         }
+        if !self.initial_log_checked && self.log_report.is_none() && self.log_rx.is_none() {
+            self.initial_log_checked = true;
+            let log_target = self
+                .custom_log_path
+                .clone()
+                .or_else(|| detect_rimworld_log_paths().into_iter().next().map(|(_, p)| p));
+            if let Some(path) = log_target {
+                let mods = self.all_mods.clone();
+                self.log_silent = true;
+                self.log_rx = Some(self.spawn_task(move || analyze_rimworld_log(&path, &mods)));
+            }
+        }
         self.name_search_when_ready();
         if self.rescan_keep_status {
             self.rescan_keep_status = false;
@@ -1463,10 +1533,35 @@ impl App {
             return;
         };
         self.status_message = fmt(t.get(TranslationKey::SetsSubscribing), &[&ids.len().to_string()]);
+        self.start_steam_client_download(dll, ids);
+    }
+
+    fn start_steam_client_download(&mut self, dll: PathBuf, ids: Vec<String>) {
+        let t = self.i18n;
+        let (prog_tx, prog_rx) = channel();
+        self.steam_progress = Some(crate::steam::SteamDownloadProgress {
+            installed: 0,
+            total: ids.len(),
+            bytes_done: 0,
+            bytes_total: 0,
+            active: true,
+        });
+        self.steam_progress_rx = Some(prog_rx);
+        let ctx = self.repaint_ctx.clone();
         self.steam_rx = Some(self.spawn_task(move || {
             let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
-            match crate::steam::subscribe_workshop_items_batch_native(&dll, &refs) {
-                Ok(n) => fmt(t.get(TranslationKey::SetsSubscribed), &[&n.to_string()]),
+            let mut on_prog = |prog: crate::steam::SteamDownloadProgress| {
+                let _ = prog_tx.send(prog);
+                if let Some(ctx) = &ctx {
+                    ctx.request_repaint();
+                }
+            };
+            match crate::steam::subscribe_workshop_items_with_progress(&dll, &refs, &mut on_prog) {
+                Ok((_accepted, installed)) if installed > 0 => fmt(
+                    t.get(TranslationKey::SteamDownloadFinished),
+                    &[&installed.to_string(), &ids.len().to_string()],
+                ),
+                Ok((accepted, _)) => fmt(t.get(TranslationKey::SetsSubscribed), &[&accepted.to_string()]),
                 Err(e) => fmt(t.get(TranslationKey::SetsSubscribeError), &[&e]),
             }
         }));
@@ -1824,7 +1919,7 @@ impl App {
         }
     }
 
-    /// F5: adds a shared `.rml` or `ModsConfig.xml` as a new set (a free name is picked)
+    /// F5: adds a shared `.rml`, `ModsConfig.xml` or `.zip` pack as a new set (a free name is picked)
     /// and selects it. Names and Workshop IDs come from the file, else from installed mods.
     pub fn import_modlist(&mut self, file: &Path) {
         let t = self.i18n;
@@ -1836,9 +1931,22 @@ impl App {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        let Some(list) = crate::modlists::read_shared(file) else {
-            self.status_message = fmt(t.get(TranslationKey::SetsImportBad), &[&file_name]);
-            return;
+        let is_zip = file
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("zip"));
+        let (list, zip_configs) = if is_zip {
+            let Some(pack) = crate::modlists::read_zip_pack(file) else {
+                self.status_message = fmt(t.get(TranslationKey::SetsImportBad), &[&file_name]);
+                return;
+            };
+            (pack.list, Some(pack.configs))
+        } else {
+            let Some(list) = crate::modlists::read_shared(file) else {
+                self.status_message = fmt(t.get(TranslationKey::SetsImportBad), &[&file_name]);
+                return;
+            };
+            (list, None)
         };
         let base = crate::modlists::check_name(&list.name)
             .unwrap_or_else(|_| t.get(TranslationKey::SetsImportedName).to_string());
@@ -1868,23 +1976,66 @@ impl App {
             .unwrap_or_else(|| self.game_version_for_sets());
         match crate::modlists::write_rml(&crate::modlists::path_for(&dir, &name), &version, &entries) {
             Ok(()) => {
+                let mut written_configs = 0usize;
+                if let (Some(cfgs), Some(cfg_dir)) = (
+                    zip_configs.as_ref(),
+                    self.mods_config_path.as_deref().and_then(Path::parent),
+                ) {
+                    let _ = std::fs::create_dir_all(cfg_dir);
+                    for (cfg_name, bytes) in cfgs {
+                        if crate::modlists::is_mod_config_name(cfg_name)
+                            && std::fs::write(cfg_dir.join(cfg_name), bytes).is_ok()
+                        {
+                            written_configs += 1;
+                        }
+                    }
+                }
                 self.refresh_modlists();
                 self.selected_modlist = Some(name.clone());
-                self.status_message = fmt(
-                    t.get(TranslationKey::SetsImported),
-                    &[&name, &entries.len().to_string()],
-                );
+                self.status_message = if zip_configs.is_some() {
+                    fmt(
+                        t.get(TranslationKey::SetsImportedZip),
+                        &[&name, &entries.len().to_string(), &written_configs.to_string()],
+                    )
+                } else {
+                    fmt(
+                        t.get(TranslationKey::SetsImported),
+                        &[&name, &entries.len().to_string()],
+                    )
+                };
             }
             Err(e) => self.status_message = fmt(t.get(TranslationKey::SetsWriteError), &[&e.to_string()]),
         }
     }
 
-    /// F5: copies the set's `.rml` file to where the user chose.
+    /// F5: copies the set's `.rml` file (or exports a `.zip` pack with `Config/Mod_*.xml`) to where the user chose.
     pub fn export_modlist(&mut self, name: &str, target: &Path) {
         let t = self.i18n;
         let Some(list) = self.modlists.iter().find(|l| l.name == name) else {
             return;
         };
+        let is_zip = target
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("zip"));
+        if is_zip {
+            let rml = match std::fs::read_to_string(&list.path) {
+                Ok(s) => s,
+                Err(e) => {
+                    self.status_message = fmt(t.get(TranslationKey::SetsWriteError), &[&e.to_string()]);
+                    return;
+                }
+            };
+            let cfg_dir = self.mods_config_path.as_deref().and_then(Path::parent);
+            self.status_message = match crate::modlists::write_zip_pack(target, name, &rml, cfg_dir) {
+                Ok(n) => fmt(
+                    t.get(TranslationKey::SetsExportedZip),
+                    &[name, &n.to_string(), &target.display().to_string()],
+                ),
+                Err(e) => fmt(t.get(TranslationKey::SetsWriteError), &[&e]),
+            };
+            return;
+        }
         self.status_message = match std::fs::copy(&list.path, target) {
             Ok(_) => fmt(
                 t.get(TranslationKey::SetsExported),
@@ -2628,10 +2779,55 @@ impl App {
         self.persist_bisect();
         if launch {
             self.launch_game_now();
+            self.start_bisect_game_watch();
         }
     }
 
+    /// F8: watches for the game process to exit after a bisect launch, then analyzes Player.log.
+    fn start_bisect_game_watch(&mut self) {
+        let log_target = self
+            .custom_log_path
+            .clone()
+            .or_else(|| detect_rimworld_log_paths().into_iter().next().map(|(_, p)| p));
+        let Some(path) = log_target else { return };
+        let mods = self.all_mods.clone();
+        let launched_at = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(2))
+            .unwrap_or(std::time::UNIX_EPOCH);
+        self.bisect_watch_rx = Some(self.spawn_task(move || {
+            // Wait up to 20 s for RimWorld to appear in the process list.
+            let mut started = false;
+            for _ in 0..40 {
+                if crate::game_install::is_game_running() {
+                    started = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            if !started {
+                return None;
+            }
+            while crate::game_install::is_game_running() {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+            // Give the game a moment to flush Player.log on exit.
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            let fresh = std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .is_ok_and(|t| t >= launched_at);
+            if !fresh {
+                return None;
+            }
+            Some(analyze_rimworld_log(&path, &mods))
+        }));
+    }
+
+    pub fn bisect_watching_game(&self) -> bool {
+        self.bisect_watch_rx.is_some()
+    }
+
     pub fn bisect_answer(&mut self, problem: bool) {
+        self.bisect_watch_rx = None;
         if let Some(search) = self.bisect.as_mut() {
             search.answer(problem);
             self.bisect_note = None;
@@ -2640,6 +2836,7 @@ impl App {
     }
 
     pub fn bisect_step_back(&mut self) {
+        self.bisect_watch_rx = None;
         if let Some(search) = self.bisect.as_mut() {
             search.step_back();
             self.bisect_note = None;
@@ -3259,17 +3456,7 @@ impl App {
             "Subscribing to translations: {}...",
             ids.len()
         );
-        self.steam_rx = Some(self.spawn_task(move || {
-            let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
-            match crate::steam::subscribe_workshop_items_batch_native(&dll, &refs) {
-                Ok(n) => tr!(
-                    "Steam принял подписок: {} — переводы скачаются в клиенте Steam, потом нажмите «Пересканировать»",
-                    "Steam accepted {} subscriptions — the Steam client downloads them, then press \"Rescan Mods\"",
-                    n
-                ),
-                Err(e) => tr!("Ошибка подписки: {}", "Subscribe failed: {}", e),
-            }
-        }));
+        self.start_steam_client_download(dll, ids);
     }
 
     /// Free-text Workshop search — in the background (S5).
@@ -3332,16 +3519,7 @@ impl App {
                 "Sending subscribe request #{}...",
                 id
             );
-            self.steam_rx = Some(
-                self.spawn_task(move || match subscribe_workshop_item_native(&dll, &id) {
-                    Ok(_) => tr!(
-                        "Запрос на подписку #{} отправлен в Steam — мод скачается в клиенте Steam",
-                        "Subscribe request #{} sent to Steam — the Steam client will download the mod",
-                        id
-                    ),
-                    Err(e) => tr!("Ошибка подписки: {}", "Subscribe failed: {}", e),
-                }),
-            );
+            self.start_steam_client_download(dll, vec![id]);
         } else {
             crate::ui::components::open_external(crate::steam::workshop_url(item_id));
             self.status_message = tr!(
@@ -3640,11 +3818,31 @@ impl App {
         if let Some(path) = log_target {
             // Matching stack frames to mods walks every mod folder: done in the background (S5).
             let mods = self.all_mods.clone();
+            self.log_silent = false;
             self.status_message = tr!("Анализ лога {}...", "Analyzing log {}...", path.display());
             self.log_rx = Some(self.spawn_task(move || analyze_rimworld_log(&path, &mods)));
         } else {
             self.status_message = self.i18n.get(TranslationKey::CrashFileNotFound).to_string();
         }
+    }
+
+    /// F10: mods that produced errors in the last analyzed Player.log (lowercase package_id -> culprit).
+    pub fn log_culprit_map(&self) -> std::collections::HashMap<String, crate::analyzer::CrashCulprit> {
+        let mut out = std::collections::HashMap::new();
+        let Some(report) = &self.log_report else {
+            return out;
+        };
+        for c in &report.culprits {
+            let Some(pkg) = &c.package_id else { continue };
+            let key = pkg.to_lowercase();
+            let replace = out
+                .get(&key)
+                .is_none_or(|prev: &crate::analyzer::CrashCulprit| c.severity < prev.severity);
+            if replace {
+                out.insert(key, c.clone());
+            }
+        }
+        out
     }
 
     fn crash_summary_text(&self, report: &LogReport) -> String {

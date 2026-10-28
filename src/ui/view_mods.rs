@@ -796,6 +796,28 @@ fn translation_badge(
         .clicked()
 }
 
+/// F10: badge for a mod that produced errors in the last run's Player.log.
+/// Clicking it opens the Log Analyzer tab.
+fn log_error_badge(ui: &mut Ui, culprit: Option<&crate::analyzer::CrashCulprit>, t: crate::i18n::I18n) -> bool {
+    let Some(c) = culprit else { return false };
+    let color = match c.severity {
+        crate::analyzer::ErrorSeverity::Warning => THEME.accent_amber,
+        _ => THEME.accent_rose,
+    };
+    let Some(resp) = tag_if_fits(ui, t.get(TranslationKey::ModsLogErrorBadge), color) else {
+        return false;
+    };
+    let sev = c.severity.badge_text(t.language() == crate::i18n::Language::Russian);
+    let hint = fmt(
+        t.get(TranslationKey::ModsLogErrorHint),
+        &[sev, &c.occurrences.to_string(), &c.headline],
+    );
+    resp.interact(egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(hint)
+        .clicked()
+}
+
 /// Row of category chips above the lists: "All" + every category that some mod has, with counts.
 /// Clicking chips toggles them; a mod is shown if it has any selected category.
 fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
@@ -1081,6 +1103,8 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
     let game_mm = app.steam_paths.game_major_minor();
     let update_map = app.mod_updates.as_ref().map(|r| r.mods.clone()).unwrap_or_default();
+    let log_culprits = app.log_culprit_map();
+    let mut open_analyzer = false;
     // T2: mods the modpack translation search found a translation for.
     let trans_hints = app.translation_hints();
     let trans_lang = app.batch_lang;
@@ -1408,6 +1432,9 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                     if !is_protected {
                                         category_badges(ui, &m.categories, t, 2);
                                     }
+                                    if log_error_badge(ui, log_culprits.get(&m.package_id.to_lowercase()), t) {
+                                        open_analyzer = true;
+                                    }
                                     version_badge(ui, m, game_mm.as_deref(), t);
                                     if let Some(u) = update_map.get(&m.package_id.to_lowercase()) {
                                         if update_badge(
@@ -1649,6 +1676,9 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     if open_translations {
         app.open_batch_translations();
     }
+    if open_analyzer {
+        app.current_tab = crate::app::AppTab::Analyzer;
+    }
 
     if let Some(pkg_id) = toggle_ignore_id {
         app.toggle_optimizer_ignore(&pkg_id);
@@ -1691,6 +1721,8 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     let panel_rect = ui.max_rect();
     let game_mm = app.steam_paths.game_major_minor();
     let update_map = app.mod_updates.as_ref().map(|r| r.mods.clone()).unwrap_or_default();
+    let log_culprits = app.log_culprit_map();
+    let mut open_analyzer = false;
     // T2: mods the modpack translation search found a translation for.
     let trans_hints = app.translation_hints();
     let trans_lang = app.batch_lang;
@@ -1904,6 +1936,9 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                                     });
 
                                     category_badges(ui, &m.categories, t, 2);
+                                    if log_error_badge(ui, log_culprits.get(&m.package_id.to_lowercase()), t) {
+                                        open_analyzer = true;
+                                    }
                                     version_badge(ui, m, game_mm.as_deref(), t);
                                     if let Some(u) = update_map.get(&m.package_id.to_lowercase()) {
                                         if update_badge(
@@ -2009,6 +2044,9 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     }
     if open_translations {
         app.open_batch_translations();
+    }
+    if open_analyzer {
+        app.current_tab = crate::app::AppTab::Analyzer;
     }
 
     if let Some(pkg_id) = toggle_ignore_id {

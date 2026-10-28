@@ -96,7 +96,16 @@ pub fn list_modlists(dir: &Path) -> Vec<ModList> {
 pub fn read_rml(path: &Path) -> Option<ModList> {
     let text = std::fs::read_to_string(path).ok()?;
     let name = path.file_stem()?.to_string_lossy().to_string();
-    let mut reader = Reader::from_str(&text);
+    let modified = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
+    parse_rml_str(&text, name, path.to_path_buf(), modified)
+}
+
+pub fn parse_rml_str(text: &str, name: String, path: PathBuf, modified: Option<u64>) -> Option<ModList> {
+    let mut reader = Reader::from_str(text);
     reader.config_mut().trim_text(true);
 
     let mut stack: Vec<String> = Vec::new();
@@ -145,14 +154,9 @@ pub fn read_rml(path: &Path) -> Option<ModList> {
         ids = meta_ids;
         names = meta_names;
     }
-    let modified = std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs());
     Some(ModList {
         name,
-        path: path.to_path_buf(),
+        path,
         game_version,
         ids,
         names,
@@ -285,6 +289,112 @@ pub fn write_rml(path: &Path, game_version: &str, entries: &[ModListEntry]) -> s
     std::fs::rename(&tmp, path).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })
+}
+
+/// A safe `Mod_*.xml` settings file name in RimWorld's `Config` folder.
+pub fn is_mod_config_name(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.starts_with("mod_")
+        && lower.ends_with(".xml")
+        && lower != "modsconfig.xml"
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains("..")
+        && name.chars().all(|c| !c.is_control())
+}
+
+/// F5: a ZIP pack with a `.rml` modlist and `Config/Mod_*.xml` mod settings files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ZipPack {
+    pub list: ModList,
+    /// `(file_name, bytes)` for `Config/Mod_*.xml`.
+    pub configs: Vec<(String, Vec<u8>)>,
+}
+
+/// F5: writes a ZIP pack containing `<name>.rml` and `Config/Mod_*.xml` from `config_dir`.
+/// Returns how many `Mod_*.xml` files were packed.
+pub fn write_zip_pack(
+    zip_path: &Path,
+    rml_name: &str,
+    rml_content: &str,
+    config_dir: Option<&Path>,
+) -> Result<usize, String> {
+    use std::io::Write;
+    if let Some(parent) = zip_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let tmp = zip_path.with_extension("zip.tmp");
+    let file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipWriter::new(file);
+    let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let safe_rml = check_name(rml_name).unwrap_or_else(|_| "Modpack".to_string());
+    zip.start_file(format!("{safe_rml}.rml"), opts)
+        .map_err(|e| e.to_string())?;
+    zip.write_all(rml_content.as_bytes()).map_err(|e| e.to_string())?;
+
+    let mut cfg_count = 0usize;
+    if let Some(dir) = config_dir {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            let mut files: Vec<(String, PathBuf)> = entries
+                .flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+                .filter_map(|e| {
+                    let fname = e.file_name().to_string_lossy().to_string();
+                    is_mod_config_name(&fname).then_some((fname, e.path()))
+                })
+                .collect();
+            files.sort_by(|a, b| a.0.cmp(&b.0));
+            for (fname, path) in files {
+                if let Ok(bytes) = std::fs::read(&path) {
+                    zip.start_file(format!("Config/{fname}"), opts)
+                        .map_err(|e| e.to_string())?;
+                    zip.write_all(&bytes).map_err(|e| e.to_string())?;
+                    cfg_count += 1;
+                }
+            }
+        }
+    }
+    zip.finish().map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, zip_path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        e.to_string()
+    })?;
+    Ok(cfg_count)
+}
+
+/// F5: reads a ZIP pack (`.rml` + `Config/Mod_*.xml`).
+pub fn read_zip_pack(zip_path: &Path) -> Option<ZipPack> {
+    use std::io::Read;
+    const MAX_ENTRY_BYTES: u64 = 10 * 1024 * 1024;
+    let file = std::fs::File::open(zip_path).ok()?;
+    let mut archive = zip::ZipArchive::new(file).ok()?;
+    let mut list: Option<ModList> = None;
+    let mut configs: Vec<(String, Vec<u8>)> = Vec::new();
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).ok()?;
+        if !entry.is_file() || entry.size() > MAX_ENTRY_BYTES {
+            continue;
+        }
+        let raw_name = entry.name().replace('\\', "/");
+        let base_name = raw_name.rsplit('/').next().unwrap_or(&raw_name).to_string();
+        if list.is_none() && base_name.to_lowercase().ends_with(".rml") {
+            let mut text = String::new();
+            if entry.read_to_string(&mut text).is_ok() {
+                let stem = base_name
+                    .strip_suffix(".rml")
+                    .or_else(|| base_name.strip_suffix(".RML"))
+                    .unwrap_or(&base_name)
+                    .to_string();
+                list = parse_rml_str(&text, stem, zip_path.to_path_buf(), None);
+            }
+        } else if is_mod_config_name(&base_name) {
+            let mut bytes = Vec::with_capacity(entry.size() as usize);
+            if entry.read_to_end(&mut bytes).is_ok() {
+                configs.push((base_name, bytes));
+            }
+        }
+    }
+    Some(ZipPack { list: list?, configs })
 }
 
 #[cfg(test)]
@@ -432,5 +542,33 @@ mod tests {
             modlists_dir(cfg).unwrap(),
             PathBuf::from(r"C:\Users\u\AppData\LocalLow\Ludeon Studios\RimWorld by Ludeon Studios\ModLists")
         );
+    }
+
+    #[test]
+    fn zip_pack_roundtrip_with_mod_configs() {
+        let dir = temp_dir("zip_pack");
+        let cfg_dir = dir.join("Config");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(cfg_dir.join("Mod_2009463077_Harmony.xml"), b"<ModSettings/>").unwrap();
+        std::fs::write(cfg_dir.join("ModsConfig.xml"), b"<ModsConfigData/>").unwrap();
+        std::fs::write(cfg_dir.join("Prefs.xml"), b"<Prefs/>").unwrap();
+
+        let entries = vec![
+            entry("brrainz.harmony", "Harmony", Some("2009463077")),
+            entry("ludeon.rimworld", "Core", None),
+        ];
+        let rml = rml_text("1.7", &entries);
+        let zip_path = dir.join("MyPack.zip");
+        let packed = write_zip_pack(&zip_path, "MyPack", &rml, Some(&cfg_dir)).unwrap();
+        assert_eq!(packed, 1, "only Mod_*.xml files are packed");
+
+        let unpacked = read_zip_pack(&zip_path).unwrap();
+        assert_eq!(unpacked.list.name, "MyPack");
+        assert_eq!(unpacked.list.ids, ["brrainz.harmony", "ludeon.rimworld"]);
+        assert_eq!(
+            unpacked.configs,
+            vec![("Mod_2009463077_Harmony.xml".to_string(), b"<ModSettings/>".to_vec())]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

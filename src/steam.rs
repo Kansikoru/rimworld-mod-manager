@@ -299,6 +299,111 @@ pub fn subscribe_workshop_items_batch_native(dll_path: &Path, item_ids: &[&str])
     ugc_batch(dll_path, b"SteamAPI_ISteamUGC_SubscribeItem\0", item_ids)
 }
 
+/// Steam `EItemState` flags returned by `SteamAPI_ISteamUGC_GetItemState`.
+const ITEM_STATE_INSTALLED: u32 = 4;
+const ITEM_STATE_NEEDS_UPDATE: u32 = 8;
+const ITEM_STATE_DOWNLOADING: u32 = 16;
+const ITEM_STATE_DOWNLOAD_PENDING: u32 = 32;
+
+/// Live download progress reported by the Steam client (`GetItemState` + `GetItemDownloadInfo`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SteamDownloadProgress {
+    pub installed: usize,
+    pub total: usize,
+    pub bytes_done: u64,
+    pub bytes_total: u64,
+    pub active: bool,
+}
+
+impl SteamDownloadProgress {
+    /// 0..=100 percentage if byte counts are known, else by item count.
+    pub fn percent(&self) -> u32 {
+        if let Some(p) = self.bytes_done.saturating_mul(100).checked_div(self.bytes_total) {
+            p.min(100) as u32
+        } else if let Some(p) = (self.installed * 100).checked_div(self.total) {
+            p.min(100) as u32
+        } else {
+            0
+        }
+    }
+}
+
+/// Subscribes to `item_ids` and polls `GetItemState` + `GetItemDownloadInfo` while the Steam
+/// client downloads them, calling `on_progress` with updates. Returns `(subscribed_count, installed_count)`.
+pub fn subscribe_workshop_items_with_progress(
+    dll_path: &Path,
+    item_ids: &[&str],
+    mut on_progress: impl FnMut(SteamDownloadProgress),
+) -> Result<(usize, usize), String> {
+    let ids: Vec<u64> = item_ids.iter().filter_map(|s| s.trim().parse().ok()).collect();
+    if ids.is_empty() {
+        return Ok((0, 0));
+    }
+    unsafe {
+        with_steam_ugc(dll_path, |ugc_ptr, lib| {
+            let call: libloading::Symbol<UgcFn> = lib
+                .get(b"SteamAPI_ISteamUGC_SubscribeItem\0")
+                .map_err(|e| e.to_string())?;
+            for id in &ids {
+                let _call_handle = call(ugc_ptr, *id);
+            }
+
+            type GetStateFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64) -> u32;
+            type GetDlInfoFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64, *mut u64, *mut u64) -> bool;
+            let Ok(get_state) = lib.get::<GetStateFn>(b"SteamAPI_ISteamUGC_GetItemState\0") else {
+                return Ok((ids.len(), 0));
+            };
+            let get_dl_info = lib.get::<GetDlInfoFn>(b"SteamAPI_ISteamUGC_GetItemDownloadInfo\0").ok();
+            let run_callbacks = lib.get::<unsafe extern "C" fn()>(b"SteamAPI_RunCallbacks").ok();
+
+            let started = std::time::Instant::now();
+            let mut last_installed = 0usize;
+            while started.elapsed() < std::time::Duration::from_secs(300) {
+                if let Some(ref cb) = run_callbacks {
+                    cb();
+                }
+                let mut installed = 0usize;
+                let mut active = false;
+                let mut bytes_done = 0u64;
+                let mut bytes_total = 0u64;
+                for &id in &ids {
+                    let state = get_state(ugc_ptr, id);
+                    let busy_bits = ITEM_STATE_DOWNLOADING | ITEM_STATE_DOWNLOAD_PENDING | ITEM_STATE_NEEDS_UPDATE;
+                    if (state & ITEM_STATE_INSTALLED) != 0 && (state & busy_bits) == 0 {
+                        installed += 1;
+                    } else if (state & busy_bits) != 0 {
+                        active = true;
+                        if let Some(ref dl_fn) = get_dl_info {
+                            let (mut done, mut tot) = (0u64, 0u64);
+                            if dl_fn(ugc_ptr, id, &mut done, &mut tot) && tot > 0 {
+                                bytes_done = bytes_done.saturating_add(done);
+                                bytes_total = bytes_total.saturating_add(tot);
+                            }
+                        }
+                    }
+                }
+                last_installed = installed;
+                on_progress(SteamDownloadProgress {
+                    installed,
+                    total: ids.len(),
+                    bytes_done,
+                    bytes_total,
+                    active: installed < ids.len() && active,
+                });
+                if installed >= ids.len() {
+                    break;
+                }
+                // Give the Steam client up to 5 seconds to start downloading; if nothing is queued, stop waiting.
+                if !active && started.elapsed() >= std::time::Duration::from_secs(5) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(400));
+            }
+            Ok((ids.len(), last_installed))
+        })
+    }
+}
+
 fn parse_item_id(item_id_str: &str) -> Result<u64, String> {
     item_id_str
         .parse::<u64>()
@@ -359,6 +464,27 @@ pub fn launch_rimworld(steam_paths: &SteamPaths, args: &[String]) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_progress_percentage() {
+        let by_bytes = SteamDownloadProgress {
+            installed: 0,
+            total: 2,
+            bytes_done: 25 * 1024 * 1024,
+            bytes_total: 100 * 1024 * 1024,
+            active: true,
+        };
+        assert_eq!(by_bytes.percent(), 25);
+
+        let by_items = SteamDownloadProgress {
+            installed: 1,
+            total: 4,
+            bytes_done: 0,
+            bytes_total: 0,
+            active: true,
+        };
+        assert_eq!(by_items.percent(), 25);
+    }
 
     /// Live, read-only: `cargo test real_steam_api_check -- --ignored --nocapture`
     #[test]

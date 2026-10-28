@@ -218,6 +218,19 @@ fn render_search(app: &mut App, ui: &mut Ui) {
                 .size(12.0),
         );
     }
+    if app.bisect_watching_game() {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(t.get(TranslationKey::BisectWaitingGame))
+                        .color(THEME.accent_cyan)
+                        .size(12.0),
+                )
+                .wrap(),
+            );
+        });
+    }
     ui.add_space(10.0);
 
     // 2. The answer

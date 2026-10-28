@@ -187,7 +187,7 @@ fn render_cards(app: &mut App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
             .clicked()
         {
             if let Some(file) = rfd::FileDialog::new()
-                .add_filter(t.get(TranslationKey::SetsImportFilter), &["rml", "xml"])
+                .add_filter(t.get(TranslationKey::SetsImportFilter), &["rml", "xml", "zip"])
                 .pick_file()
             {
                 actions.push(SetAction::Import(file));
@@ -427,7 +427,8 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
         {
             if let Some(target) = rfd::FileDialog::new()
                 .set_file_name(format!("{name}.rml"))
-                .add_filter("RimWorld mod list", &["rml"])
+                .add_filter(t.get(TranslationKey::SetsImportFilter), &["rml"])
+                .add_filter(t.get(TranslationKey::SetsExportFilterZip), &["zip"])
                 .save_file()
             {
                 actions.push(SetAction::Export {
