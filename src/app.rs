@@ -888,16 +888,33 @@ impl App {
             if let Ok(opt_report) = rx.try_recv() {
                 self.bisect_watch_rx = None;
                 if let Some(report) = opt_report {
-                    let problem = report.has_hard_crash || !report.culprits.is_empty() || report.total_errors > 0;
+                    // Only a clear log answers by itself: a crash = "still there", not a single
+                    // error = "gone". Errors without a crash are in almost every RimWorld log,
+                    // working ones too, so then the player answers (the search would otherwise
+                    // end on an innocent mod).
+                    let answer = if report.has_hard_crash {
+                        Some(true)
+                    } else if report.total_errors == 0 && report.culprits.is_empty() {
+                        Some(false)
+                    } else {
+                        None
+                    };
+                    let errors = report.total_errors;
                     self.log_report = Some(report);
                     if self.bisect.as_ref().is_some_and(|s| s.applied && s.outcome().is_none()) {
-                        self.bisect_answer(problem);
-                        let key = if problem {
-                            TranslationKey::BisectAutoYes
-                        } else {
-                            TranslationKey::BisectAutoNo
+                        let note = match answer {
+                            Some(problem) => {
+                                self.bisect_answer(problem);
+                                let key = if problem {
+                                    TranslationKey::BisectAutoYes
+                                } else {
+                                    TranslationKey::BisectAutoNo
+                                };
+                                self.i18n.get(key).to_string()
+                            }
+                            None => fmt(self.i18n.get(TranslationKey::BisectAutoUnsure), &[&errors.to_string()]),
                         };
-                        self.bisect_note = Some(self.i18n.get(key).to_string());
+                        self.bisect_note = Some(note);
                     }
                 }
             }
@@ -1977,15 +1994,35 @@ impl App {
         match crate::modlists::write_rml(&crate::modlists::path_for(&dir, &name), &version, &entries) {
             Ok(()) => {
                 let mut written_configs = 0usize;
+                // The player's own settings of these mods are copied away before the pack's
+                // replace them (a different file only), so nothing is lost.
+                let backup_dir = crate::game_install::manager_data_dir()
+                    .join("mod_settings_backup")
+                    .join(chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string());
+                let mut backed_up = 0usize;
                 if let (Some(cfgs), Some(cfg_dir)) = (
                     zip_configs.as_ref(),
                     self.mods_config_path.as_deref().and_then(Path::parent),
                 ) {
                     let _ = std::fs::create_dir_all(cfg_dir);
                     for (cfg_name, bytes) in cfgs {
-                        if crate::modlists::is_mod_config_name(cfg_name)
-                            && std::fs::write(cfg_dir.join(cfg_name), bytes).is_ok()
-                        {
+                        if !crate::modlists::is_mod_config_name(cfg_name) {
+                            continue;
+                        }
+                        let target = cfg_dir.join(cfg_name);
+                        if let Ok(old) = std::fs::read(&target) {
+                            if &old == bytes {
+                                continue;
+                            }
+                            let saved = std::fs::create_dir_all(&backup_dir)
+                                .and_then(|_| std::fs::write(backup_dir.join(cfg_name), &old))
+                                .is_ok();
+                            if !saved {
+                                continue;
+                            }
+                            backed_up += 1;
+                        }
+                        if std::fs::write(&target, bytes).is_ok() {
                             written_configs += 1;
                         }
                     }
@@ -1993,10 +2030,18 @@ impl App {
                 self.refresh_modlists();
                 self.selected_modlist = Some(name.clone());
                 self.status_message = if zip_configs.is_some() {
-                    fmt(
+                    let mut msg = fmt(
                         t.get(TranslationKey::SetsImportedZip),
                         &[&name, &entries.len().to_string(), &written_configs.to_string()],
-                    )
+                    );
+                    if backed_up > 0 {
+                        msg.push_str(" | ");
+                        msg.push_str(&fmt(
+                            t.get(TranslationKey::SetsZipBackup),
+                            &[&backed_up.to_string(), &backup_dir.display().to_string()],
+                        ));
+                    }
+                    msg
                 } else {
                     fmt(
                         t.get(TranslationKey::SetsImported),
