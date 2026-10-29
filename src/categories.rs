@@ -53,99 +53,52 @@ impl ModCategory {
     ];
 
     pub fn label(&self, lang: Language) -> &'static str {
-        let ru = lang == Language::Russian;
-        match self {
-            ModCategory::Framework => {
-                if ru {
-                    "Фреймворк"
-                } else {
-                    "Framework"
-                }
-            }
-            ModCategory::QoL => {
-                if ru {
-                    "QoL / интерфейс"
-                } else {
-                    "QoL / UI"
-                }
-            }
-            ModCategory::Race => {
-                if ru {
-                    "Расы"
-                } else {
-                    "Races"
-                }
-            }
-            ModCategory::Faction => {
-                if ru {
-                    "Фракции"
-                } else {
-                    "Factions"
-                }
-            }
-            ModCategory::Building => {
-                if ru {
-                    "Постройки"
-                } else {
-                    "Buildings"
-                }
-            }
-            ModCategory::Weapon => {
-                if ru {
-                    "Оружие"
-                } else {
-                    "Weapons"
-                }
-            }
-            ModCategory::Apparel => {
-                if ru {
-                    "Одежда"
-                } else {
-                    "Apparel"
-                }
-            }
-            ModCategory::Animal => {
-                if ru {
-                    "Животные"
-                } else {
-                    "Animals"
-                }
-            }
-            ModCategory::Biome => {
-                if ru {
-                    "Биомы"
-                } else {
-                    "Biomes"
-                }
-            }
-            ModCategory::Storyteller => {
-                if ru {
-                    "Рассказчик"
-                } else {
-                    "Storyteller"
-                }
-            }
-            ModCategory::Patch => {
-                if ru {
-                    "Патч"
-                } else {
-                    "Patch"
-                }
-            }
-            ModCategory::Retexture => {
-                if ru {
-                    "Ретекстур"
-                } else {
-                    "Retexture"
-                }
-            }
-            ModCategory::Translation => {
-                if ru {
-                    "Перевод"
-                } else {
-                    "Translation"
-                }
-            }
+        match lang {
+            Language::Russian => match self {
+                ModCategory::Framework => "Фреймворк",
+                ModCategory::QoL => "QoL / интерфейс",
+                ModCategory::Race => "Расы",
+                ModCategory::Faction => "Фракции",
+                ModCategory::Building => "Постройки",
+                ModCategory::Weapon => "Оружие",
+                ModCategory::Apparel => "Одежда",
+                ModCategory::Animal => "Животные",
+                ModCategory::Biome => "Биомы",
+                ModCategory::Storyteller => "Рассказчик",
+                ModCategory::Patch => "Патч",
+                ModCategory::Retexture => "Ретекстур",
+                ModCategory::Translation => "Перевод",
+            },
+            Language::Chinese => match self {
+                ModCategory::Framework => "框架",
+                ModCategory::QoL => "QoL / 界面",
+                ModCategory::Race => "种族",
+                ModCategory::Faction => "派系",
+                ModCategory::Building => "建筑",
+                ModCategory::Weapon => "武器",
+                ModCategory::Apparel => "服装",
+                ModCategory::Animal => "动物",
+                ModCategory::Biome => "生物群落",
+                ModCategory::Storyteller => "叙天者",
+                ModCategory::Patch => "补丁",
+                ModCategory::Retexture => "材质替换",
+                ModCategory::Translation => "汉化",
+            },
+            Language::English => match self {
+                ModCategory::Framework => "Framework",
+                ModCategory::QoL => "QoL / UI",
+                ModCategory::Race => "Races",
+                ModCategory::Faction => "Factions",
+                ModCategory::Building => "Buildings",
+                ModCategory::Weapon => "Weapons",
+                ModCategory::Apparel => "Apparel",
+                ModCategory::Animal => "Animals",
+                ModCategory::Biome => "Biomes",
+                ModCategory::Storyteller => "Storyteller",
+                ModCategory::Patch => "Patch",
+                ModCategory::Retexture => "Retexture",
+                ModCategory::Translation => "Translation",
+            },
         }
     }
 

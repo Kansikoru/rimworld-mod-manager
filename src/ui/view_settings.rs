@@ -200,11 +200,23 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
             );
 
             ui.horizontal(|ui| {
-                if ui.selectable_label(app.is_russian, "Русский").clicked() {
+                if ui
+                    .selectable_label(app.i18n.language() == Language::Russian, "Русский")
+                    .clicked()
+                {
                     app.set_language(Language::Russian);
                 }
-                if ui.selectable_label(!app.is_russian, "English").clicked() {
+                if ui
+                    .selectable_label(app.i18n.language() == Language::English, "English")
+                    .clicked()
+                {
                     app.set_language(Language::English);
+                }
+                if ui
+                    .selectable_label(app.i18n.language() == Language::Chinese, "简体中文")
+                    .clicked()
+                {
+                    app.set_language(Language::Chinese);
                 }
             });
         });
@@ -431,6 +443,28 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
             if app.steam_paths.engine == GameEngine::Waylith {
                 hint(ui, t.get(TranslationKey::SettingsLaunchWaylithHint));
             }
+
+            ui.add_space(6.0);
+
+            // Save backup before launch (F12)
+            ui.horizontal_wrapped(|ui| {
+                let mut backup_on = app.backup_save_before_launch;
+                if ui
+                    .checkbox(&mut backup_on, t.get(TranslationKey::SettingsBackupSaveBeforeLaunch))
+                    .changed()
+                {
+                    app.backup_save_before_launch = backup_on;
+                }
+                if backup_on {
+                    ui.add_space(8.0);
+                    ui.label(t.get(TranslationKey::SettingsBackupSaveKeepCount));
+                    let mut keep = app.save_backups_to_keep;
+                    if ui.add(egui::DragValue::new(&mut keep).range(1..=50)).changed() {
+                        app.save_backups_to_keep = keep;
+                    }
+                }
+            });
+            hint(ui, t.get(TranslationKey::SettingsBackupSaveHint));
 
             ui.add_space(8.0);
 

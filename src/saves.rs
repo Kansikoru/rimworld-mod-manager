@@ -51,6 +51,143 @@ pub fn path_for(dir: &Path, name: &str) -> PathBuf {
     dir.join(format!("{name}.rws"))
 }
 
+/// Destination folder for save backups: `<saves_dir>/Backups` (F12).
+pub fn save_backups_dir(saves_dir: &Path) -> PathBuf {
+    saves_dir.join("Backups")
+}
+
+/// Backs up the most recently modified `.rws` save file to `<saves_dir>/Backups` (F12).
+///
+/// Keeps at most `keep` backups per save stem (e.g. `MyColony.00000000001761480000-000.rws`).
+/// If `keep` is 0, no backup is made.
+pub fn backup_latest_save(saves_dir: &Path, keep: usize) -> std::io::Result<Option<PathBuf>> {
+    if keep == 0 {
+        return Ok(None);
+    }
+    let Ok(entries) = std::fs::read_dir(saves_dir) else {
+        return Ok(None);
+    };
+
+    // Find the newest .rws file in saves_dir (ignoring subdirectories like Backups)
+    let mut newest_save: Option<(PathBuf, std::time::SystemTime)> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file()
+            && path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("rws"))
+        {
+            if let Ok(meta) = entry.metadata() {
+                if let Ok(mtime) = meta.modified() {
+                    if newest_save.as_ref().is_none_or(|(_, best)| mtime > *best) {
+                        newest_save = Some((path, mtime));
+                    }
+                }
+            }
+        }
+    }
+
+    let Some((latest_path, _)) = newest_save else {
+        return Ok(None);
+    };
+
+    let backup_dir = save_backups_dir(saves_dir);
+    std::fs::create_dir_all(&backup_dir)?;
+
+    let stem = latest_path.file_stem().and_then(|s| s.to_str()).unwrap_or("Save");
+
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let mut n = 0u32;
+    let mut target = backup_dir.join(format!("{stem}.{secs:020}-{n:03}.rws"));
+    while target.exists() {
+        n += 1;
+        target = backup_dir.join(format!("{stem}.{secs:020}-{n:03}.rws"));
+    }
+
+    std::fs::copy(&latest_path, &target)?;
+
+    // Rotate backups for this save stem
+    let stem_prefix = format!("{stem}.");
+    let mut backups: Vec<PathBuf> = std::fs::read_dir(&backup_dir)?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with(&stem_prefix) && n.ends_with(".rws"))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    backups.sort();
+    if backups.len() > keep {
+        for old in &backups[..backups.len() - keep] {
+            let _ = std::fs::remove_file(old);
+        }
+    }
+
+    Ok(Some(target))
+}
+
+/// Lists all save backup files in `<saves_dir>/Backups`, newest first.
+/// If `stem` is provided, filters to backups of that specific save stem.
+pub fn list_save_backups(saves_dir: &Path, stem: Option<&str>) -> Vec<PathBuf> {
+    let backup_dir = save_backups_dir(saves_dir);
+    let Ok(entries) = std::fs::read_dir(&backup_dir) else {
+        return Vec::new();
+    };
+    let prefix = stem.map(|s| format!("{s}."));
+    let mut list: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
+                return false;
+            };
+            if !name.ends_with(".rws") {
+                return false;
+            }
+            if let Some(ref pfx) = prefix {
+                name.starts_with(pfx)
+            } else {
+                true
+            }
+        })
+        .collect();
+    list.sort();
+    list.reverse();
+    list
+}
+
+/// Parses the original save name from a backup filename like `MyColony.00000000001761480000-000.rws`.
+pub fn parse_backup_stem(backup_name: &str) -> Option<&str> {
+    let rest = backup_name.strip_suffix(".rws")?;
+    let dot_idx = rest.rfind('.')?;
+    let timestamp_part = &rest[dot_idx + 1..];
+    if timestamp_part.len() == 24 && timestamp_part.contains('-') {
+        Some(&rest[..dot_idx])
+    } else {
+        Some(rest)
+    }
+}
+
+/// Restores a backup copy into `saves_dir` under its original save name.
+pub fn restore_save_backup(backup_path: &Path, saves_dir: &Path) -> std::io::Result<PathBuf> {
+    let file_name = backup_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| std::io::Error::other("Invalid backup path"))?;
+    let original_stem = parse_backup_stem(file_name).unwrap_or("RestoredSave");
+    let target = saves_dir.join(format!("{original_stem}.rws"));
+    std::fs::copy(backup_path, &target)?;
+    Ok(target)
+}
+
 /// All saves in the folder, newest first (files without a readable header are skipped).
 pub fn list_saves(dir: &Path) -> Vec<SaveInfo> {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -319,6 +456,46 @@ mod tests {
             saves_dir(cfg).unwrap(),
             PathBuf::from(r"C:\Users\u\AppData\LocalLow\Ludeon Studios\RimWorld by Ludeon Studios\Saves")
         );
+    }
+
+    #[test]
+    fn save_backups_rotation_and_restore() {
+        let dir = temp_dir("save_backups");
+        let save_a = dir.join("ColonyA.rws");
+        let save_b = dir.join("ColonyB.rws");
+
+        std::fs::write(&save_a, "data_a").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(&save_b, "data_b").unwrap();
+
+        // Newest is save_b
+        let b1 = backup_latest_save(&dir, 2).unwrap().unwrap();
+        assert!(b1.exists());
+        assert!(b1.file_name().unwrap().to_str().unwrap().starts_with("ColonyB."));
+
+        // Multiple backups to trigger rotation
+        let _b2 = backup_latest_save(&dir, 2).unwrap().unwrap();
+        let b3 = backup_latest_save(&dir, 2).unwrap().unwrap();
+        let backups_b = list_save_backups(&dir, Some("ColonyB"));
+        assert_eq!(backups_b.len(), 2, "rotation keeps at most 2 backups for ColonyB");
+
+        // Touch save_a to make it newer
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(&save_a, "data_a_updated").unwrap();
+        let ba = backup_latest_save(&dir, 2).unwrap().unwrap();
+        assert!(ba.file_name().unwrap().to_str().unwrap().starts_with("ColonyA."));
+
+        let backups_all = list_save_backups(&dir, None);
+        assert_eq!(backups_all.len(), 3, "2 from ColonyB + 1 from ColonyA");
+
+        // Restore ColonyB from backup
+        std::fs::remove_file(&save_b).unwrap();
+        assert!(!save_b.exists());
+        let restored = restore_save_backup(&b3, &dir).unwrap();
+        assert_eq!(restored, save_b);
+        assert_eq!(std::fs::read_to_string(&restored).unwrap(), "data_b");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Reads the user's real saves (run by hand: `cargo test live_saves -- --ignored --nocapture`).

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use crate::i18n::Language;
+use crate::optimizer::MaxTextureSize;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppSettings {
@@ -26,6 +27,9 @@ pub struct AppSettings {
     pub launch_extra_args: String,
     #[serde(default)]
     pub opt_threads: Option<usize>,
+    /// Maximum texture side for optimizer downscaling (V1).
+    #[serde(default)]
+    pub opt_max_size: Option<MaxTextureSize>,
     /// Look for a new version on GitHub once a day (on unless turned off).
     #[serde(default = "default_true")]
     pub check_updates: bool,
@@ -36,10 +40,20 @@ pub struct AppSettings {
     /// SteamCMD folder picked by hand (None = next to the settings).
     #[serde(default)]
     pub steamcmd_dir: Option<PathBuf>,
+    /// Backup latest save before launching the game (F12).
+    #[serde(default = "default_true")]
+    pub backup_save_before_launch: bool,
+    /// Number of save backups to retain per save stem (F12).
+    #[serde(default = "default_save_backups_to_keep")]
+    pub save_backups_to_keep: usize,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_save_backups_to_keep() -> usize {
+    5
 }
 
 impl Default for AppSettings {
@@ -52,9 +66,12 @@ impl Default for AppSettings {
             launch_flags: Vec::new(),
             launch_extra_args: String::new(),
             opt_threads: None,
+            opt_max_size: None,
             check_updates: true,
             use_steamcmd: None,
             steamcmd_dir: None,
+            backup_save_before_launch: true,
+            save_backups_to_keep: 5,
         }
     }
 }
@@ -93,6 +110,7 @@ mod tests {
             launch_flags: vec!["-ColdBoot".into()],
             launch_extra_args: "-mod=a;b".into(),
             opt_threads: Some(6),
+            opt_max_size: Some(MaxTextureSize::S2048),
             ..Default::default()
         };
         s.save_to(&path).unwrap();
@@ -104,6 +122,8 @@ mod tests {
         let old = AppSettings::load_from(&path).unwrap();
         assert!(old.check_updates);
         assert_eq!(old.use_steamcmd, None);
+        assert!(old.backup_save_before_launch);
+        assert_eq!(old.save_backups_to_keep, 5);
         // 2.1.0 wrote a plain true/false.
         std::fs::write(&path, r#"{"language":"English","use_steamcmd":false}"#).unwrap();
         assert_eq!(AppSettings::load_from(&path).unwrap().use_steamcmd, Some(false));

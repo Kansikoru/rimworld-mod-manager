@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
@@ -94,6 +95,12 @@ pub enum PendingQuestion {
     /// Rollback found DDS files that are not in the manager's log (old optimizer, RimPy
     /// or the mod author). Each has a PNG/JPG next to it.
     LegacyDds(Vec<PathBuf>),
+    /// Active mod textures exceed ~80% of dedicated video memory (V2).
+    VramWarning {
+        estimated_bytes: u64,
+        total_vram_bytes: u64,
+        heavy_mods: Vec<(String, u64)>,
+    },
 }
 
 /// Window for a mod set action that needs a name or a confirmation.
@@ -253,6 +260,7 @@ pub struct App {
 
     // Optimizer State
     pub opt_scope: OptimizeScope,
+    pub opt_max_size: crate::optimizer::MaxTextureSize,
     pub opt_force: bool,
     pub opt_delete_source: bool,
     pub opt_threads: usize,
@@ -274,10 +282,21 @@ pub struct App {
     pub opt_scan_rx: Option<Receiver<TextureSummary>>,
     /// Background "Rollback" result.
     pub opt_rollback_rx: Option<Receiver<RollbackResult>>,
+    /// Background VRAM check report vs GPU capacity (V2).
+    pub vram_report: Option<crate::optimizer::VramReport>,
+    vram_rx: Option<Receiver<crate::optimizer::VramCheckResult>>,
+    vram_cache: HashMap<PathBuf, (u64, u64)>,
 
     // Analyzer State
     pub log_report: Option<LogReport>,
     pub custom_log_path: Option<PathBuf>,
+    /// F9: Snapshot of the last known working run and diff with current configuration.
+    pub last_good: Option<crate::last_good::LastGoodSnapshot>,
+    pub last_good_diff: Option<crate::last_good::LastGoodDiff>,
+    /// F13: Log viewer mode (Report / FullLog) and filters.
+    pub log_view_mode: crate::analyzer::LogViewMode,
+    pub log_filter_text: String,
+    pub log_level_filter: crate::analyzer::LogLevelFilter,
 
     // Settings & Paths State
     pub steam_paths: SteamPaths,
@@ -286,6 +305,10 @@ pub struct App {
     pub launch_flags: std::collections::HashSet<String>,
     /// Free-form extra launch arguments, split on whitespace.
     pub launch_extra_args: String,
+    /// Backup latest save before launching the game (F12).
+    pub backup_save_before_launch: bool,
+    /// Number of save backups to retain per save stem (F12).
+    pub save_backups_to_keep: usize,
     /// Paths picked by hand in Settings (None = auto-detected). Saved between runs.
     pub custom_game_path: Option<PathBuf>,
     pub custom_workshop_path: Option<PathBuf>,
@@ -302,6 +325,14 @@ pub struct App {
     /// Progress of the running Steam client download (`GetItemDownloadInfo`).
     pub steam_progress: Option<crate::steam::SteamDownloadProgress>,
     steam_progress_rx: Option<Receiver<crate::steam::SteamDownloadProgress>>,
+    /// Flag to cancel waiting for Steam client download early (S1).
+    pub steam_stop_flag: Arc<AtomicBool>,
+    /// History of game loading times and changes (F11).
+    pub load_time_history: crate::load_time::LoadTimeHistory,
+    /// Instant when RimWorld was launched from the manager, for loading time tracking.
+    pub game_launch_instant: Option<std::time::Instant>,
+    /// Active mods at the time of the launch.
+    pub game_launch_active_mods: Vec<String>,
 
     /// Deletion waiting for confirmation (modal window).
     pub pending_delete: Option<PendingDelete>,
@@ -588,6 +619,7 @@ impl App {
             updates_after_scan: false,
 
             opt_scope: OptimizeScope::AllInstalled,
+            opt_max_size: s.opt_max_size.unwrap_or_default(),
             opt_force: false,
             opt_delete_source: false,
             opt_threads: default_threads,
@@ -604,14 +636,24 @@ impl App {
             opt_orient_rx: None,
             opt_scan_rx: None,
             opt_rollback_rx: None,
+            vram_report: None,
+            vram_rx: None,
+            vram_cache: HashMap::new(),
 
             log_report: None,
             custom_log_path: None,
+            last_good: crate::last_good::LastGoodSnapshot::load(),
+            last_good_diff: None,
+            log_view_mode: crate::analyzer::LogViewMode::default(),
+            log_filter_text: String::new(),
+            log_level_filter: crate::analyzer::LogLevelFilter::default(),
 
             steam_paths,
             mods_config_path,
             launch_flags,
             launch_extra_args: s.launch_extra_args.clone(),
+            backup_save_before_launch: s.backup_save_before_launch,
+            save_backups_to_keep: s.save_backups_to_keep,
             custom_game_path,
             custom_workshop_path,
             custom_config_path,
@@ -622,6 +664,10 @@ impl App {
             steam_rx: None,
             steam_progress: None,
             steam_progress_rx: None,
+            steam_stop_flag: Arc::new(AtomicBool::new(false)),
+            load_time_history: crate::load_time::LoadTimeHistory::load(),
+            game_launch_instant: None,
+            game_launch_active_mods: Vec::new(),
 
             pending_delete: None,
             saved_active_mods: Vec::new(),
@@ -876,10 +922,32 @@ impl App {
             }
         }
         if let Some(rx) = &self.log_rx {
-            if let Ok(report) = rx.try_recv() {
+            if let Ok(mut report) = rx.try_recv() {
                 self.log_rx = None;
+                if report.load_time_secs.is_none() {
+                    if let Some(launch_time) = self.game_launch_instant.take() {
+                        let elapsed = launch_time.elapsed().as_secs_f32();
+                        if elapsed > 1.0 && elapsed < 1800.0 {
+                            report.load_time_secs = Some(elapsed);
+                        }
+                    }
+                }
+                if let Some(secs) = report.load_time_secs {
+                    let mods = if !self.game_launch_active_mods.is_empty() {
+                        std::mem::take(&mut self.game_launch_active_mods)
+                    } else {
+                        self.active_mods.clone()
+                    };
+                    let is_ru = self.is_russian;
+                    let mut history = std::mem::take(&mut self.load_time_history);
+                    history.record_launch(secs, &mods, |id| self.mod_display_name(id), is_ru);
+                    self.load_time_history = history;
+                }
                 if !std::mem::take(&mut self.log_silent) {
                     self.status_message = self.crash_summary_text(&report);
+                }
+                if report.total_errors == 0 && !report.has_hard_crash {
+                    self.remember_last_good();
                 }
                 self.log_report = Some(report);
             }
@@ -895,6 +963,7 @@ impl App {
                     let answer = if report.has_hard_crash {
                         Some(true)
                     } else if report.total_errors == 0 && report.culprits.is_empty() {
+                        self.remember_last_good();
                         Some(false)
                     } else {
                         None
@@ -1224,9 +1293,12 @@ impl App {
             launch_flags: flags,
             launch_extra_args: self.launch_extra_args.clone(),
             opt_threads: Some(self.opt_threads),
+            opt_max_size: Some(self.opt_max_size),
             check_updates: self.check_updates,
             use_steamcmd: self.use_steamcmd_set.then_some(self.use_steamcmd),
             steamcmd_dir: self.custom_steamcmd_dir.clone(),
+            backup_save_before_launch: self.backup_save_before_launch,
+            save_backups_to_keep: self.save_backups_to_keep,
         }
     }
 
@@ -1392,6 +1464,8 @@ impl App {
 
     pub fn validate_deps(&mut self) {
         self.dependency_report = validate_dependencies(&self.active_mods, &self.all_mods);
+        self.trigger_vram_check();
+        self.refresh_last_good_diff();
     }
 
     pub fn sort_active_mods(&mut self) {
@@ -1555,6 +1629,8 @@ impl App {
 
     fn start_steam_client_download(&mut self, dll: PathBuf, ids: Vec<String>) {
         let t = self.i18n;
+        self.steam_stop_flag.store(false, Ordering::Relaxed);
+        let stop_flag = self.steam_stop_flag.clone();
         let (prog_tx, prog_rx) = channel();
         self.steam_progress = Some(crate::steam::SteamDownloadProgress {
             installed: 0,
@@ -1573,7 +1649,7 @@ impl App {
                     ctx.request_repaint();
                 }
             };
-            match crate::steam::subscribe_workshop_items_with_progress(&dll, &refs, &mut on_prog) {
+            match crate::steam::subscribe_workshop_items_with_progress(&dll, &refs, Some(stop_flag), &mut on_prog) {
                 Ok((_accepted, installed)) if installed > 0 => fmt(
                     t.get(TranslationKey::SteamDownloadFinished),
                     &[&installed.to_string(), &ids.len().to_string()],
@@ -1582,6 +1658,16 @@ impl App {
                 Err(e) => fmt(t.get(TranslationKey::SetsSubscribeError), &[&e]),
             }
         }));
+    }
+
+    /// S1: Stops waiting for Steam client downloads to finish, releasing the Steam API session.
+    pub fn stop_steam_wait(&mut self) {
+        self.steam_stop_flag.store(true, Ordering::Relaxed);
+        self.steam_rx = None;
+        self.steam_progress_rx = None;
+        self.steam_progress = None;
+        self.status_message = self.i18n.get(TranslationKey::SteamStoppedWaiting).to_string();
+        self.rescan_mods_keep_status();
     }
 
     // ----- SteamCMD -----
@@ -2932,6 +3018,55 @@ impl App {
         self.bisect_note = None;
     }
 
+    /// Refreshes the diff comparing current active mods with the last known working snapshot (F9).
+    pub fn refresh_last_good_diff(&mut self) {
+        let Some(snapshot) = &self.last_good else {
+            self.last_good_diff = None;
+            return;
+        };
+        let timestamps = crate::last_good::collect_mod_timestamps(
+            &self.active_mods,
+            &self.all_mods,
+            self.steam_paths.workshop_path.as_deref(),
+            self.custom_steamcmd_dir.as_deref(),
+        );
+        self.last_good_diff = Some(snapshot.diff(&self.active_mods, &timestamps));
+    }
+
+    /// Records the current active mod configuration and file timestamps as the known good run (F9).
+    pub fn remember_last_good(&mut self) {
+        let snap = crate::last_good::LastGoodSnapshot::create(
+            &self.active_mods,
+            &self.all_mods,
+            &self.steam_paths,
+            self.custom_steamcmd_dir.as_deref(),
+        );
+        let _ = snap.save();
+        self.last_good = Some(snap);
+        self.refresh_last_good_diff();
+        self.status_message = self.i18n.get(TranslationKey::LastGoodSavedMsg).to_string();
+    }
+
+    /// Launches a bisect search specifically isolating the mods updated since the last good run (F9).
+    pub fn start_bisect_on_updated(&mut self) {
+        let Some(diff) = &self.last_good_diff else { return };
+        if diff.updated.is_empty() {
+            return;
+        };
+        let updated_set: std::collections::HashSet<String> = diff.updated.iter().map(|id| id.to_lowercase()).collect();
+
+        let mut keep = std::collections::HashSet::new();
+        for id in &self.active_mods {
+            let key = id.to_lowercase();
+            if !updated_set.contains(&key) {
+                keep.insert(key);
+            }
+        }
+        self.bisect_keep = Some(keep);
+        self.start_bisect();
+        self.bisect_open = true;
+    }
+
     /// Mods related to the selected one (highlighted in both lists).
     pub fn related_to_selected(&self) -> std::collections::HashMap<String, crate::relations::Relation> {
         self.selected_mod_id
@@ -3647,6 +3782,7 @@ impl App {
             // The side the installed game needs: flipped on 1.7, as the PNG on 1.6.
             ConvertOptions {
                 flip_vertical: crate::optimizer::engine_wants_flipped(self.steam_paths.engine),
+                max_size: self.opt_max_size.pixels(),
             },
             self.opt_threads,
             tx,
@@ -3763,6 +3899,7 @@ impl App {
             dirs,
             self.opt_force,
             crate::optimizer::engine_wants_flipped(self.steam_paths.engine),
+            self.opt_max_size.pixels(),
             tx,
         );
         self.opt_scan_rx = Some(rx);
@@ -3831,13 +3968,20 @@ impl App {
                 }
                 // O2: video memory estimate. Not on 1.7: the game compresses textures to BC7
                 // itself there, so DDS only speed up loading.
-                if s.pixels > 0 && !crate::optimizer::engine_wants_flipped(self.steam_paths.engine) {
-                    let (plain, dds) = s.vram_estimate();
+                if s.pixels > 0 {
                     let mb = |b: u64| (b as f64 / 1_048_576.0).round().to_string();
-                    self.status_message.push_str(&fmt(
-                        self.i18n.get(TranslationKey::OptVramEstimate),
-                        &[&mb(plain), &mb(dds)],
-                    ));
+                    if !crate::optimizer::engine_wants_flipped(self.steam_paths.engine) {
+                        let (plain, dds) = s.vram_estimate();
+                        self.status_message.push_str(&fmt(
+                            self.i18n.get(TranslationKey::OptVramEstimate),
+                            &[&mb(plain), &mb(dds)],
+                        ));
+                    }
+                    let saved = s.vram_saved_by_limit();
+                    if saved > 0 {
+                        self.status_message
+                            .push_str(&fmt(self.i18n.get(TranslationKey::OptVramSavedByLimit), &[&mb(saved)]));
+                    }
                 }
                 self.opt_scan_rx = None;
             }
@@ -3854,11 +3998,13 @@ impl App {
                 self.opt_rollback_rx = None;
                 // Count again what is left on disk (normally nothing).
                 self.rescan_mods_keep_status();
+                self.trigger_vram_check();
                 if !res.unlogged.is_empty() {
                     self.pending_question = Some(PendingQuestion::LegacyDds(res.unlogged));
                 }
             }
         }
+        self.poll_vram_check();
     }
 
     /// Deletes the DDS files the user agreed to remove after a rollback (background).
@@ -3896,6 +4042,29 @@ impl App {
         }
     }
 
+    /// Exports the current analysis report as text or standalone HTML (F13).
+    pub fn save_log_report(&mut self) {
+        let Some(report) = &self.log_report else { return };
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Text Report (*.txt)", &["txt"])
+            .add_filter("HTML Report (*.html)", &["html"])
+            .set_file_name("rimworld_mod_report.txt")
+            .save_file()
+        {
+            let is_html = path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("html"));
+            let content = if is_html {
+                crate::analyzer::generate_html_report(report, self.is_russian)
+            } else {
+                crate::analyzer::generate_text_report(report, self.is_russian)
+            };
+            if let Err(e) = std::fs::write(&path, content) {
+                self.status_message = format!("Ошибка: {}", e);
+            } else {
+                self.status_message = tr!("Отчёт сохранён: {}", "Report saved: {}", path.display());
+            }
+        }
+    }
+
     /// F10: mods that produced errors in the last analyzed Player.log (lowercase package_id -> culprit).
     pub fn log_culprit_map(&self) -> std::collections::HashMap<String, crate::analyzer::CrashCulprit> {
         let mut out = std::collections::HashMap::new();
@@ -3916,6 +4085,16 @@ impl App {
     }
 
     fn crash_summary_text(&self, report: &LogReport) -> String {
+        if let Some(issue) = report.system_issue {
+            return match issue {
+                crate::analyzer::SystemCrashIssue::GpuReset => {
+                    self.i18n.get(TranslationKey::CrashGpuResetTitle).to_string()
+                }
+                crate::analyzer::SystemCrashIssue::OutOfMemory => {
+                    self.i18n.get(TranslationKey::CrashOomTitle).to_string()
+                }
+            };
+        }
         if report.has_hard_crash {
             fmt(
                 self.i18n.get(TranslationKey::CrashSummaryHardCrash),
@@ -3936,16 +4115,83 @@ impl App {
         }
     }
 
-    /// "Play": with an unsaved load order, asks first (save and play / play as is / cancel).
+    /// "Play": with an unsaved load order, asks first; then checks VRAM before launch (V2).
     pub fn launch_game(&mut self) {
         if self.has_unsaved_changes() {
             self.pending_question = Some(PendingQuestion::LaunchUnsaved);
         } else {
-            self.launch_game_now();
+            self.check_vram_and_launch();
         }
     }
 
+    pub fn check_vram_and_launch(&mut self) {
+        if let Some(rx) = &self.vram_rx {
+            if let Ok((report, updated_cache)) = rx.recv_timeout(std::time::Duration::from_millis(150)) {
+                self.vram_report = Some(report);
+                for (dir, mtime, bytes) in updated_cache {
+                    self.vram_cache.insert(dir, (mtime, bytes));
+                }
+                self.vram_rx = None;
+            }
+        }
+        if let Some(report) = &self.vram_report {
+            if report.is_critical() {
+                self.pending_question = Some(PendingQuestion::VramWarning {
+                    estimated_bytes: report.estimated_used_bytes,
+                    total_vram_bytes: report.total_vram_bytes,
+                    heavy_mods: report.heavy_mods.clone(),
+                });
+                return;
+            }
+        }
+        self.launch_game_now();
+    }
+
+    /// Triggers a background evaluation of active mod texture VRAM vs GPU capacity (V2).
+    pub fn trigger_vram_check(&mut self) {
+        if self.vram_rx.is_some() {
+            return;
+        }
+        let active_mods: Vec<(String, PathBuf)> = self
+            .active_mods
+            .iter()
+            .filter_map(|id| self.find_mod(id))
+            .filter(|m| !self.is_official_mod(m))
+            .map(|m| (m.name.clone(), m.dir_path.clone()))
+            .collect();
+
+        let (tx, rx) = channel();
+        crate::optimizer::check_vram_async(active_mods, self.steam_paths.engine, self.vram_cache.clone(), tx);
+        self.vram_rx = Some(rx);
+    }
+
+    fn poll_vram_check(&mut self) {
+        if let Some(rx) = &self.vram_rx {
+            if let Ok((report, updated_cache)) = rx.try_recv() {
+                self.vram_report = Some(report);
+                for (dir, mtime, bytes) in updated_cache {
+                    self.vram_cache.insert(dir, (mtime, bytes));
+                }
+                self.vram_rx = None;
+            }
+        }
+    }
+
+    /// Backs up the latest save before launching RimWorld, if enabled in settings (F12).
+    pub fn backup_latest_save_if_enabled(&mut self) {
+        if !self.backup_save_before_launch {
+            return;
+        }
+        let Some(saves_dir) = self.saves_folder() else {
+            return;
+        };
+        let _ = crate::saves::backup_latest_save(&saves_dir, self.save_backups_to_keep);
+    }
+
     fn launch_game_now(&mut self) {
+        self.backup_latest_save_if_enabled();
+        self.game_launch_instant = Some(std::time::Instant::now());
+        self.game_launch_active_mods = self.active_mods.clone();
         let args = self.launch_args();
         match launch_rimworld(&self.steam_paths, &args) {
             Ok(_) => {
@@ -4009,11 +4255,12 @@ impl eframe::App for App {
 
         self.poll_background_tasks();
         self.poll_optimizer_tasks();
-        if self.opt_scan_rx.is_some() || self.opt_rollback_rx.is_some() {
+        if self.opt_scan_rx.is_some() || self.opt_rollback_rx.is_some() || self.vram_rx.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
 
         // Receive background optimizer messages
+        let mut opt_finished = false;
         if let Some(ref rx) = self.opt_rx {
             while let Ok(msg) = rx.try_recv() {
                 match msg {
@@ -4056,6 +4303,7 @@ impl eframe::App for App {
                             ));
                         }
                         self.status_message = msg;
+                        opt_finished = true;
                     }
                     OptimizationMsg::Cancelled => {
                         self.opt_is_running = false;
@@ -4063,6 +4311,9 @@ impl eframe::App for App {
                     }
                 }
             }
+        }
+        if opt_finished {
+            self.trigger_vram_check();
         }
 
         // Top Navigation Bar
@@ -4247,6 +4498,18 @@ impl eframe::App for App {
                             .color(THEME.text_secondary)
                             .size(12.0),
                     );
+                    if self.steam_progress.is_some() || self.steam_rx.is_some() {
+                        ui.add_space(8.0);
+                        if crate::ui::components::small_button(
+                            ui,
+                            self.i18n.get(TranslationKey::SteamBtnStopWaiting),
+                            crate::ui::components::ButtonStyle::Secondary,
+                        )
+                        .clicked()
+                        {
+                            self.stop_steam_wait();
+                        }
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let game = match self.steam_paths.game_version.as_deref() {
                             Some(v) => format!("RimWorld {v}"),
@@ -4416,6 +4679,24 @@ impl App {
                 tr!("Оставить", "Keep them"),
                 tr!("Удалить их тоже", "Delete them too"),
             ),
+            PendingQuestion::VramWarning {
+                estimated_bytes,
+                total_vram_bytes,
+                ..
+            } => {
+                let est_gb = (*estimated_bytes as f64) / 1_073_741_824.0;
+                let tot_gb = (*total_vram_bytes as f64) / 1_073_741_824.0;
+                let pct = ((*estimated_bytes as f64 / *total_vram_bytes as f64) * 100.0).round() as u64;
+                (
+                    self.i18n.get(TranslationKey::VramWarningTitle),
+                    fmt(
+                        self.i18n.get(TranslationKey::VramWarningBody),
+                        &[&format!("{:.1}", est_gb), &format!("{:.1}", tot_gb), &pct.to_string()],
+                    ),
+                    self.i18n.get(TranslationKey::VramBtnOptimize),
+                    self.i18n.get(TranslationKey::VramBtnLaunchAnyway),
+                )
+            }
         };
 
         let (width, max_height) = crate::ui::components::dialog_size(ctx, 560.0);
@@ -4443,6 +4724,33 @@ impl App {
                             }
                         });
                 }
+                if let PendingQuestion::VramWarning { heavy_mods, .. } = &question {
+                    if !heavy_mods.is_empty() {
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new(self.i18n.get(TranslationKey::VramHeavyModsTitle))
+                                .strong()
+                                .color(THEME.accent_amber),
+                        );
+                        ui.add_space(4.0);
+                        egui::ScrollArea::vertical()
+                            .id_salt("vram_heavy_mods_list")
+                            .max_height(140.0)
+                            .show(ui, |ui| {
+                                for (name, bytes) in heavy_mods {
+                                    let mb = (*bytes as f64 / 1_048_576.0).round() as u64;
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new(format!("• {}", name)).color(THEME.text_primary));
+                                        ui.label(
+                                            egui::RichText::new(format!("(~{} МБ)", mb))
+                                                .color(THEME.text_muted)
+                                                .size(11.0),
+                                        );
+                                    });
+                                }
+                            });
+                    }
+                }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if crate::ui::components::primary_button(ui, primary).clicked() {
@@ -4467,10 +4775,10 @@ impl App {
         match (question, answer) {
             (PendingQuestion::LaunchUnsaved, Answer::Primary) => {
                 if self.save_config() {
-                    self.launch_game_now();
+                    self.check_vram_and_launch();
                 }
             }
-            (PendingQuestion::LaunchUnsaved, Answer::Secondary) => self.launch_game_now(),
+            (PendingQuestion::LaunchUnsaved, Answer::Secondary) => self.check_vram_and_launch(),
             (PendingQuestion::CloseUnsaved, Answer::Primary) => {
                 if self.save_config() {
                     self.allow_close = true;
@@ -4482,6 +4790,12 @@ impl App {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
             (PendingQuestion::LegacyDds(paths), Answer::Secondary) => self.delete_unlogged_dds(paths),
+            (PendingQuestion::VramWarning { .. }, Answer::Primary) => {
+                self.current_tab = AppTab::Optimizer;
+            }
+            (PendingQuestion::VramWarning { .. }, Answer::Secondary) => {
+                self.launch_game_now();
+            }
             _ => {}
         }
     }

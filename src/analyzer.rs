@@ -12,6 +12,9 @@ pub enum ErrorSeverity {
     MissingDependency,
     /// ERROR entry whose stack trace points into a mod (RimWorld 1.7 log format).
     ModError,
+    BrokenTexture,
+    CrossReferenceError,
+    InstantiationError,
     DefException,
     PrepatcherHarmonyError,
     HardCrash,
@@ -39,6 +42,27 @@ impl ErrorSeverity {
                     "Ошибка в Defs"
                 } else {
                     "Defs error"
+                }
+            }
+            ErrorSeverity::InstantiationError => {
+                if is_ru {
+                    "Ошибка создания класса"
+                } else {
+                    "Instantiation error"
+                }
+            }
+            ErrorSeverity::CrossReferenceError => {
+                if is_ru {
+                    "Ошибка ссылок в Defs"
+                } else {
+                    "Cross-reference error"
+                }
+            }
+            ErrorSeverity::BrokenTexture => {
+                if is_ru {
+                    "Битая текстура"
+                } else {
+                    "Broken texture"
                 }
             }
             ErrorSeverity::MissingDependency => {
@@ -74,6 +98,9 @@ impl ErrorSeverity {
             ErrorSeverity::HardCrash => ([180, 45, 45], [255, 255, 255]),
             ErrorSeverity::PrepatcherHarmonyError => ([195, 95, 25], [255, 255, 255]),
             ErrorSeverity::DefException => ([180, 115, 25], [255, 255, 255]),
+            ErrorSeverity::InstantiationError => ([185, 105, 35], [255, 255, 255]),
+            ErrorSeverity::CrossReferenceError => ([175, 120, 25], [255, 255, 255]),
+            ErrorSeverity::BrokenTexture => ([165, 80, 50], [255, 255, 255]),
             ErrorSeverity::MissingDependency => ([155, 125, 20], [255, 255, 255]),
             ErrorSeverity::ModError => ([170, 100, 30], [255, 255, 255]),
             ErrorSeverity::Warning => ([80, 85, 95], [230, 230, 235]),
@@ -93,16 +120,45 @@ pub struct CrashCulprit {
     pub occurrences: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemCrashIssue {
+    /// D3D error 887a0005 / DXGI_ERROR_DEVICE_REMOVED (GPU reset / VRAM exhaustion).
+    GpuReset,
+    /// Out of memory (RAM exhaustion / could not allocate memory).
+    OutOfMemory,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LogViewMode {
+    #[default]
+    Report,
+    FullLog,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LogLevelFilter {
+    #[default]
+    All,
+    Errors,
+    Warnings,
+    Info,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LogReport {
     pub log_path: PathBuf,
     pub log_file_name: String,
     pub file_size_bytes: u64,
     pub has_hard_crash: bool,
+    pub system_issue: Option<SystemCrashIssue>,
+    /// Total loading time in seconds, if detected from log timestamps or mod output (F11).
+    pub load_time_secs: Option<f32>,
     pub total_lines: usize,
     pub total_errors: usize,
     pub culprits: Vec<CrashCulprit>,
     pub summary_text: String,
+    /// Raw contents of the log file for viewing and report export (F13).
+    pub raw_content: String,
     /// Log written by RimWorld 1.7+ (Waylith engine) instead of Unity/Mono.
     pub is_waylith: bool,
     /// The log's last lines before the crash (empty without a crash): for "Copy for AI",
@@ -242,6 +298,22 @@ impl<'a> ModMatcher<'a> {
 pub fn summary_for(report: &LogReport, is_ru: bool) -> String {
     let n = report.culprits.len();
     let e = report.total_errors;
+    if let Some(issue) = report.system_issue {
+        return match (is_ru, issue) {
+            (true, SystemCrashIssue::GpuReset) => {
+                format!("Сбой видеокарты (D3D 887a0005 / DEVICE_REMOVED). Найдено виновников среди модов: {n}.")
+            }
+            (false, SystemCrashIssue::GpuReset) => {
+                format!("GPU reset (D3D 887a0005 / DEVICE_REMOVED). Found mod culprits: {n}.")
+            }
+            (true, SystemCrashIssue::OutOfMemory) => {
+                format!("Нехватка оперативной памяти (Out of Memory). Найдено виновников среди модов: {n}.")
+            }
+            (false, SystemCrashIssue::OutOfMemory) => {
+                format!("Out of memory (System RAM exhausted). Found mod culprits: {n}.")
+            }
+        };
+    }
     match (is_ru, report.has_hard_crash, n > 0, e > 0) {
         (true, true, _, _) => format!("В логе зафиксирован фатальный краш процесса (CTD). Найдено виновников: {n}."),
         (false, true, _, _) => format!("Fatal process crash (CTD) detected in log. Found culprits: {n}."),
@@ -480,8 +552,26 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
         }
     };
 
+    report.raw_content = content.clone();
+    report.load_time_secs = crate::load_time::parse_load_time_from_log(&content);
     let lines: Vec<&str> = content.lines().collect();
     report.total_lines = lines.len();
+
+    let lower_content = content.to_lowercase();
+    let has_gpu_reset = lower_content.contains("887a0005")
+        || lower_content.contains("device_removed")
+        || lower_content.contains("device_reset");
+    let has_oom = lower_content.contains("could not allocate memory")
+        || lower_content.contains("out of memory")
+        || lower_content.contains("outofmemoryexception");
+
+    if has_gpu_reset {
+        report.system_issue = Some(SystemCrashIssue::GpuReset);
+        report.has_hard_crash = true;
+    } else if has_oom {
+        report.system_issue = Some(SystemCrashIssue::OutOfMemory);
+        report.has_hard_crash = true;
+    }
 
     let matcher = ModMatcher::build(mods);
     let mut culprits_map: HashMap<String, CrashCulprit> = HashMap::new();
@@ -498,6 +588,14 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
     let re_prepatcher = Regex::new(r"Prepatcher Error:.*?static\s+.*?\s+([A-Za-z0-9_\.]+)::").ok();
     let re_dependency = Regex::new(r"Mod\s+(.*?)\s+dependency\s+\((.*?)\)").ok();
     let re_config_error = Regex::new(r"Exception in ConfigErrors\(\) of ([A-Za-z0-9_]+):").ok();
+    let re_instantiate =
+        Regex::new(r"(?:Error while instantiating class|Exception creating instance of)\s+([A-Za-z0-9_\.]+)").ok();
+    let re_cross_ref = Regex::new(r"Could not resolve cross-reference to\s+([^\s:]+)(?:\s+\(type\s+([^)]+)\))?").ok();
+    let re_texture_err = Regex::new(r"(?:Could not load UnityEngine\.Texture2D at|Failed to load texture at|Could not find a texture named)\s+([^\s]+)").ok();
+    let re_harmony_conflict = Regex::new(
+        r"(?:Method not found:\s+'HarmonyLib|MissingMethodException:.*?HarmonyLib|Could not load type 'HarmonyLib)",
+    )
+    .ok();
 
     let mut crash_marker_idx = None;
     // Unity/Mono crash markers only exist in 1.6 and older logs.
@@ -751,6 +849,153 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
             }
         }
 
+        if line.contains("Error while instantiating") || line.contains("Exception creating instance of") {
+            if count_keyword_errors {
+                report.total_errors += 1;
+            }
+            if let Some(ref re) = re_instantiate {
+                if let Some(caps) = re.captures(line) {
+                    let class_name = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+                    if let Some(matched_mod) = matcher.find_mod(class_name) {
+                        let key = matched_mod.package_id.to_lowercase();
+                        let entry = culprits_map.entry(key).or_insert_with(|| CrashCulprit {
+                            mod_name: matched_mod.name.clone(),
+                            package_id: Some(matched_mod.package_id.clone()),
+                            mod_dir: Some(matched_mod.dir_path.clone()),
+                            severity: ErrorSeverity::InstantiationError,
+                            headline: tr!(
+                                "Ошибка создания экземпляра класса `{}`",
+                                "Error while instantiating class `{}`",
+                                class_name
+                            ),
+                            explanation: tr!(
+                                "Движок не смог создать объект класса. Проверьте совместимость мода с версией игры.",
+                                "The engine could not instantiate the class. Check mod compatibility with your game version."
+                            )
+                            .to_string(),
+                            stack_trace_excerpt: line.to_string(),
+                            occurrences: 0,
+                        });
+                        entry.occurrences += 1;
+                        if entry.severity < ErrorSeverity::InstantiationError {
+                            entry.severity = ErrorSeverity::InstantiationError;
+                        }
+                    }
+                }
+            }
+        }
+
+        if line.contains("Could not resolve cross-reference") {
+            if count_keyword_errors {
+                report.total_errors += 1;
+            }
+            if let Some(ref re) = re_cross_ref {
+                if let Some(caps) = re.captures(line) {
+                    let target = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+                    let matched_mod = matcher.find_mod(target);
+                    let target_name = matched_mod
+                        .as_ref()
+                        .map(|m| m.name.clone())
+                        .unwrap_or_else(|| target.to_string());
+                    let key = matched_mod
+                        .as_ref()
+                        .map(|m| m.package_id.to_lowercase())
+                        .unwrap_or_else(|| target.to_lowercase());
+
+                    let entry = culprits_map.entry(key).or_insert_with(|| CrashCulprit {
+                        mod_name: target_name,
+                        package_id: matched_mod.as_ref().map(|m| m.package_id.clone()),
+                        mod_dir: matched_mod.as_ref().map(|m| m.dir_path.clone()),
+                        severity: ErrorSeverity::CrossReferenceError,
+                        headline: tr!(
+                            "Не разрешена кросс-ссылка на `{}`",
+                            "Unresolved cross-reference to `{}`",
+                            target
+                        ),
+                        explanation: tr!(
+                            "XML Def ссылается на недостающий объект или класс (возможно, выключен нужный мод).",
+                            "An XML Def references a missing object or class (a required mod might be disabled)."
+                        )
+                        .to_string(),
+                        stack_trace_excerpt: line.to_string(),
+                        occurrences: 0,
+                    });
+                    entry.occurrences += 1;
+                    if entry.severity < ErrorSeverity::CrossReferenceError {
+                        entry.severity = ErrorSeverity::CrossReferenceError;
+                    }
+                }
+            }
+        }
+
+        if line.contains("Could not load UnityEngine.Texture2D")
+            || line.contains("Failed to load texture at")
+            || line.contains("Could not find a texture named")
+        {
+            if count_keyword_errors {
+                report.total_errors += 1;
+            }
+            if let Some(ref re) = re_texture_err {
+                if let Some(caps) = re.captures(line) {
+                    let path = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+                    let matched_mod = matcher.find_mod(path);
+                    let mod_name = matched_mod
+                        .as_ref()
+                        .map(|m| m.name.clone())
+                        .unwrap_or_else(|| "Textures".to_string());
+                    let key = matched_mod
+                        .as_ref()
+                        .map(|m| m.package_id.to_lowercase())
+                        .unwrap_or_else(|| "texture_error".to_string());
+
+                    let entry = culprits_map.entry(key).or_insert_with(|| CrashCulprit {
+                        mod_name,
+                        package_id: matched_mod.as_ref().map(|m| m.package_id.clone()),
+                        mod_dir: matched_mod.as_ref().map(|m| m.dir_path.clone()),
+                        severity: ErrorSeverity::BrokenTexture,
+                        headline: tr!(
+                            "Не найдена или повреждена текстура `{}`",
+                            "Missing or broken texture `{}`",
+                            path
+                        ),
+                        explanation: tr!(
+                            "Игра не смогла загрузить текстуру: файл повреждён, отсутствует или сохранён в неподдерживаемом формате.",
+                            "The game failed to load the texture: file is missing, corrupt, or in an unsupported format."
+                        )
+                        .to_string(),
+                        stack_trace_excerpt: line.to_string(),
+                        occurrences: 0,
+                    });
+                    entry.occurrences += 1;
+                    if entry.severity < ErrorSeverity::BrokenTexture {
+                        entry.severity = ErrorSeverity::BrokenTexture;
+                    }
+                }
+            }
+        }
+
+        if re_harmony_conflict.as_ref().is_some_and(|re| re.is_match(line)) {
+            if count_keyword_errors {
+                report.total_errors += 1;
+            }
+            let key = "brrainz.harmony".to_string();
+            let entry = culprits_map.entry(key).or_insert_with(|| CrashCulprit {
+                mod_name: "Harmony (конфликт версий / version conflict)".to_string(),
+                package_id: Some("brrainz.harmony".to_string()),
+                mod_dir: None,
+                severity: ErrorSeverity::PrepatcherHarmonyError,
+                headline: tr!("Конфликт версий Harmony", "Harmony version conflict").to_string(),
+                explanation: tr!(
+                    "Один из модов загружает устаревшую версию 0Harmony.dll, что приводит к сбоям вызова методов Harmony.",
+                    "A mod is loading an outdated 0Harmony.dll, causing method call failures in Harmony."
+                )
+                .to_string(),
+                stack_trace_excerpt: line.to_string(),
+                occurrences: 0,
+            });
+            entry.occurrences += 1;
+        }
+
         if count_keyword_errors && (line.contains("Exception:") || line.contains("Error in ")) {
             report.total_errors += 1;
         }
@@ -916,6 +1161,303 @@ pub fn generate_ai_diagnostic_prompt(report: &LogReport, is_ru: bool) -> String 
     }
 
     out
+}
+
+/// Generates a comprehensive plain-text diagnostic report suitable for sharing or saving (F13).
+pub fn generate_text_report(report: &LogReport, is_ru: bool) -> String {
+    let mut out = String::new();
+    let sep = "=".repeat(78);
+    let subsep = "-".repeat(78);
+
+    out.push_str(&sep);
+    out.push('\n');
+    out.push_str(if is_ru {
+        "RimWorld Mod Manager — Отчёт анализа лога\n"
+    } else {
+        "RimWorld Mod Manager — Log Analysis Report\n"
+    });
+    out.push_str(&format!("Файл / File: {}\n", report.log_path.display()));
+    out.push_str(&format!(
+        "Строк / Lines: {} | Размер / Size: {} байт | Ошибок / Errors: {}\n",
+        report.total_lines, report.file_size_bytes, report.total_errors
+    ));
+    out.push_str(&format!(
+        "Движок / Engine: {}\n",
+        if report.is_waylith {
+            "RimWorld 1.7+ (Waylith)"
+        } else {
+            "RimWorld 1.6 (Unity)"
+        }
+    ));
+    if let Some(load_time) = report.load_time_secs {
+        let dur = crate::load_time::format_duration(load_time, is_ru);
+        out.push_str(&format!(
+            "{}: {}\n",
+            if is_ru {
+                "Время загрузки"
+            } else {
+                "Loading time"
+            },
+            dur
+        ));
+    }
+    out.push_str(&sep);
+    out.push_str("\n\n");
+
+    out.push_str(if is_ru {
+        "[ИТОГ АНАЛИЗА]\n"
+    } else {
+        "[SUMMARY]\n"
+    });
+    out.push_str(&summary_for(report, is_ru));
+    out.push_str("\n\n");
+
+    if let Some(issue) = report.system_issue {
+        out.push_str(&subsep);
+        out.push('\n');
+        match issue {
+            SystemCrashIssue::GpuReset => {
+                out.push_str(if is_ru {
+                    "СБОЙ ВИДЕОКАРТЫ (D3D error 887a0005 / DXGI_ERROR_DEVICE_REMOVED)\n\
+                     Видеодрайвер был сброшен системой (TDR) при создании/отрисовке текстур.\n\
+                     Рекомендации:\n\
+                     • Уменьшите размер текстур во вкладке «Оптимизатор» (кнопка «Макс. размер» 2048 или 1024).\n\
+                     • Отключите в настройках графики модов опцию «High quality textures».\n\
+                     • Обновите видеодрайвер до актуальной стабильной версии.\n\
+                     • Проверьте журнал событий Windows (источник Display, TDR сброс).\n\n"
+                } else {
+                    "GRAPHICS CARD RESET (D3D error 887a0005 / DXGI_ERROR_DEVICE_REMOVED)\n\
+                     The graphics driver was reset by the OS (TDR) while handling textures.\n\
+                     Recommendations:\n\
+                     • Downscale textures in the Optimizer tab (Max size 2048 or 1024).\n\
+                     • Disable 'High quality textures' in mod graphics options.\n\
+                     • Update your GPU driver to the latest stable release.\n\
+                     • Check Windows Event Viewer (Display source, TDR reset).\n\n"
+                });
+            }
+            SystemCrashIssue::OutOfMemory => {
+                out.push_str(if is_ru {
+                    "НЕХВАТКА ОПЕРАТИВНОЙ ПАМЯТИ (Out of Memory / RAM exhausted)\n\
+                     Игре не хватило свободной системной памяти (RAM) для аллокации объектов.\n\
+                     Рекомендации:\n\
+                     • Закройте другие программы перед запуском игры.\n\
+                     • Увеличьте размер файла подкачки (pagefile.sys) в настройках Windows.\n\
+                     • Уменьшите размер текстур или сократите количество модов.\n\n"
+                } else {
+                    "OUT OF MEMORY (System RAM exhausted)\n\
+                     The game ran out of available memory to allocate objects or load mods.\n\
+                     Recommendations:\n\
+                     • Close background programs before launching RimWorld.\n\
+                     • Increase Windows paging file (pagefile.sys) size.\n\
+                     • Downscale mod textures or reduce active mod count.\n\n"
+                });
+            }
+        }
+    }
+
+    if !report.culprits.is_empty() {
+        out.push_str(&subsep);
+        out.push('\n');
+        out.push_str(if is_ru {
+            "ПОДОЗРЕВАЕМЫЕ МОДЫ:\n\n"
+        } else {
+            "CULPRIT MODS:\n\n"
+        });
+        for (i, c) in report.culprits.iter().enumerate() {
+            out.push_str(&format!(
+                "{}. {} [{}] (вхождений: {})\n",
+                i + 1,
+                c.mod_name,
+                c.package_id.as_deref().unwrap_or("—"),
+                c.occurrences
+            ));
+            out.push_str(&format!("   Статус: {}\n", c.severity.badge_text(is_ru)));
+            out.push_str(&format!("   Причина: {}\n", c.headline));
+            out.push_str(&format!("   Пояснение: {}\n", c.explanation));
+            if !c.stack_trace_excerpt.is_empty() {
+                out.push_str("   Фрагмент стека:\n");
+                for l in c.stack_trace_excerpt.lines().take(15) {
+                    out.push_str(&format!("     {}\n", l));
+                }
+            }
+            out.push('\n');
+        }
+    }
+
+    if !report.recent_errors.is_empty() {
+        out.push_str(&subsep);
+        out.push('\n');
+        out.push_str(if is_ru {
+            "ПОСЛЕДНИЕ ОШИБКИ ИЗ ЛОГА:\n\n"
+        } else {
+            "RECENT LOG ERRORS:\n\n"
+        });
+        for (idx, err) in report.recent_errors.iter().enumerate() {
+            out.push_str(&format!("--- [#{}] ---\n{}\n\n", idx + 1, err));
+        }
+    }
+
+    out
+}
+
+/// Generates a standalone, dark-themed HTML diagnostic report (F13).
+pub fn generate_html_report(report: &LogReport, is_ru: bool) -> String {
+    let title = if is_ru {
+        "RimWorld Mod Manager — Отчёт анализа лога"
+    } else {
+        "RimWorld Mod Manager — Log Analysis Report"
+    };
+
+    let summary = summary_for(report, is_ru);
+    let mut culprits_html = String::new();
+    for (i, c) in report.culprits.iter().enumerate() {
+        let (bg, fg) = c.severity.badge_colors();
+        let stack = if c.stack_trace_excerpt.is_empty() {
+            String::new()
+        } else {
+            format!("<pre class=\"stack\">{}</pre>", html_escape(&c.stack_trace_excerpt))
+        };
+        culprits_html.push_str(&format!(
+            "<div class=\"card culprit\">\
+                <div class=\"culprit-header\">\
+                    <span class=\"num\">#{}.</span> \
+                    <span class=\"mod-name\">{}</span> \
+                    <span class=\"pkg-id\">({})</span> \
+                    <span class=\"badge\" style=\"background:rgb({},{},{});color:rgb({},{},{});\">{}</span>\
+                </div>\
+                <div class=\"headline\">{}</div>\
+                <div class=\"explanation\">{}</div>\
+                {}\
+            </div>",
+            i + 1,
+            html_escape(&c.mod_name),
+            html_escape(c.package_id.as_deref().unwrap_or("unknown")),
+            bg[0],
+            bg[1],
+            bg[2],
+            fg[0],
+            fg[1],
+            fg[2],
+            c.severity.badge_text(is_ru),
+            html_escape(&c.headline),
+            html_escape(&c.explanation),
+            stack
+        ));
+    }
+
+    let mut system_html = String::new();
+    if let Some(issue) = report.system_issue {
+        let (issue_title, issue_desc) = match (issue, is_ru) {
+            (SystemCrashIssue::GpuReset, true) => (
+                "Сбой видеокарты: нехватка памяти или сбой драйвера (887a0005)",
+                "Видеодрайвер был сброшен системой (TDR) при создании или загрузке текстур. \
+                 Рекомендуется уменьшить текстуры во вкладке «Оптимизатор» (2048 или 1024), \
+                 отключить High quality textures и обновить драйвер видеокарты.",
+            ),
+            (SystemCrashIssue::GpuReset, false) => (
+                "Graphics card reset: out of video memory or driver crash (887a0005)",
+                "The graphics driver was reset by the OS (TDR) while loading textures. \
+                 Downscaling textures via the Optimizer (2048 or 1024), disabling High quality textures, \
+                 and updating the GPU driver is recommended.",
+            ),
+            (SystemCrashIssue::OutOfMemory, true) => (
+                "Нехватка оперативной памяти (Out of Memory)",
+                "Игре не хватило свободной системной памяти (RAM). Закройте фоновые приложения, \
+                 увеличьте файл подкачки Windows и уменьшите размер текстур или список модов.",
+            ),
+            (SystemCrashIssue::OutOfMemory, false) => (
+                "Out of memory (System RAM exhausted)",
+                "The game ran out of available system memory (RAM). Close background programs, \
+                 increase Windows paging file size, or downscale mod textures.",
+            ),
+        };
+        system_html = format!(
+            "<div class=\"card system-issue\">\
+                <h3>⚠️ {}</h3>\
+                <p>{}</p>\
+            </div>",
+            issue_title, issue_desc
+        );
+    }
+
+    let mut errors_html = String::new();
+    for err in &report.recent_errors {
+        errors_html.push_str(&format!("<pre class=\"log-block\">{}</pre>", html_escape(err)));
+    }
+
+    let load_time_meta = if let Some(secs) = report.load_time_secs {
+        format!(
+            " | {}: {}",
+            if is_ru {
+                "Время загрузки"
+            } else {
+                "Loading time"
+            },
+            crate::load_time::format_duration(secs, is_ru)
+        )
+    } else {
+        String::new()
+    };
+
+    format!(
+        "<!DOCTYPE html>\n\
+        <html lang=\"{}\">\n\
+        <head>\n\
+            <meta charset=\"UTF-8\">\n\
+            <title>{}</title>\n\
+            <style>\n\
+                body {{ background: #0F1117; color: #E2E8F0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 24px; line-height: 1.5; }}\n\
+                .container {{ max-width: 900px; margin: 0 auto; }}\n\
+                h1 {{ font-size: 22px; color: #FFFFFF; margin-bottom: 6px; }}\n\
+                .meta {{ font-size: 13px; color: #94A3B8; margin-bottom: 20px; }}\n\
+                .card {{ background: #1A1D27; border: 1px solid #282C3D; border-radius: 8px; padding: 16px; margin-bottom: 14px; }}\n\
+                .summary {{ font-size: 15px; font-weight: bold; color: #6EE7B7; }}\n\
+                .system-issue {{ border-color: #F47F7F; background: rgba(244, 127, 127, 0.08); }}\n\
+                .system-issue h3 {{ margin: 0 0 6px 0; color: #F47F7F; font-size: 16px; }}\n\
+                .culprit-header {{ display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }}\n\
+                .mod-name {{ font-weight: bold; color: #FFFFFF; font-size: 16px; }}\n\
+                .pkg-id {{ color: #94A3B8; font-size: 12px; }}\n\
+                .badge {{ border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: 600; }}\n\
+                .headline {{ font-weight: 600; color: #CBD5E1; margin-bottom: 4px; }}\n\
+                .explanation {{ font-size: 13px; color: #94A3B8; margin-bottom: 8px; }}\n\
+                pre {{ background: #0A0C10; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 12px; font-family: Consolas, monospace; color: #FCA5A5; border: 1px solid #222634; }}\n\
+                pre.log-block {{ color: #CBD5E1; }}\n\
+            </style>\n\
+        </head>\n\
+        <body>\n\
+            <div class=\"container\">\n\
+                <h1>{}</h1>\n\
+                <div class=\"meta\">{}: {} | {} | {}: {}{}</div>\n\
+                <div class=\"card\">\n\
+                    <div class=\"summary\">{}</div>\n\
+                </div>\n\
+                {}\
+                {}\
+                {}\
+            </div>\n\
+        </body>\n\
+        </html>",
+        if is_ru { "ru" } else { "en" },
+        title,
+        title,
+        if is_ru { "Файл" } else { "File" },
+        html_escape(&report.log_file_name),
+        if report.is_waylith { "RimWorld 1.7+ (Waylith)" } else { "RimWorld 1.6 (Unity)" },
+        if is_ru { "Строк" } else { "Lines" },
+        report.total_lines,
+        load_time_meta,
+        summary,
+        system_html,
+        if culprits_html.is_empty() { String::new() } else { format!("<h2>{}</h2>{}", if is_ru { "Подозреваемые моды" } else { "Culprit mods" }, culprits_html) },
+        if errors_html.is_empty() { String::new() } else { format!("<h2>{}</h2>{}", if is_ru { "Ошибки из лога" } else { "Recent errors" }, errors_html) }
+    )
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 #[cfg(test)]
@@ -1105,6 +1647,68 @@ Runtime:   .NET 10.0.13-waylithclr.dev
         let found = log_paths_in(&base);
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].1, base.join("Logs").join("Player.log"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn pattern_instantiation_and_cross_ref() {
+        let base = std::env::temp_dir().join(format!("rwmm_patterns_{}", std::process::id()));
+        let mod_dir = base.join("test_mod");
+        std::fs::create_dir_all(mod_dir.join("Assemblies")).unwrap();
+        std::fs::write(mod_dir.join("Assemblies").join("CustomMod.dll"), b"").unwrap();
+        let log_path = base.join("Player.log");
+
+        let log = "Initialize engine version: 2022.3.35f1\n\
+             Error while instantiating class author.moda.CustomComponent\n\
+             Could not resolve cross-reference to author.modb.BrokenDef (type Verse.ThingDef)\n\
+             Could not load UnityEngine.Texture2D at author.modc/Textures/Missing\n\
+             Method not found: 'HarmonyLib.Harmony.CreateAndPatchAll'\n";
+        std::fs::write(&log_path, log).unwrap();
+
+        let moda_dir = base.join("moda");
+        let modb_dir = base.join("modb");
+        let modc_dir = base.join("modc");
+        std::fs::create_dir_all(&moda_dir).unwrap();
+        std::fs::create_dir_all(&modb_dir).unwrap();
+        std::fs::create_dir_all(&modc_dir).unwrap();
+
+        let mods = vec![
+            test_mod(&moda_dir, "author.moda", "Mod A"),
+            test_mod(&modb_dir, "author.modb", "Mod B"),
+            test_mod(&modc_dir, "author.modc", "Mod C"),
+        ];
+        let report = analyze_rimworld_log(&log_path, &mods);
+
+        assert_eq!(report.total_errors, 4);
+        assert!(!report.raw_content.is_empty());
+
+        let has_inst = report
+            .culprits
+            .iter()
+            .any(|c| c.severity == ErrorSeverity::InstantiationError);
+        let has_cross = report
+            .culprits
+            .iter()
+            .any(|c| c.severity == ErrorSeverity::CrossReferenceError);
+        let has_tex = report
+            .culprits
+            .iter()
+            .any(|c| c.severity == ErrorSeverity::BrokenTexture);
+        let has_harm = report.culprits.iter().any(|c| c.mod_name.contains("Harmony"));
+
+        assert!(has_inst, "instantiation pattern matched");
+        assert!(has_cross, "cross-reference pattern matched");
+        assert!(has_tex, "texture pattern matched");
+        assert!(has_harm, "harmony conflict pattern matched");
+
+        let txt = generate_text_report(&report, true);
+        assert!(txt.contains("Mod A"));
+        assert!(txt.contains("ПОДОЗРЕВАЕМЫЕ МОДЫ"));
+
+        let html = generate_html_report(&report, true);
+        assert!(html.contains("<!DOCTYPE html>"));
+        assert!(html.contains("Mod A"));
 
         let _ = std::fs::remove_dir_all(&base);
     }

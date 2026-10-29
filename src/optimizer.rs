@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 use crate::i18n::tr;
@@ -17,6 +18,41 @@ pub enum OptimizeScope {
     AllInstalled,
     ActiveOnly,
     SelectedOnly,
+}
+
+/// Texture dimension ceiling (V1). Textures exceeding this dimension along width or height
+/// are downscaled preserving aspect ratio and rounded to multiples of 4 for block compression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum MaxTextureSize {
+    #[default]
+    #[serde(rename = "none")]
+    NoLimit,
+    #[serde(rename = "2048")]
+    S2048,
+    #[serde(rename = "1024")]
+    S1024,
+    #[serde(rename = "512")]
+    S512,
+}
+
+impl MaxTextureSize {
+    pub fn pixels(self) -> Option<u32> {
+        match self {
+            Self::NoLimit => None,
+            Self::S2048 => Some(2048),
+            Self::S1024 => Some(1024),
+            Self::S512 => Some(512),
+        }
+    }
+
+    pub fn from_pixels(px: Option<u32>) -> Self {
+        match px {
+            Some(2048) => Self::S2048,
+            Some(1024) => Self::S1024,
+            Some(512) => Self::S512,
+            _ => Self::NoLimit,
+        }
+    }
 }
 
 // Messages
@@ -131,10 +167,37 @@ pub struct ConvertOptions {
     /// Store the picture flipped vertically: needed on RimWorld 1.7, which draws DDS upside
     /// down; not on 1.6 (like ToDDS). Chosen from the game version, see `engine_wants_flipped`.
     pub flip_vertical: bool,
+    /// Maximum texture side (width or height). Larger textures are downscaled preserving
+    /// aspect ratio (and rounded to multiples of 4 for block compression).
+    pub max_size: Option<u32>,
 }
 
 /// Textures smaller than this on both sides are left as PNG: no gain, only risk.
 pub const MIN_TEXTURE_SIDE: u32 = 64;
+
+/// Compute target dimensions for a texture with maximum side limit,
+/// preserving aspect ratio and rounding both sides to multiples of 4 (required by BC compression).
+pub fn target_dimensions(w: u32, h: u32, max_side: Option<u32>) -> (u32, u32) {
+    let Some(max_s) = max_side else {
+        return (w, h);
+    };
+    if w <= max_s && h <= max_s {
+        return (w, h);
+    }
+    // Scale factor so that max(w, h) fits within max_s
+    let scale = (max_s as f64) / (w.max(h) as f64);
+    let new_w = (w as f64 * scale).round() as u32;
+    let new_h = (h as f64 * scale).round() as u32;
+
+    // Round to nearest multiple of 4, minimum 4, never exceeding max_s
+    let round_m4 = |v: u32| -> u32 {
+        let rem = v % 4;
+        let rounded = if rem < 2 { v - rem } else { v + (4 - rem) };
+        rounded.clamp(4, max_s)
+    };
+
+    (round_m4(new_w), round_m4(new_h))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConvertOutcome {
@@ -181,14 +244,23 @@ pub fn optimize_single_texture(source: &Path, opts: ConvertOptions) -> Result<Co
 /// to the backup folder).
 pub fn encode_texture(source: &Path, dds_path: &Path, opts: ConvertOptions) -> Result<ConvertOutcome, String> {
     let mut img = image::open(source).map_err(|e| format!("{}: {}", source.display(), e))?;
+
+    let (mut w, mut h) = (img.width(), img.height());
+    if w < MIN_TEXTURE_SIDE && h < MIN_TEXTURE_SIDE {
+        return Ok(ConvertOutcome::SkippedSmall);
+    }
+
+    let (target_w, target_h) = target_dimensions(w, h, opts.max_size);
+    if target_w != w || target_h != h {
+        img = img.resize_exact(target_w, target_h, image::imageops::FilterType::Lanczos3);
+        w = img.width();
+        h = img.height();
+    }
+
     if opts.flip_vertical {
         img = img.flipv();
     }
 
-    let (w, h) = (img.width(), img.height());
-    if w < MIN_TEXTURE_SIDE && h < MIN_TEXTURE_SIDE {
-        return Ok(ConvertOutcome::SkippedSmall);
-    }
     if w % 4 != 0 || h % 4 != 0 {
         return Ok(ConvertOutcome::SkippedSize);
     }
@@ -249,12 +321,19 @@ pub struct ManifestEntry {
     /// The picture is stored flipped vertically. `None`: written before this was logged
     /// (those were made without flipping).
     pub flipped: Option<bool>,
+    /// The maximum texture dimension applied at encoding time, if any.
+    pub max_size: Option<u32>,
 }
 
 impl ManifestEntry {
     /// The DDS is stored the other way up than the installed game expects.
     pub fn wrong_orientation(&self, want_flipped: bool) -> bool {
         self.flipped.unwrap_or(false) != want_flipped
+    }
+
+    /// The DDS was created with a different max_size setting than currently requested.
+    pub fn wrong_max_size(&self, wanted_max_size: Option<u32>) -> bool {
+        self.max_size != wanted_max_size
     }
 }
 
@@ -326,6 +405,7 @@ pub fn plan_textures(
     mod_dirs: &[PathBuf],
     force: bool,
     want_flipped: bool,
+    want_max_size: Option<u32>,
     manifest: &HashMap<String, ManifestEntry>,
 ) -> TexturePlan {
     let mut plan = TexturePlan::default();
@@ -358,7 +438,8 @@ pub fn plan_textures(
                 Some(entry) => {
                     let fresh = entry.source_fp.is_some()
                         && entry.source_fp == source_fingerprint(&path)
-                        && !entry.wrong_orientation(want_flipped);
+                        && !entry.wrong_orientation(want_flipped)
+                        && !entry.wrong_max_size(want_max_size);
                     if force || !fresh {
                         plan.to_convert.push(path);
                     } else {
@@ -506,6 +587,7 @@ pub fn fix_orientation_with_manifest(
                     &e.dds,
                     ConvertOptions {
                         flip_vertical: want_flipped,
+                        max_size: e.max_size,
                     },
                 )?;
                 Ok(true)
@@ -580,6 +662,7 @@ pub fn read_manifest(path: &Path) -> Vec<ManifestEntry> {
                 Some("0") => Some(false),
                 _ => None,
             };
+            let max_size = parts.next().map(str::trim).and_then(|s| s.parse::<u32>().ok());
             if dds.is_empty() || source.is_empty() {
                 return None;
             }
@@ -589,6 +672,7 @@ pub fn read_manifest(path: &Path) -> Vec<ManifestEntry> {
                 backup: backup.map(PathBuf::from),
                 source_fp: source_fp.map(str::to_string),
                 flipped,
+                max_size,
             })
         })
         .collect()
@@ -596,7 +680,7 @@ pub fn read_manifest(path: &Path) -> Vec<ManifestEntry> {
 
 fn manifest_line(e: &ManifestEntry) -> String {
     format!(
-        "{}\t{}\t{}\t{}\t{}\n",
+        "{}\t{}\t{}\t{}\t{}\t{}\n",
         e.dds.display(),
         e.source.display(),
         e.backup.as_ref().map(|b| b.display().to_string()).unwrap_or_default(),
@@ -605,7 +689,8 @@ fn manifest_line(e: &ManifestEntry) -> String {
             Some(true) => "1",
             Some(false) => "0",
             None => "",
-        }
+        },
+        e.max_size.map(|s| s.to_string()).unwrap_or_default()
     )
 }
 
@@ -713,7 +798,7 @@ pub fn run_optimization(
 ) {
     std::thread::spawn(move || {
         let manifest = manifest_index(read_manifest(&manifest_path()));
-        let plan = plan_textures(&mod_dirs, force, opts.flip_vertical, &manifest);
+        let plan = plan_textures(&mod_dirs, force, opts.flip_vertical, opts.max_size, &manifest);
         let textures = plan.to_convert;
         let total = textures.len();
 
@@ -796,6 +881,7 @@ pub fn run_optimization(
                                 backup: backup_target.clone(),
                                 source_fp: source_fp.clone(),
                                 flipped: Some(opts.flip_vertical),
+                                max_size: opts.max_size,
                             };
                             if let Err(e) = append_manifest(&log_path, &[entry]) {
                                 let _ = tx_clone.send(OptimizationMsg::FileError(tr!(
@@ -831,6 +917,7 @@ pub fn run_optimization(
                                 backup,
                                 source_fp,
                                 flipped: Some(opts.flip_vertical),
+                                max_size: opts.max_size,
                             });
                         }
                     }
@@ -906,6 +993,8 @@ pub struct TextureSummary {
     pub same_name: usize,
     /// Pixels of the textures that will really be compressed (O2: video memory estimate).
     pub pixels: u64,
+    /// Pixels after applying the max_size limit (for calculating VRAM savings).
+    pub resized_pixels: u64,
 }
 
 impl TextureSummary {
@@ -913,30 +1002,71 @@ impl TextureSummary {
     /// 1 byte per pixel; opaque ones become BC1, half that), in bytes. Mipmaps add a third.
     pub fn vram_estimate(&self) -> (u64, u64) {
         let with_mips = |bytes: u64| bytes + bytes / 3;
-        (with_mips(self.pixels * 4), with_mips(self.pixels))
+        let dds_px = if self.resized_pixels > 0 {
+            self.resized_pixels
+        } else {
+            self.pixels
+        };
+        (with_mips(self.pixels * 4), with_mips(dds_px))
+    }
+
+    /// Video memory saved specifically by the max_size limit (in DDS bytes).
+    pub fn vram_saved_by_limit(&self) -> u64 {
+        if self.resized_pixels > 0 && self.pixels > self.resized_pixels {
+            let with_mips = |bytes: u64| bytes + bytes / 3;
+            with_mips(self.pixels - self.resized_pixels)
+        } else {
+            0
+        }
+    }
+}
+
+/// Pixels a texture adds to the estimate: (original, resized).
+/// 0 if it stays PNG (same rules as `encode_texture`). Only the file header is read.
+pub fn compressed_pixels_with_limit(path: &Path, max_size: Option<u32>) -> (u64, u64) {
+    match image::image_dimensions(path) {
+        Ok((w, h)) if !(w < MIN_TEXTURE_SIDE && h < MIN_TEXTURE_SIDE) => {
+            let (tw, th) = target_dimensions(w, h, max_size);
+            if tw % 4 == 0 && th % 4 == 0 {
+                let orig = u64::from(w) * u64::from(h);
+                let resized = u64::from(tw) * u64::from(th);
+                (orig, resized)
+            } else {
+                (0, 0)
+            }
+        }
+        _ => (0, 0),
     }
 }
 
 /// Pixels a texture adds to the estimate: 0 if it stays PNG (same rules as `encode_texture`).
 /// Only the file header is read.
+#[cfg(test)]
 fn compressed_pixels(path: &Path) -> u64 {
-    match image::image_dimensions(path) {
-        Ok((w, h)) if !(w < MIN_TEXTURE_SIDE && h < MIN_TEXTURE_SIDE) && w % 4 == 0 && h % 4 == 0 => {
-            u64::from(w) * u64::from(h)
-        }
-        _ => 0,
-    }
+    compressed_pixels_with_limit(path, None).0
 }
 
-pub fn texture_summary(mod_dirs: &[PathBuf], force: bool, want_flipped: bool) -> TextureSummary {
+pub fn texture_summary(
+    mod_dirs: &[PathBuf],
+    force: bool,
+    want_flipped: bool,
+    want_max_size: Option<u32>,
+) -> TextureSummary {
     let manifest = manifest_index(read_manifest(&manifest_path()));
-    let plan = plan_textures(mod_dirs, force, want_flipped, &manifest);
+    let plan = plan_textures(mod_dirs, force, want_flipped, want_max_size, &manifest);
+    let (pixels, resized_pixels) = plan
+        .to_convert
+        .par_iter()
+        .map(|p| compressed_pixels_with_limit(p, want_max_size))
+        .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+
     TextureSummary {
         to_convert: plan.to_convert.len(),
         up_to_date: plan.up_to_date,
         foreign_dds: plan.foreign_dds,
         same_name: plan.same_name,
-        pixels: plan.to_convert.par_iter().map(|p| compressed_pixels(p)).sum(),
+        pixels,
+        resized_pixels,
     }
 }
 
@@ -945,10 +1075,295 @@ pub fn texture_summary_async(
     mod_dirs: Vec<PathBuf>,
     force: bool,
     want_flipped: bool,
+    want_max_size: Option<u32>,
     tx: mpsc::Sender<TextureSummary>,
 ) {
     std::thread::spawn(move || {
-        let _ = tx.send(texture_summary(&mod_dirs, force, want_flipped));
+        let _ = tx.send(texture_summary(&mod_dirs, force, want_flipped, want_max_size));
+    });
+}
+
+// V2: VRAM Detection & Memory Check
+/// Report on active mod texture VRAM usage vs GPU capacity (V2).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct VramReport {
+    /// Dedicated video memory of the graphics card in bytes (0 if unknown).
+    pub total_vram_bytes: u64,
+    /// Estimated memory used by active mod textures in bytes.
+    pub estimated_used_bytes: u64,
+    /// Heaviest mods sorted descending by texture memory: (mod_name, vram_bytes).
+    pub heavy_mods: Vec<(String, u64)>,
+}
+
+impl VramReport {
+    /// Whether texture memory exceeds ~80% of dedicated video memory.
+    pub fn is_critical(&self) -> bool {
+        self.total_vram_bytes > 0 && self.estimated_used_bytes > (self.total_vram_bytes * 8) / 10
+    }
+}
+
+pub type VramCheckResult = (VramReport, Vec<(PathBuf, u64, u64)>);
+
+/// Detects dedicated video memory in bytes. Uses DXGI on Windows, falling back to registry.
+#[cfg(windows)]
+pub fn detect_dedicated_vram() -> u64 {
+    if let Some(vram) = detect_vram_dxgi() {
+        if vram > 0 {
+            return vram;
+        }
+    }
+    detect_vram_registry().unwrap_or(0)
+}
+
+#[cfg(not(windows))]
+pub fn detect_dedicated_vram() -> u64 {
+    0
+}
+
+#[cfg(windows)]
+fn detect_vram_dxgi() -> Option<u64> {
+    unsafe {
+        extern "system" {
+            fn LoadLibraryA(name: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+            fn GetProcAddress(module: *mut std::ffi::c_void, name: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+            fn FreeLibrary(module: *mut std::ffi::c_void) -> i32;
+        }
+
+        let module = LoadLibraryA(c"dxgi.dll".as_ptr());
+        if module.is_null() {
+            return None;
+        }
+        let proc = GetProcAddress(module, c"CreateDXGIFactory".as_ptr());
+        if proc.is_null() {
+            FreeLibrary(module);
+            return None;
+        }
+
+        type CreateDXGIFactoryFn =
+            unsafe extern "system" fn(riid: *const [u8; 16], pp_factory: *mut *mut std::ffi::c_void) -> i32;
+        let create_factory: CreateDXGIFactoryFn = std::mem::transmute(proc);
+
+        // IID_IDXGIFactory = {7b7166ec-21c7-44ae-b21a-c9ae321ae369}
+        let iid_idxgi_factory: [u8; 16] = [
+            0xec, 0x66, 0x71, 0x7b, 0xc7, 0x21, 0xae, 0x44, 0xb2, 0x1a, 0xc9, 0xae, 0x32, 0x1a, 0xe3, 0x69,
+        ];
+
+        let mut factory: *mut std::ffi::c_void = std::ptr::null_mut();
+        if create_factory(&iid_idxgi_factory, &mut factory) != 0 || factory.is_null() {
+            FreeLibrary(module);
+            return None;
+        }
+
+        let factory_vtable = *(factory as *const *const usize);
+        let release_fn: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32 =
+            std::mem::transmute(*factory_vtable.add(2));
+        let enum_adapters_fn: unsafe extern "system" fn(*mut std::ffi::c_void, u32, *mut *mut std::ffi::c_void) -> i32 =
+            std::mem::transmute(*factory_vtable.add(7));
+
+        #[repr(C)]
+        struct DxgiAdapterDesc {
+            description: [u16; 128],
+            vendor_id: u32,
+            device_id: u32,
+            sub_sys_id: u32,
+            revision: u32,
+            dedicated_video_memory: usize,
+            dedicated_system_memory: usize,
+            shared_system_memory: usize,
+            adapter_luid: [u32; 2],
+        }
+
+        let mut max_vram = 0u64;
+        let mut adapter_idx = 0u32;
+        loop {
+            let mut adapter: *mut std::ffi::c_void = std::ptr::null_mut();
+            if enum_adapters_fn(factory, adapter_idx, &mut adapter) != 0 || adapter.is_null() {
+                break;
+            }
+            adapter_idx += 1;
+
+            let adapter_vtable = *(adapter as *const *const usize);
+            let adapter_release: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32 =
+                std::mem::transmute(*adapter_vtable.add(2));
+            let get_desc_fn: unsafe extern "system" fn(*mut std::ffi::c_void, *mut DxgiAdapterDesc) -> i32 =
+                std::mem::transmute(*adapter_vtable.add(8));
+
+            let mut desc = std::mem::zeroed::<DxgiAdapterDesc>();
+            if get_desc_fn(adapter, &mut desc) == 0 {
+                let vram = desc.dedicated_video_memory as u64;
+                if vram > max_vram {
+                    max_vram = vram;
+                }
+            }
+            adapter_release(adapter);
+        }
+
+        release_fn(factory);
+        FreeLibrary(module);
+
+        Some(max_vram)
+    }
+}
+
+#[cfg(windows)]
+fn detect_vram_registry() -> Option<u64> {
+    use winreg::enums::HKEY_LOCAL_MACHINE;
+    use winreg::RegKey;
+
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let class_key = hklm
+        .open_subkey(r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}")
+        .ok()?;
+
+    let mut max_vram = 0u64;
+    for subkey_name in class_key.enum_keys().filter_map(|k| k.ok()) {
+        if !subkey_name.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        if let Ok(card) = class_key.open_subkey(&subkey_name) {
+            let qw: Option<u64> = card.get_value("HardwareInformation.qwMemorySize").ok();
+            let dword: Option<u32> = card.get_value("HardwareInformation.MemorySize").ok();
+            let vram = qw.unwrap_or_else(|| dword.map(|d| d as u64).unwrap_or(0));
+            if vram > max_vram {
+                max_vram = vram;
+            }
+        }
+    }
+    (max_vram > 0).then_some(max_vram)
+}
+
+/// Estimated VRAM used by textures of one mod in bytes (V2).
+/// DDS files are counted at their file length (compressed data + mipmaps).
+/// PNG/JPG files are evaluated according to engine (1.6 Unity uncompressed RGBA vs 1.7 Waylith BC7).
+pub fn estimate_mod_vram(mod_dir: &Path, engine: crate::game_install::GameEngine) -> u64 {
+    let mut total_bytes = 0u64;
+    let with_mips = |b: u64| b + b / 3;
+    let is_waylith = engine == crate::game_install::GameEngine::Waylith;
+    let mut counted_dds = std::collections::HashSet::new();
+
+    for entry in WalkDir::new(mod_dir)
+        .into_iter()
+        .filter_entry(|entry| {
+            if entry.file_type().is_dir() {
+                let name = entry.file_name().to_string_lossy().to_lowercase();
+                name != "assemblies"
+                    && name != "source"
+                    && name != ".git"
+                    && name != "languages"
+                    && name != "defs"
+                    && name != "patches"
+                    && name != "about"
+            } else {
+                true
+            }
+        })
+        .filter_map(|e| e.ok())
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if !is_in_textures_folder(path) || is_in_about_folder(path) || is_in_dangerous_folder(path) {
+            continue;
+        }
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        if ext == "dds" {
+            let key = path_key(path);
+            if counted_dds.insert(key) {
+                if let Ok(meta) = entry.metadata() {
+                    total_bytes += meta.len();
+                }
+            }
+        } else if ext == "png" || ext == "jpg" || ext == "jpeg" {
+            let dds_path = path.with_extension("dds");
+            let dds_key = path_key(&dds_path);
+            if dds_path.is_file() {
+                if counted_dds.insert(dds_key) {
+                    if let Ok(meta) = std::fs::metadata(&dds_path) {
+                        total_bytes += meta.len();
+                    }
+                }
+            } else if let Ok((w, h)) = image::image_dimensions(path) {
+                let px = u64::from(w) * u64::from(h);
+                if is_waylith {
+                    total_bytes += with_mips(px);
+                } else {
+                    total_bytes += with_mips(px * 4);
+                }
+            }
+        }
+    }
+    total_bytes
+}
+
+fn dir_mtime(dir: &Path) -> u64 {
+    let tex_dir = dir.join("Textures");
+    let check_path = if tex_dir.is_dir() { &tex_dir } else { dir };
+    std::fs::metadata(check_path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Evaluates active mod texture memory against dedicated video memory (V2).
+/// Uses cached per-mod results when directory mtime is unchanged.
+pub fn check_vram_usage(
+    active_mods: &[(String, PathBuf)],
+    engine: crate::game_install::GameEngine,
+    cache: &HashMap<PathBuf, (u64, u64)>,
+) -> (VramReport, Vec<(PathBuf, u64, u64)>) {
+    let total_vram = detect_dedicated_vram();
+    let mut total_used = 0u64;
+    let mut heavy_mods = Vec::new();
+    let mut updated_cache = Vec::new();
+
+    for (name, dir) in active_mods {
+        let mtime_secs = dir_mtime(dir);
+        let mod_vram = if let Some(&(cached_mtime, cached_bytes)) = cache.get(dir) {
+            if cached_mtime == mtime_secs && mtime_secs > 0 {
+                cached_bytes
+            } else {
+                let bytes = estimate_mod_vram(dir, engine);
+                updated_cache.push((dir.clone(), mtime_secs, bytes));
+                bytes
+            }
+        } else {
+            let bytes = estimate_mod_vram(dir, engine);
+            updated_cache.push((dir.clone(), mtime_secs, bytes));
+            bytes
+        };
+
+        total_used += mod_vram;
+        if mod_vram >= 25 * 1024 * 1024 {
+            heavy_mods.push((name.clone(), mod_vram));
+        }
+    }
+
+    heavy_mods.sort_by_key(|b| std::cmp::Reverse(b.1));
+    heavy_mods.truncate(8);
+
+    (
+        VramReport {
+            total_vram_bytes: total_vram,
+            estimated_used_bytes: total_used,
+            heavy_mods,
+        },
+        updated_cache,
+    )
+}
+
+/// Asynchronous VRAM check for active mods (V2).
+pub fn check_vram_async(
+    active_mods: Vec<(String, PathBuf)>,
+    engine: crate::game_install::GameEngine,
+    cache: HashMap<PathBuf, (u64, u64)>,
+    tx: mpsc::Sender<VramCheckResult>,
+) {
+    std::thread::spawn(move || {
+        let res = check_vram_usage(&active_mods, engine, &cache);
+        let _ = tx.send(res);
     });
 }
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -1121,6 +1536,7 @@ mod tests {
                     backup: None,
                     source_fp: None,
                     flipped: e.flipped,
+                    max_size: e.max_size,
                 });
             }
         }
@@ -1161,6 +1577,7 @@ mod tests {
             backup: None,
             source_fp: None,
             flipped: f,
+            max_size: None,
         };
         let manifest = dir.join("dds_manifest.tsv");
         append_manifest(
@@ -1201,6 +1618,7 @@ mod tests {
             backup: None,
             source_fp: None,
             flipped: None,
+            max_size: None,
         };
         append_manifest(&manifest, &[entry]).unwrap();
         let (tx, _rx) = mpsc::channel();
@@ -1285,7 +1703,7 @@ mod tests {
         std::fs::copy(tex.join("icon.png"), tex.join("icon.JPG")).unwrap();
         write_png(&tex.join("solo.png"), 64, 64, 255);
 
-        let plan = plan_textures(&[dir.join("Mod")], true, false, &HashMap::new());
+        let plan = plan_textures(&[dir.join("Mod")], true, false, None, &HashMap::new());
         let names: Vec<String> = plan
             .to_convert
             .iter()
@@ -1306,6 +1724,7 @@ mod tests {
             backup: None,
             source_fp: Some("1:1".into()),
             flipped: Some(false),
+            max_size: None,
         };
         merge_manifest(&log, &[entry("a"), entry("b")]).unwrap();
         merge_manifest(&log, &[entry("c")]).unwrap();
@@ -1336,6 +1755,7 @@ mod tests {
                 backup: None,
                 source_fp: source_fingerprint(&ours_fresh),
                 flipped: None,
+                max_size: None,
             },
             ManifestEntry {
                 dds: ours_stale.with_extension("dds"),
@@ -1343,11 +1763,12 @@ mod tests {
                 backup: None,
                 source_fp: Some("1:1".into()),
                 flipped: None,
+                max_size: None,
             },
         ];
         let manifest = manifest_index(entries);
 
-        let plan = plan_textures(&[dir.join("Mod")], false, false, &manifest);
+        let plan = plan_textures(&[dir.join("Mod")], false, false, None, &manifest);
         let mut names: Vec<String> = plan
             .to_convert
             .iter()
@@ -1361,7 +1782,7 @@ mod tests {
         );
         assert_eq!((plan.up_to_date, plan.foreign_dds), (1, 1));
 
-        let forced = plan_textures(&[dir.join("Mod")], true, false, &manifest);
+        let forced = plan_textures(&[dir.join("Mod")], true, false, None, &manifest);
         assert_eq!(
             forced.to_convert.len(),
             3,
@@ -1369,7 +1790,7 @@ mod tests {
         );
 
         // On 1.7 the fresh but unflipped DDS is the wrong way up: re-encoded too.
-        let on_waylith = plan_textures(&[dir.join("Mod")], false, true, &manifest);
+        let on_waylith = plan_textures(&[dir.join("Mod")], false, true, None, &manifest);
         assert_eq!(
             on_waylith.to_convert.len(),
             3,
@@ -1414,6 +1835,7 @@ mod tests {
                 backup: Some(backup.clone()),
                 source_fp: None,
                 flipped: None,
+                max_size: None,
             }],
         )
         .unwrap();
@@ -1474,6 +1896,7 @@ mod tests {
                 backup: Some(backup),
                 source_fp: None,
                 flipped: Some(false),
+                max_size: None,
             });
             files.push((source, dds));
         }
@@ -1486,6 +1909,159 @@ mod tests {
         let left = read_manifest(&manifest);
         assert_eq!(left.len(), 1, "Mod2 stays in the log");
         assert_eq!(left[0].dds, files[1].1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn target_dimensions_preserves_aspect_ratio_and_guarantees_multiples_of_4() {
+        assert_eq!(target_dimensions(4096, 4096, Some(2048)), (2048, 2048));
+        assert_eq!(target_dimensions(3840, 2160, Some(2048)), (2048, 1152));
+        assert_eq!(target_dimensions(2500, 1500, Some(1024)), (1024, 616));
+        assert_eq!(target_dimensions(100, 3000, Some(512)), (16, 512));
+        assert_eq!(target_dimensions(1024, 1024, Some(2048)), (1024, 1024));
+        assert_eq!(target_dimensions(1024, 1024, None), (1024, 1024));
+        // Clamp to max_s and minimum 4
+        let (w, h) = target_dimensions(5000, 2, Some(512));
+        assert_eq!(w, 512);
+        assert_eq!(h, 4);
+    }
+
+    #[test]
+    fn encode_texture_with_max_size_downscales_to_requested_limit() {
+        let dir = temp_dir("encode_max_size");
+        let png = dir.join("wide.png");
+        write_png(&png, 512, 256, 255);
+        let dds = png.with_extension("dds");
+
+        let opts = ConvertOptions {
+            flip_vertical: false,
+            max_size: Some(256),
+        };
+        assert_eq!(optimize_single_texture(&png, opts).unwrap(), ConvertOutcome::Bc1);
+        assert!(dds.is_file());
+
+        let bytes = std::fs::read(&dds).unwrap();
+        let height = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
+        let width = u32::from_le_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+        assert_eq!((width, height), (256, 128), "downscaled 512x256 -> 256x128");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn plan_textures_re_encodes_when_max_size_setting_differs() {
+        let dir = temp_dir("plan_max_size");
+        let tex = dir.join("Mod").join("Textures").join("Things");
+        std::fs::create_dir_all(&tex).unwrap();
+        let png = tex.join("art.png");
+        write_png(&png, 256, 256, 255);
+        let dds = png.with_extension("dds");
+        std::fs::write(&dds, b"dds").unwrap();
+
+        let manifest = manifest_index(vec![ManifestEntry {
+            dds: dds.clone(),
+            source: png.clone(),
+            backup: None,
+            source_fp: source_fingerprint(&png),
+            flipped: Some(false),
+            max_size: Some(2048),
+        }]);
+
+        // Same size setting -> up to date
+        let plan_same = plan_textures(&[dir.join("Mod")], false, false, Some(2048), &manifest);
+        assert_eq!(plan_same.up_to_date, 1);
+        assert_eq!(plan_same.to_convert.len(), 0);
+
+        // Different size setting -> to_convert (re-encode)
+        let plan_smaller = plan_textures(&[dir.join("Mod")], false, false, Some(1024), &manifest);
+        assert_eq!(plan_smaller.up_to_date, 0);
+        assert_eq!(plan_smaller.to_convert.len(), 1);
+
+        // No limit -> to_convert (re-encode to full size)
+        let plan_none = plan_textures(&[dir.join("Mod")], false, false, None, &manifest);
+        assert_eq!(plan_none.up_to_date, 0);
+        assert_eq!(plan_none.to_convert.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vram_saved_by_limit_calculates_correct_savings() {
+        let summary = TextureSummary {
+            pixels: 4096 * 4096,
+            resized_pixels: 2048 * 2048,
+            ..Default::default()
+        };
+        // 16M px -> 4M px. Saved 12M px. With mips (+ 1/3) = 16M bytes = 16 MB.
+        assert_eq!(summary.vram_saved_by_limit(), 16 * 1024 * 1024);
+    }
+
+    #[test]
+    fn vram_critical_threshold_test() {
+        let rep_critical = VramReport {
+            total_vram_bytes: 10_000_000_000,
+            estimated_used_bytes: 8_500_000_000, // 85%
+            heavy_mods: vec![("Heavy Mod".into(), 4_000_000_000)],
+        };
+        assert!(rep_critical.is_critical());
+
+        let rep_ok = VramReport {
+            total_vram_bytes: 10_000_000_000,
+            estimated_used_bytes: 7_500_000_000, // 75%
+            heavy_mods: vec![],
+        };
+        assert!(!rep_ok.is_critical());
+
+        let rep_no_total = VramReport {
+            total_vram_bytes: 0,
+            estimated_used_bytes: 999_999_999,
+            heavy_mods: vec![],
+        };
+        assert!(!rep_no_total.is_critical());
+    }
+
+    #[test]
+    fn detect_dedicated_vram_smoke() {
+        let vram = detect_dedicated_vram();
+        #[cfg(target_os = "windows")]
+        {
+            // On a dev PC with a dedicated GPU (e.g. RX 5700 XT), this returns the VRAM in bytes.
+            // In headless CI or VMs it may be 0, so we check that it runs safely and returns a valid value.
+            assert!(vram < u64::MAX);
+        }
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(vram, 0);
+    }
+
+    #[test]
+    fn check_vram_usage_and_cache_test() {
+        use crate::game_install::GameEngine;
+        let dir = temp_dir("vram_check");
+        let mod_dir = dir.join("TestMod");
+        let tex_dir = mod_dir.join("Textures");
+        std::fs::create_dir_all(&tex_dir).unwrap();
+        let png = tex_dir.join("test.png");
+        write_png(&png, 64, 64, 255);
+        let dds = tex_dir.join("test.dds");
+        std::fs::write(&dds, vec![0u8; 1024]).unwrap();
+
+        let mods = vec![("Test Mod".to_string(), mod_dir.clone())];
+        let mut cache = HashMap::new();
+
+        // 1st pass: cache miss, calculates usage
+        let (report1, new_cache) = check_vram_usage(&mods, GameEngine::Unity, &cache);
+        assert!(report1.estimated_used_bytes > 0);
+        assert_eq!(new_cache.len(), 1);
+
+        for (p, mtime, bytes) in new_cache {
+            cache.insert(p, (mtime, bytes));
+        }
+
+        // 2nd pass: cache hit, gives exact same used bytes
+        let (report2, new_cache2) = check_vram_usage(&mods, GameEngine::Unity, &cache);
+        assert_eq!(report1.estimated_used_bytes, report2.estimated_used_bytes);
+        assert_eq!(new_cache2.len(), 0, "no new items should be cached on cache hit");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

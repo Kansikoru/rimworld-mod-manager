@@ -1,4 +1,6 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
 use winreg::RegKey;
 
@@ -330,9 +332,11 @@ impl SteamDownloadProgress {
 
 /// Subscribes to `item_ids` and polls `GetItemState` + `GetItemDownloadInfo` while the Steam
 /// client downloads them, calling `on_progress` with updates. Returns `(subscribed_count, installed_count)`.
+/// `stop_flag` allows stopping the wait early to release the Steam API session (S1).
 pub fn subscribe_workshop_items_with_progress(
     dll_path: &Path,
     item_ids: &[&str],
+    stop_flag: Option<Arc<AtomicBool>>,
     mut on_progress: impl FnMut(SteamDownloadProgress),
 ) -> Result<(usize, usize), String> {
     let ids: Vec<u64> = item_ids.iter().filter_map(|s| s.trim().parse().ok()).collect();
@@ -359,6 +363,9 @@ pub fn subscribe_workshop_items_with_progress(
             let started = std::time::Instant::now();
             let mut last_installed = 0usize;
             while started.elapsed() < std::time::Duration::from_secs(300) {
+                if stop_flag.as_ref().is_some_and(|f| f.load(Ordering::Relaxed)) {
+                    break;
+                }
                 if let Some(ref cb) = run_callbacks {
                     cb();
                 }
@@ -484,6 +491,13 @@ mod tests {
             active: true,
         };
         assert_eq!(by_items.percent(), 25);
+    }
+
+    #[test]
+    fn subscribe_empty_items_returns_zero_immediately() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let res = subscribe_workshop_items_with_progress(Path::new("dummy.dll"), &[], Some(flag), |_| {});
+        assert_eq!(res, Ok((0, 0)));
     }
 
     /// Live, read-only: `cargo test real_steam_api_check -- --ignored --nocapture`
