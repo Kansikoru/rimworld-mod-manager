@@ -129,6 +129,31 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
             ui.add_space(6.0);
 
             ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("{}:", t.get(TranslationKey::OptMaxSize)))
+                        .color(THEME.text_secondary)
+                        .strong(),
+                )
+                .on_hover_text(t.get(TranslationKey::OptMaxSizeHint));
+
+                let sizes = [
+                    (crate::optimizer::MaxTextureSize::NoLimit, t.get(TranslationKey::OptMaxSizeNoLimit)),
+                    (crate::optimizer::MaxTextureSize::S2048, "2048"),
+                    (crate::optimizer::MaxTextureSize::S1024, "1024"),
+                    (crate::optimizer::MaxTextureSize::S512, "512"),
+                ];
+
+                for (size_val, label) in sizes {
+                    let is_sel = app.opt_max_size == size_val;
+                    if ui.selectable_label(is_sel, label).clicked() {
+                        app.opt_max_size = size_val;
+                    }
+                }
+            });
+
+            ui.add_space(6.0);
+
+            ui.horizontal_wrapped(|ui| {
                 ui.checkbox(&mut app.opt_force, t.get(TranslationKey::OptForceReencode));
                 ui.add_space(12.0);
                 ui.checkbox(&mut app.opt_delete_source, t.get(TranslationKey::OptDeleteSource));

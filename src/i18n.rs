@@ -1,31 +1,111 @@
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 /// Current interface language for texts built outside the UI code (status lines,
 /// errors from background tasks). Set by `I18n::new` / `I18n::set_language`.
+static CURRENT_LANGUAGE: AtomicU8 = AtomicU8::new(0); // 0 = Russian, 1 = English, 2 = Chinese
 static ENGLISH: AtomicBool = AtomicBool::new(false);
 
+pub fn current_language() -> Language {
+    match CURRENT_LANGUAGE.load(Ordering::Relaxed) {
+        1 => Language::English,
+        2 => Language::Chinese,
+        _ => Language::Russian,
+    }
+}
+
 pub fn is_english() -> bool {
-    ENGLISH.load(Ordering::Relaxed)
+    current_language() == Language::English
+}
+
+pub fn is_chinese() -> bool {
+    current_language() == Language::Chinese
+}
+
+pub fn is_russian() -> bool {
+    current_language() == Language::Russian
 }
 
 /// A key's text in the current interface language (for code without an `I18n` at hand).
 pub fn text(key: TranslationKey) -> &'static str {
-    key.translate(if is_english() {
-        Language::English
-    } else {
-        Language::Russian
-    })
+    key.translate(current_language())
 }
 
-/// Russian or English text by the current interface language.
+/// Text by current interface language supporting 2 or 3 languages.
+/// If Chinese text is empty, it falls back to English.
 /// With arguments it works like `format!`: `tr!("Найдено: {}", "Found: {}", n)`.
 macro_rules! tr {
-    ($ru:literal, $en:literal $(,)?) => {
-        if $crate::i18n::is_english() { $en } else { $ru }
+    // 3 languages with empty Chinese and format args (4+ tokens):
+    ($ru:literal, $en:literal, "", $($arg:expr),+ $(,)?) => {
+        match $crate::i18n::current_language() {
+            $crate::i18n::Language::Russian => format!($ru, $($arg),+),
+            _ => format!($en, $($arg),+),
+        }
     };
+    // 3 languages with format args (4+ tokens):
+    ($ru:literal, $en:literal, $zh:literal, $($arg:expr),+ $(,)?) => {
+        match $crate::i18n::current_language() {
+            $crate::i18n::Language::Chinese => {
+                let zh: &str = $zh;
+                if zh.is_empty() {
+                    format!($en, $($arg),+)
+                } else {
+                    format!($zh, $($arg),+)
+                }
+            }
+            $crate::i18n::Language::English => format!($en, $($arg),+),
+            $crate::i18n::Language::Russian => format!($ru, $($arg),+),
+        }
+    };
+    // 3 languages with semicolon before format args:
+    ($ru:literal, $en:literal, ""; $($arg:tt)+) => {
+        match $crate::i18n::current_language() {
+            $crate::i18n::Language::Russian => format!($ru, $($arg)+),
+            _ => format!($en, $($arg)+),
+        }
+    };
+    ($ru:literal, $en:literal, $zh:literal; $($arg:tt)+) => {
+        match $crate::i18n::current_language() {
+            $crate::i18n::Language::Chinese => {
+                let zh: &str = $zh;
+                if zh.is_empty() {
+                    format!($en, $($arg)+)
+                } else {
+                    format!($zh, $($arg)+)
+                }
+            }
+            $crate::i18n::Language::English => format!($en, $($arg)+),
+            $crate::i18n::Language::Russian => format!($ru, $($arg)+),
+        }
+    };
+    // 3 languages without format args (3 literal tokens):
+    ($ru:literal, $en:literal, $zh:literal $(,)?) => {
+        match $crate::i18n::current_language() {
+            $crate::i18n::Language::Chinese => {
+                let zh: &str = $zh;
+                if zh.is_empty() {
+                    $en
+                } else {
+                    zh
+                }
+            }
+            $crate::i18n::Language::English => $en,
+            $crate::i18n::Language::Russian => $ru,
+        }
+    };
+    // 2 languages without format args:
+    ($ru:literal, $en:literal $(,)?) => {
+        match $crate::i18n::current_language() {
+            $crate::i18n::Language::Russian => $ru,
+            _ => $en,
+        }
+    };
+    // 2 languages with format args:
     ($ru:literal, $en:literal, $($arg:tt)+) => {
-        if $crate::i18n::is_english() { format!($en, $($arg)+) } else { format!($ru, $($arg)+) }
+        match $crate::i18n::current_language() {
+            $crate::i18n::Language::Russian => format!($ru, $($arg)+),
+            _ => format!($en, $($arg)+),
+        }
     };
 }
 pub(crate) use tr;
@@ -35,6 +115,7 @@ pub enum Language {
     #[default]
     Russian,
     English,
+    Chinese,
 }
 
 impl Language {
@@ -42,14 +123,20 @@ impl Language {
         match self {
             Language::Russian => "Русский",
             Language::English => "English",
+            Language::Chinese => "简体中文",
+        }
+    }
+
+    pub fn next(&self) -> Self {
+        match self {
+            Language::Russian => Language::English,
+            Language::English => Language::Chinese,
+            Language::Chinese => Language::Russian,
         }
     }
 
     pub fn toggle(&self) -> Self {
-        match self {
-            Language::Russian => Language::English,
-            Language::English => Language::Russian,
-        }
+        self.next()
     }
 }
 
@@ -99,6 +186,9 @@ pub enum TranslationKey {
     OptScopeAll,
     OptScopeActive,
     OptScopeSelected,
+    OptMaxSize,
+    OptMaxSizeNoLimit,
+    OptMaxSizeHint,
     OptForceReencode,
     OptDeleteSource,
     OptThreads,
@@ -174,6 +264,67 @@ pub enum TranslationKey {
     CrashFileStats,
     CrashAnalyzing,
     CrashFileNotFound,
+
+    // V3: GPU crash / OOM diagnostics in Analyzer
+    CrashGpuResetTitle,
+    CrashGpuResetDesc,
+    CrashGpuAdviceOptimizer,
+    CrashGpuAdviceHighQuality,
+    CrashGpuAdviceDriver,
+    CrashGpuAdviceEventLog,
+    CrashOomTitle,
+    CrashOomDesc,
+    CrashOomAdviceCloseApps,
+    CrashOomAdvicePagingFile,
+    CrashOomAdviceReduceMods,
+    CrashBtnGoToOptimizer,
+
+    // F9: Changes since last good run
+    LastGoodTitle,
+    LastGoodUpdated,
+    LastGoodAdded,
+    LastGoodRemoved,
+    LastGoodOrderChanged,
+    LastGoodNoChanges,
+    LastGoodNoSnapshot,
+    LastGoodSaveBtn,
+    LastGoodSavedAt,
+    LastGoodUpdatedAdvice,
+    LastGoodBtnBisect,
+    LastGoodSavedMsg,
+
+    // F13: Log viewer, export, and extended error patterns
+    AnalyzerTabReport,
+    AnalyzerTabFullLog,
+    AnalyzerSaveReport,
+    AnalyzerFilterHint,
+    AnalyzerFilterAll,
+    AnalyzerFilterErrors,
+    AnalyzerFilterWarnings,
+    AnalyzerFilterInfo,
+    AnalyzerPerfTitle,
+    AnalyzerPerfBody,
+    AnalyzerCopyLine,
+    SeverityBrokenTexture,
+    SeverityCrossReference,
+    SeverityInstantiation,
+    SeverityHarmony,
+
+    // F12: Save backup before launch
+    SettingsBackupSaveBeforeLaunch,
+    SettingsBackupSaveKeepCount,
+    SettingsBackupSaveHint,
+    SavesBtnOpenBackups,
+
+    // S1: Stop waiting during Steam client download
+    SteamBtnStopWaiting,
+    SteamStoppedWaiting,
+
+    // F11: Game loading time and history
+    LoadTimeTitle,
+    LoadTimeLastRun,
+    LoadTimeHistoryTitle,
+    LoadTimeHistoryEmpty,
 
     // Game version support (1.6 Unity / 1.7 Waylith)
     SettingsGameDetected,
@@ -491,6 +642,12 @@ pub enum TranslationKey {
     WsBack,
     OptSameNameSkipped,
     OptVramEstimate,
+    OptVramSavedByLimit,
+    VramWarningTitle,
+    VramWarningBody,
+    VramHeavyModsTitle,
+    VramBtnOptimize,
+    VramBtnLaunchAnyway,
     OptBtnRollbackSelected,
     OptBtnRollbackSelectedHint,
     OptRollbackPickMod,
@@ -603,6 +760,14 @@ pub fn fmt(template: &str, args: &[&str]) -> String {
 
 impl TranslationKey {
     pub fn translate(&self, lang: Language) -> &'static str {
+        if lang == Language::Chinese {
+            let zh = self.chinese();
+            if !zh.is_empty() {
+                return zh;
+            }
+            return self.translate(Language::English);
+        }
+
         match (self, lang) {
             // Tabs
             (TranslationKey::TabMods, Language::Russian) => "Моды",
@@ -685,6 +850,12 @@ impl TranslationKey {
             (TranslationKey::OptScopeActive, Language::English) => "Active Only",
             (TranslationKey::OptScopeSelected, Language::Russian) => "Выбранный мод",
             (TranslationKey::OptScopeSelected, Language::English) => "Selected Only",
+            (TranslationKey::OptMaxSize, Language::Russian) => "Макс. размер",
+            (TranslationKey::OptMaxSize, Language::English) => "Max size",
+            (TranslationKey::OptMaxSizeNoLimit, Language::Russian) => "Без ограничения",
+            (TranslationKey::OptMaxSizeNoLimit, Language::English) => "No limit",
+            (TranslationKey::OptMaxSizeHint, Language::Russian) => "Текстуры крупнее выбранного размера уменьшаются с сохранением пропорций (до кратного 4 для BC). Каждое уменьшение вдвое по стороне экономит в 4 раза больше видеопамяти.",
+            (TranslationKey::OptMaxSizeHint, Language::English) => "Textures larger than this size are downscaled preserving aspect ratio (to multiples of 4 for BC). Each halving of dimensions saves 4x video memory.",
             (TranslationKey::OptForceReencode, Language::Russian) => "Перезаписывать существующие DDS",
             (TranslationKey::OptForceReencode, Language::English) => "Force re-encode existing DDS",
             (TranslationKey::OptDeleteSource, Language::Russian) => "Убирать исходные PNG/JPG в бэкап",
@@ -833,6 +1004,110 @@ impl TranslationKey {
             (TranslationKey::CrashAnalyzing, Language::English) => "Analyzing log...",
             (TranslationKey::CrashFileNotFound, Language::Russian) => "Файл Player.log не найден в стандартных папках",
             (TranslationKey::CrashFileNotFound, Language::English) => "Player.log file not found in standard directories",
+
+            (TranslationKey::CrashGpuResetTitle, Language::Russian) => "Сбой видеокарты: нехватка памяти или сбой драйвера (887a0005)",
+            (TranslationKey::CrashGpuResetTitle, Language::English) => "Graphics card reset: out of video memory or driver crash (887a0005)",
+            (TranslationKey::CrashGpuResetDesc, Language::Russian) => "Видеодрайвер был сброшен системой (TDR) при создании или загрузке текстуры (D3D error was 887a0005 / DXGI_ERROR_DEVICE_REMOVED). Рекомендации:",
+            (TranslationKey::CrashGpuResetDesc, Language::English) => "The graphics driver was reset by the OS (TDR) while allocating or rendering textures (D3D error was 887a0005 / DXGI_ERROR_DEVICE_REMOVED). Recommendations:",
+            (TranslationKey::CrashGpuAdviceOptimizer, Language::Russian) => "Уменьшите размер текстур во вкладке «Оптимизатор» (кнопка «Макс. размер» 2048 или 1024) — это снизит потребление видеопамяти в 4–16 раз.",
+            (TranslationKey::CrashGpuAdviceOptimizer, Language::English) => "Downscale textures in the 'Optimizer' tab ('Max size' 2048 or 1024) — reduces VRAM usage by 4x–16x.",
+            (TranslationKey::CrashGpuAdviceHighQuality, Language::Russian) => "Отключите опцию «High quality textures» в настройках графики модов (например, Graphics Settings).",
+            (TranslationKey::CrashGpuAdviceHighQuality, Language::English) => "Disable 'High quality textures' in mod graphics options (e.g. Graphics Settings).",
+            (TranslationKey::CrashGpuAdviceDriver, Language::Russian) => "Обновите драйвер видеокарты до последней стабильной версии.",
+            (TranslationKey::CrashGpuAdviceDriver, Language::English) => "Update your graphics card driver to the latest stable release.",
+            (TranslationKey::CrashGpuAdviceEventLog, Language::Russian) => "Проверьте журнал событий Windows (Просмотр событий → Журналы Windows → Система): ошибки источника «Display» («Видеодрайвер перестал отвечать и был успешно восстановлен») подтверждают сброс по таймауту (TDR).",
+            (TranslationKey::CrashGpuAdviceEventLog, Language::English) => "Check Windows Event Viewer (Windows Logs → System): errors from source 'Display' ('Display driver stopped responding and has successfully recovered') confirm a TDR reset.",
+            (TranslationKey::CrashOomTitle, Language::Russian) => "Нехватка оперативной памяти (Out of Memory)",
+            (TranslationKey::CrashOomTitle, Language::English) => "Out of memory (System RAM exhausted)",
+            (TranslationKey::CrashOomDesc, Language::Russian) => "Игре не хватило свободной оперативной памяти (RAM) для аллокации объектов или загрузки модов. Рекомендации:",
+            (TranslationKey::CrashOomDesc, Language::English) => "The game ran out of available system memory (RAM) while loading or running mods. Recommendations:",
+            (TranslationKey::CrashOomAdviceCloseApps, Language::Russian) => "Закройте другие программы (браузер, фоновые приложения) перед запуском игры.",
+            (TranslationKey::CrashOomAdviceCloseApps, Language::English) => "Close other programs (browsers, background apps) before launching RimWorld.",
+            (TranslationKey::CrashOomAdvicePagingFile, Language::Russian) => "Увеличьте размер файла подкачки (pagefile.sys) в параметрах быстродействия Windows.",
+            (TranslationKey::CrashOomAdvicePagingFile, Language::English) => "Increase the Windows paging file (pagefile.sys) size in performance options.",
+            (TranslationKey::CrashOomAdviceReduceMods, Language::Russian) => "Уменьшите размер текстур во вкладке «Оптимизатор» или сократите количество активных модов.",
+            (TranslationKey::CrashOomAdviceReduceMods, Language::English) => "Downscale mod textures in the 'Optimizer' tab or reduce active mod count.",
+            (TranslationKey::CrashBtnGoToOptimizer, Language::Russian) => "Перейти в Оптимизатор",
+            (TranslationKey::CrashBtnGoToOptimizer, Language::English) => "Go to Optimizer",
+
+            (TranslationKey::LastGoodTitle, Language::Russian) => "Что изменилось с рабочего запуска",
+            (TranslationKey::LastGoodTitle, Language::English) => "Changes since last working run",
+            (TranslationKey::LastGoodUpdated, Language::Russian) => "Обновились: {}",
+            (TranslationKey::LastGoodUpdated, Language::English) => "Updated: {}",
+            (TranslationKey::LastGoodAdded, Language::Russian) => "Добавлены: {}",
+            (TranslationKey::LastGoodAdded, Language::English) => "Added: {}",
+            (TranslationKey::LastGoodRemoved, Language::Russian) => "Удалены: {}",
+            (TranslationKey::LastGoodRemoved, Language::English) => "Removed: {}",
+            (TranslationKey::LastGoodOrderChanged, Language::Russian) => "Порядок изменён",
+            (TranslationKey::LastGoodOrderChanged, Language::English) => "Order changed",
+            (TranslationKey::LastGoodNoChanges, Language::Russian) => "Активные моды и их файлы не менялись с последнего рабочего запуска.",
+            (TranslationKey::LastGoodNoChanges, Language::English) => "Active mods and their files have not changed since the last working run.",
+            (TranslationKey::LastGoodNoSnapshot, Language::Russian) => "Нет сохранённого снимка рабочего запуска. Сохраните текущее состояние кнопкой ниже или запустите игру без ошибок.",
+            (TranslationKey::LastGoodNoSnapshot, Language::English) => "No saved snapshot of a working run. Save current state with the button below or run the game cleanly.",
+            (TranslationKey::LastGoodSaveBtn, Language::Russian) => "Запомнить как рабочий запуск",
+            (TranslationKey::LastGoodSaveBtn, Language::English) => "Save as working run",
+            (TranslationKey::LastGoodSavedAt, Language::Russian) => "Рабочий запуск от: {}",
+            (TranslationKey::LastGoodSavedAt, Language::English) => "Working run from: {}",
+            (TranslationKey::LastGoodUpdatedAdvice, Language::Russian) => "Если игра стала вылетать после обновления, проверьте сначала обновлённые моды:",
+            (TranslationKey::LastGoodUpdatedAdvice, Language::English) => "If the game started crashing after an update, check the updated mods first:",
+            (TranslationKey::LastGoodBtnBisect, Language::Russian) => "Найти виновника среди обновлённых (F8)",
+            (TranslationKey::LastGoodBtnBisect, Language::English) => "Find culprit among updated mods (F8)",
+            (TranslationKey::LastGoodSavedMsg, Language::Russian) => "Текущее состояние модов сохранено как рабочий запуск",
+            (TranslationKey::LastGoodSavedMsg, Language::English) => "Current mod configuration saved as working run",
+
+            (TranslationKey::AnalyzerTabReport, Language::Russian) => "Отчёт",
+            (TranslationKey::AnalyzerTabReport, Language::English) => "Report",
+            (TranslationKey::AnalyzerTabFullLog, Language::Russian) => "Полный лог",
+            (TranslationKey::AnalyzerTabFullLog, Language::English) => "Full log",
+            (TranslationKey::AnalyzerSaveReport, Language::Russian) => "Сохранить отчёт",
+            (TranslationKey::AnalyzerSaveReport, Language::English) => "Save report",
+            (TranslationKey::AnalyzerFilterHint, Language::Russian) => "Поиск по логу...",
+            (TranslationKey::AnalyzerFilterHint, Language::English) => "Search in log...",
+            (TranslationKey::AnalyzerFilterAll, Language::Russian) => "Все",
+            (TranslationKey::AnalyzerFilterAll, Language::English) => "All",
+            (TranslationKey::AnalyzerFilterErrors, Language::Russian) => "Ошибки",
+            (TranslationKey::AnalyzerFilterErrors, Language::English) => "Errors",
+            (TranslationKey::AnalyzerFilterWarnings, Language::Russian) => "Предупреждения",
+            (TranslationKey::AnalyzerFilterWarnings, Language::English) => "Warnings",
+            (TranslationKey::AnalyzerFilterInfo, Language::Russian) => "Инфо",
+            (TranslationKey::AnalyzerFilterInfo, Language::English) => "Info",
+            (TranslationKey::AnalyzerPerfTitle, Language::Russian) => "Советы по производительности",
+            (TranslationKey::AnalyzerPerfTitle, Language::English) => "Performance tips",
+            (TranslationKey::AnalyzerPerfBody, Language::Russian) => "Для RimWorld 1.6 рекомендуется использовать RocketMan и Performance Optimizer для повышения TPS и стабильности FPS. В RimWorld 1.7 (Waylith) движок уже оптимизирован и поддерживает фоновое сжатие текстур; перед установкой модов оптимизации на 1.7 убедитесь в их совместимости.",
+            (TranslationKey::AnalyzerPerfBody, Language::English) => "For RimWorld 1.6, RocketMan and Performance Optimizer are highly recommended for higher TPS and framerate stability. On RimWorld 1.7 (Waylith), the engine has multi-threaded optimizations and native BC7 texture caching; check compatibility before using 1.6 performance mods on 1.7.",
+            (TranslationKey::AnalyzerCopyLine, Language::Russian) => "Копировать строку",
+            (TranslationKey::AnalyzerCopyLine, Language::English) => "Copy line",
+            (TranslationKey::SeverityBrokenTexture, Language::Russian) => "Битая текстура",
+            (TranslationKey::SeverityBrokenTexture, Language::English) => "Corrupt texture",
+            (TranslationKey::SeverityCrossReference, Language::Russian) => "Ошибка ссылок в Defs",
+            (TranslationKey::SeverityCrossReference, Language::English) => "Defs cross-reference error",
+            (TranslationKey::SeverityInstantiation, Language::Russian) => "Ошибка создания класса",
+            (TranslationKey::SeverityInstantiation, Language::English) => "Class instantiation error",
+            (TranslationKey::SeverityHarmony, Language::Russian) => "Конфликт Harmony",
+            (TranslationKey::SeverityHarmony, Language::English) => "Harmony conflict",
+
+            (TranslationKey::SettingsBackupSaveBeforeLaunch, Language::Russian) => "Создавать бэкап последнего сохранения перед запуском",
+            (TranslationKey::SettingsBackupSaveBeforeLaunch, Language::English) => "Back up latest save file before launching the game",
+            (TranslationKey::SettingsBackupSaveKeepCount, Language::Russian) => "Хранить копий на каждый сейв:",
+            (TranslationKey::SettingsBackupSaveKeepCount, Language::English) => "Keep backups per save:",
+            (TranslationKey::SettingsBackupSaveHint, Language::Russian) => "Копия последнего изменённого сохранения создаётся в папке Saves/Backups перед каждым запуском игры",
+            (TranslationKey::SettingsBackupSaveHint, Language::English) => "A copy of the latest modified save is created in Saves/Backups before each game launch",
+            (TranslationKey::SavesBtnOpenBackups, Language::Russian) => "Папка бэкапов",
+            (TranslationKey::SavesBtnOpenBackups, Language::English) => "Backups folder",
+
+            (TranslationKey::SteamBtnStopWaiting, Language::Russian) => "Перестать ждать",
+            (TranslationKey::SteamBtnStopWaiting, Language::English) => "Stop waiting",
+            (TranslationKey::SteamStoppedWaiting, Language::Russian) => "Ожидание завершено, загрузка в клиенте Steam продолжается",
+            (TranslationKey::SteamStoppedWaiting, Language::English) => "Stopped waiting; Steam client continues downloading in background",
+
+            (TranslationKey::LoadTimeTitle, Language::Russian) => "Время загрузки игры",
+            (TranslationKey::LoadTimeTitle, Language::English) => "Game loading time",
+            (TranslationKey::LoadTimeLastRun, Language::Russian) => "Последний запуск: {}",
+            (TranslationKey::LoadTimeLastRun, Language::English) => "Last run: {}",
+            (TranslationKey::LoadTimeHistoryTitle, Language::Russian) => "История запусков",
+            (TranslationKey::LoadTimeHistoryTitle, Language::English) => "Launch history",
+            (TranslationKey::LoadTimeHistoryEmpty, Language::Russian) => "История пуста. Запустите игру или проанализируйте лог.",
+            (TranslationKey::LoadTimeHistoryEmpty, Language::English) => "History is empty. Launch the game or analyze a log.",
 
             (TranslationKey::SettingsGameDetected, Language::Russian) => "Обнаружено: RimWorld {} | движок {}",
             (TranslationKey::SettingsGameDetected, Language::English) => "Detected: RimWorld {} | engine {}",
@@ -1233,6 +1508,18 @@ impl TranslationKey {
             (TranslationKey::OptSameNameSkipped, Language::English) => " | skipped, same name (icon.png + icon.jpg): {}",
             (TranslationKey::OptVramEstimate, Language::Russian) => " | видеопамять: без сжатия ≈ {} МБ, в DDS — не больше {} МБ",
             (TranslationKey::OptVramEstimate, Language::English) => " | video memory: ≈ {} MB uncompressed, at most {} MB as DDS",
+            (TranslationKey::OptVramSavedByLimit, Language::Russian) => " (лимит размера экономит ≈ {} МБ)",
+            (TranslationKey::OptVramSavedByLimit, Language::English) => " (size limit saves ≈ {} MB)",
+            (TranslationKey::VramWarningTitle, Language::Russian) => "Предупреждение: нехватка видеопамяти",
+            (TranslationKey::VramWarningTitle, Language::English) => "Warning: High Video Memory",
+            (TranslationKey::VramWarningBody, Language::Russian) => "Текстуры включённых модов займут ≈ {} ГБ видеопамяти при объёме видеокарты {} ГБ ({}%).\nЭто может привести к сбросу видеокарты и вылету с ошибкой 887a0005 (DXGI_ERROR_DEVICE_REMOVED). Рекомендуется уменьшить текстуры через вкладку «Оптимизация».",
+            (TranslationKey::VramWarningBody, Language::English) => "Textures of active mods will take ≈ {} GB of video memory with {} GB available on your graphics card ({}%).\nThis may trigger a GPU driver reset and crash with error 887a0005 (DXGI_ERROR_DEVICE_REMOVED). It is recommended to downscale textures via the Optimizer tab.",
+            (TranslationKey::VramHeavyModsTitle, Language::Russian) => "Самые тяжёлые моды:",
+            (TranslationKey::VramHeavyModsTitle, Language::English) => "Heaviest mods:",
+            (TranslationKey::VramBtnOptimize, Language::Russian) => "Уменьшить текстуры",
+            (TranslationKey::VramBtnOptimize, Language::English) => "Optimize textures",
+            (TranslationKey::VramBtnLaunchAnyway, Language::Russian) => "Всё равно играть",
+            (TranslationKey::VramBtnLaunchAnyway, Language::English) => "Launch anyway",
             (TranslationKey::OptBtnRollbackSelected, Language::Russian) => "Откатить выбранный мод",
             (TranslationKey::OptBtnRollbackSelected, Language::English) => "Roll back the selected mod",
             (TranslationKey::OptBtnRollbackSelectedHint, Language::Russian) => "Убрать DDS только у мода, выбранного на вкладке «Моды», и вернуть его PNG/JPG; остальные моды не трогаются",
@@ -1609,6 +1896,295 @@ impl TranslationKey {
             (TranslationKey::SteamDownloadProgressNoPct, Language::English) => "Downloading in Steam: {}/{} mods installed...",
             (TranslationKey::SteamDownloadFinished, Language::Russian) => "Загрузка в Steam завершена: установлено {}/{} модов",
             (TranslationKey::SteamDownloadFinished, Language::English) => "Steam download finished: {}/{} mods installed",
+            (_, Language::Chinese) => unreachable!(),
+        }
+    }
+
+    pub fn chinese(&self) -> &'static str {
+        match self {
+            // Tabs
+            TranslationKey::TabMods => "模组",
+            TranslationKey::TabTranslations => "汉化",
+            TranslationKey::TabOptimizer => "纹理优化",
+            TranslationKey::TabAnalyzer => "日志分析",
+            TranslationKey::TabSettings => "设置",
+            TranslationKey::TabSets => "模组列表",
+            TranslationKey::TabSaves => "存档",
+            TranslationKey::TabWorkshop => "创意工坊",
+            TranslationKey::TabAnalyzerShort => "日志",
+            TranslationKey::TabsMore => "更多...",
+
+            // Mods View
+            TranslationKey::BtnAutoSort => "自动排序",
+            TranslationKey::BtnSaveConfig => "保存排序",
+            TranslationKey::BtnRescanMods => "重新扫描",
+            TranslationKey::BtnEnableAll => "全部启用",
+            TranslationKey::BtnDisableAll => "全部禁用",
+            TranslationKey::SearchPlaceholder => "搜索模组...",
+            TranslationKey::TabDependencies => "依赖关系",
+            TranslationKey::DepMissing => "缺失",
+            TranslationKey::DepDisabled => "未启用",
+            TranslationKey::DepWrongOrder => "顺序错误",
+            TranslationKey::BtnAutoFixDependencies => "自动修复",
+            TranslationKey::ActiveModsTitle => "已启用的模组",
+            TranslationKey::BtnDeactivate => "禁用",
+            TranslationKey::AvailableModsTitle => "可用模组",
+            TranslationKey::BtnActivate => "启用",
+            TranslationKey::BtnOpenFolder => "打开文件夹",
+            TranslationKey::BtnOpenWorkshop => "打开创意工坊",
+            TranslationKey::ModsSearchActive => "已启用",
+            TranslationKey::ModsTotal => "全部",
+            TranslationKey::ModsSummaryHeader => "模组统计",
+            TranslationKey::StatusModsCount => "全部模组：{} | 已启用：{}",
+            TranslationKey::ModsBtnInfoPanel => "详细信息",
+            TranslationKey::ModsHideInfoPanel => "隐藏信息",
+            TranslationKey::ModsCtxDeactivate => "禁用模组",
+            TranslationKey::ModsCtxDeactivateSelected => "禁用所选模组",
+            TranslationKey::ModsCtxActivate => "启用模组",
+            TranslationKey::ModsCtxActivateSelected => "启用所选模组",
+            TranslationKey::ModsCtxMoveUp => "上移",
+            TranslationKey::ModsCtxMoveDown => "下移",
+            TranslationKey::ModsCtxOpenFolder => "打开文件夹",
+            TranslationKey::ModsCtxOpenWorkshop => "打开创意工坊",
+            TranslationKey::ModsDetailsTitle => "模组详情",
+            TranslationKey::ModsBadgeProtected => "核心模组",
+            TranslationKey::ModsBtnFolder => "文件夹",
+            TranslationKey::ModsAuthor => "作者",
+            TranslationKey::ModsDependencies => "依赖",
+            TranslationKey::ModsNotOnDisk => "磁盘上不存在",
+            TranslationKey::ModsDuplicatesTitle => "重复模组",
+            TranslationKey::ModsVersionBadge => "版本",
+            TranslationKey::ModsVersionHint => "游戏版本兼容性",
+            TranslationKey::ModsVersionSummary => "版本概览",
+            TranslationKey::ModsLeftoverDds => "残留 DDS",
+            TranslationKey::ModsOriginSteam => "Steam 创意工坊",
+            TranslationKey::ModsOriginLocal => "本地 Mods 目录",
+            TranslationKey::ModsLogErrorBadge => "日志报错",
+            TranslationKey::ModsLogErrorHint => "上次运行中 Player.log 记录了该模组的错误 ({}, ×{}): {}\n点击打开日志分析器。",
+
+            // Common Buttons & Messages
+            TranslationKey::AppPlayBtn => "运行游戏",
+            TranslationKey::AppSortedMsg => "模组排序完成",
+            TranslationKey::BtnCancel => "取消",
+            TranslationKey::ConfirmDeleteTitle => "确认删除模组？",
+            TranslationKey::ConfirmDeleteBody => "模组将被移动至回收站。",
+            TranslationKey::ConfirmDeleteBtn => "移动至回收站",
+
+            // Translations View
+            TranslationKey::TransTitle => "模组汉化与翻译",
+            TranslationKey::TransSubtitle => "在 Steam 创意工坊查找并订阅所选语言的汉化包",
+            TranslationKey::TransTargetLang => "目标语言",
+            TranslationKey::TransBtnDeleteAll => "删除翻译包",
+            TranslationKey::TransBtnFindWorkshop => "在创意工坊查找",
+            TranslationKey::TransFoundTitle => "已找到的翻译",
+            TranslationKey::TransCleanNotice => "翻译清理提示",
+            TranslationKey::TransWorkshopResultsTitle => "创意工坊搜索结果",
+            TranslationKey::TransBtnSubscribe => "订阅",
+            TranslationKey::TransSearchHint => "搜索汉化包...",
+            TranslationKey::TransBtnSearch => "搜索",
+            TranslationKey::TransSearchPlaceholder => "输入模组名称或关键词...",
+            TranslationKey::TransNoneForLang => "未找到该语言的翻译",
+
+            // Optimizer View
+            TranslationKey::OptTitle => "纹理优化 (DDS)",
+            TranslationKey::OptSubtitle => "转换为带有 Mipmap 的 DDS 纹理，大幅降低显存占用并减少卡顿",
+            TranslationKey::OptScope => "优化范围",
+            TranslationKey::OptScopeAll => "所有模组",
+            TranslationKey::OptScopeActive => "仅已启用的模组",
+            TranslationKey::OptScopeSelected => "仅选中的模组",
+            TranslationKey::OptMaxSize => "最大纹理尺寸",
+            TranslationKey::OptMaxSizeNoLimit => "不限制",
+            TranslationKey::OptMaxSizeHint => "超过此分辨率的纹理将按比例等比缩放（减少显存消耗）",
+            TranslationKey::OptForceReencode => "强制重新压缩",
+            TranslationKey::OptDeleteSource => "删除原始 PNG/JPG",
+            TranslationKey::OptThreads => "处理线程数",
+            TranslationKey::OptBtnStart => "开始优化",
+            TranslationKey::OptBtnScan => "扫描显存占用",
+            TranslationKey::OptBtnRollback => "还原原始纹理",
+            TranslationKey::OptBtnCancel => "取消",
+            TranslationKey::OptDdsTitle => "DDS 纹理",
+            TranslationKey::OptDdsDesc => "DirectDraw Surface 纹理格式",
+            TranslationKey::OptLeftoverDds => "残留 DDS 纹理",
+            TranslationKey::OptLeftoverHint => "未在当前优化清单中的 DDS 文件",
+            TranslationKey::OptBtnFixOrientation => "修复纹理朝向",
+            TranslationKey::OptFlipRunning => "正在修复纹理朝向...",
+            TranslationKey::OptFlipDone => "纹理朝向修复完成",
+            TranslationKey::OptFlipStopped => "已停止修复纹理朝向",
+            TranslationKey::OptWaylithWarning => "RimWorld 1.7+ (Waylith) 会自动管理纹理缓存，外部 DDS 转换已禁用。",
+
+            // Analyzer View
+            TranslationKey::CrashTitle => "日志分析器",
+            TranslationKey::CrashSubtitle => "分析 Player.log 快速定位导致报错与崩溃的冲突模组",
+            TranslationKey::CrashBtnAnalyze => "分析日志",
+            TranslationKey::CrashBtnCopyPrompt => "复制给 AI",
+            TranslationKey::CrashNoErrors => "日志中未发现严重错误",
+            TranslationKey::AnalyzerBrowseLog => "选择 Player.log 文件",
+            TranslationKey::CrashSummaryHardCrash => "游戏异常崩溃！检测到 {} 个可疑冲突模组。",
+            TranslationKey::CrashSummaryCulprits => "发现 {} 个引发错误的模组。",
+            TranslationKey::CrashSummaryErrorsOnly => "日志中发现 {} 处错误，但未确定具体引发模组。",
+            TranslationKey::CrashSummaryClean => "日志分析完毕，未发现严重错误。",
+            TranslationKey::CrashFileStats => "文件：{} • 共 {} 行 • {} 处错误",
+            TranslationKey::CrashAnalyzing => "正在分析日志...",
+            TranslationKey::CrashFileNotFound => "未找到 Player.log 日志文件",
+
+            // GPU & OOM
+            TranslationKey::VramWarningTitle => "显存可能不足警告",
+            TranslationKey::VramWarningBody => "已启用模组的纹理预计需要 ~{} MB 显存，已接近或超过显卡显存 ({} MB)。这可能导致 DXGI 887a0005 显卡重置崩溃。",
+            TranslationKey::VramBtnOptimize => "前往优化纹理",
+            TranslationKey::VramBtnLaunchAnyway => "仍然启动",
+            TranslationKey::CrashGpuResetTitle => "显卡驱动重置 (DXGI 887a0005)",
+            TranslationKey::CrashGpuResetDesc => "游戏在加载大量高分辨率纹理时导致显卡超时重置 (TDR)。",
+            TranslationKey::CrashGpuAdviceOptimizer => "在「纹理优化」中限制纹理最大尺寸为 2048 或 1024",
+            TranslationKey::CrashGpuAdviceHighQuality => "在游戏设置中关闭「High quality textures」",
+            TranslationKey::CrashGpuAdviceDriver => "更新显卡驱动程序",
+            TranslationKey::CrashGpuAdviceEventLog => "查看 Windows 事件查看器中的系统日志获取详细信息",
+            TranslationKey::CrashOomTitle => "系统内存不足 (Out of Memory)",
+            TranslationKey::CrashOomDesc => "游戏或系统物理内存与虚拟内存耗尽导致异常崩溃。",
+            TranslationKey::CrashOomAdviceCloseApps => "启动游戏前关闭占用内存较大的浏览器及后台应用",
+            TranslationKey::CrashOomAdvicePagingFile => "增加 Windows 虚拟内存页面文件大小",
+            TranslationKey::CrashOomAdviceReduceMods => "精简或减少大型扩展模组",
+            TranslationKey::CrashBtnGoToOptimizer => "前往纹理优化",
+
+            // Last Good
+            TranslationKey::LastGoodTitle => "自上次正常运行以来的更改",
+            TranslationKey::LastGoodUpdated => "更新了 {} 个模组",
+            TranslationKey::LastGoodAdded => "新增了 {} 个模组",
+            TranslationKey::LastGoodRemoved => "移除了 {} 个模组",
+            TranslationKey::LastGoodOrderChanged => "模组加载顺序已更改",
+            TranslationKey::LastGoodNoChanges => "自上次正常运行以来模组列表无变动",
+            TranslationKey::LastGoodNoSnapshot => "暂无正常运行记录。成功启动无报错后将自动记录。",
+            TranslationKey::LastGoodSaveBtn => "记为正常状态",
+            TranslationKey::LastGoodSavedAt => "记录于：{}",
+            TranslationKey::LastGoodUpdatedAdvice => "建议首先排查这些最近更新或变动的模组",
+            TranslationKey::LastGoodBtnBisect => "仅在更新的模组中二分查找问题",
+            TranslationKey::LastGoodSavedMsg => "已将当前模组状态保存为最新正常状态",
+
+            // F13: Log viewer, export, patterns
+            TranslationKey::AnalyzerTabReport => "分析报告",
+            TranslationKey::AnalyzerTabFullLog => "完整日志",
+            TranslationKey::AnalyzerSaveReport => "保存报告",
+            TranslationKey::AnalyzerFilterHint => "过滤日志内容...",
+            TranslationKey::AnalyzerFilterAll => "全部",
+            TranslationKey::AnalyzerFilterErrors => "错误",
+            TranslationKey::AnalyzerFilterWarnings => "警告",
+            TranslationKey::AnalyzerFilterInfo => "信息",
+            TranslationKey::AnalyzerPerfTitle => "性能优化建议",
+            TranslationKey::AnalyzerPerfBody => "考虑使用 RocketMan, Performance Fish 或 Performance Optimizer 模组以显著提升游戏帧率。",
+            TranslationKey::AnalyzerCopyLine => "复制该行",
+            TranslationKey::SeverityBrokenTexture => "损坏的纹理文件",
+            TranslationKey::SeverityCrossReference => "缺失跨模组交叉引用",
+            TranslationKey::SeverityInstantiation => "Def 实例化错误",
+            TranslationKey::SeverityHarmony => "Harmony 补丁冲突",
+
+            // F12: Save backup
+            TranslationKey::SettingsBackupSaveBeforeLaunch => "启动游戏前自动备份最新存档",
+            TranslationKey::SettingsBackupSaveKeepCount => "每个存档保留的备份数量",
+            TranslationKey::SettingsBackupSaveHint => "备份保存在 Saves/Backups 目录，不影响游戏内存档列表",
+            TranslationKey::SavesBtnOpenBackups => "打开备份文件夹",
+
+            // S1: Stop waiting
+            TranslationKey::SteamBtnStopWaiting => "停止等待",
+            TranslationKey::SteamStoppedWaiting => "已停止等待 Steam 客户端",
+
+            // F11: Load time
+            TranslationKey::LoadTimeTitle => "游戏加载时间",
+            TranslationKey::LoadTimeLastRun => "上次加载耗时：{}",
+            TranslationKey::LoadTimeHistoryTitle => "历史加载记录",
+            TranslationKey::LoadTimeHistoryEmpty => "暂无加载记录。启动游戏后将自动统计。",
+
+            // Settings View
+            TranslationKey::SettingsTitle => "程序设置",
+            TranslationKey::SettingsSubtitle => "配置游戏路径、启动参数及界面外观",
+            TranslationKey::SettingsLanguage => "界面语言",
+            TranslationKey::SettingsPathsTitle => "路径设置",
+            TranslationKey::SettingsRimWorldPath => "RimWorld 游戏根目录",
+            TranslationKey::SettingsWorkshopPath => "Steam 创意工坊目录",
+            TranslationKey::SettingsConfigPath => "配置文件路径 (ModsConfig.xml)",
+            TranslationKey::SettingsLaunchTitle => "启动选项",
+            TranslationKey::SettingsBtnLaunchRimWorld => "运行游戏",
+            TranslationKey::SettingsDbTitle => "规则数据库",
+            TranslationKey::SettingsBtnUpdateDb => "更新排序规则",
+            TranslationKey::SettingsNotFound => "未找到",
+            TranslationKey::SettingsBrowse => "浏览...",
+            TranslationKey::SettingsDbCount => "已加载 {} 条规则",
+            TranslationKey::SettingsFont => "界面字体",
+            TranslationKey::SettingsTextSize => "文本缩放",
+            TranslationKey::SteamCmdCardTitle => "SteamCMD 下载工具",
+            TranslationKey::SettingsUpdateCheck => "自动检查更新",
+            TranslationKey::SettingsUpdateCheckHint => "每天自动检查 GitHub 上的新版本",
+            TranslationKey::SettingsTabsTitle => "标签页显示设置",
+            TranslationKey::SettingsTabsHint => "自定义界面上方显示的标签页",
+
+            // Mod Lists (Sets)
+            TranslationKey::SetsPicker => "当前模组列表",
+            TranslationKey::SetsPickerHint => "选择要应用的模组列表",
+            TranslationKey::SetsNoneYet => "暂无模组列表",
+            TranslationKey::SetsModsCount => "{} 个模组",
+            TranslationKey::SetsSaveAsNew => "保存为新列表",
+            TranslationKey::SetsOverwrite => "覆盖当前列表",
+            TranslationKey::SetsRename => "重命名",
+            TranslationKey::SetsDelete => "删除列表",
+            TranslationKey::SetsOpenFolder => "打开列表目录",
+            TranslationKey::SetsLoaded => "已加载模组列表「{}」",
+            TranslationKey::SetsSaved => "已保存模组列表「{}」",
+            TranslationKey::SetsRenamed => "已重命名为「{}」",
+            TranslationKey::SetsDeleted => "已删除模组列表「{}」",
+            TranslationKey::SetsTitle => "模组列表管理",
+            TranslationKey::SetsApplied => "已应用模组列表「{}」",
+            TranslationKey::SetsBtnApply => "应用列表",
+            TranslationKey::SetsBtnApplyPlay => "应用并启动游戏",
+            TranslationKey::SetsBtnOpenInMods => "在模组页查看",
+            TranslationKey::SetsBtnSaveHere => "保存至此处",
+            TranslationKey::SetsBtnDuplicate => "复制列表",
+            TranslationKey::SetsBtnImport => "导入模组列表",
+            TranslationKey::SetsBtnExport => "导出模组列表",
+            TranslationKey::SetsBtnCopyText => "复制列表文本",
+
+            // Saves View
+            TranslationKey::SavesTitle => "存档管理",
+            TranslationKey::SavesHint => "查看并管理 RimWorld 游戏存档",
+            TranslationKey::SavesSearch => "搜索存档...",
+            TranslationKey::SavesRefresh => "刷新存档列表",
+            TranslationKey::SavesNone => "未找到游戏存档",
+            TranslationKey::SavesBtnLoad => "按存档同步模组",
+            TranslationKey::SavesBtnToSet => "将存档另存为模组列表",
+
+            // Bisect (Find Broken Mod)
+            TranslationKey::BisectTitle => "二分查找冲突模组",
+            TranslationKey::BisectStart => "开始查找",
+            TranslationKey::BisectStepBack => "返回上一步",
+            TranslationKey::BisectAbort => "取消查找",
+            TranslationKey::BisectQuestion => "游戏是否仍然报错或崩溃？",
+            TranslationKey::BisectYes => "是，仍有问题",
+            TranslationKey::BisectNo => "否，运行正常",
+
+            // Relations
+            TranslationKey::RelTranslation => "汉化包",
+            TranslationKey::RelTranslationHint => "所选模组的语言汉化/翻译包",
+            TranslationKey::RelAddon => "扩展模组",
+            TranslationKey::RelAddonHint => "所选模组的附属扩展包",
+            TranslationKey::RelOriginal => "本体模组",
+            TranslationKey::RelOriginalHint => "当前汉化或扩展所依赖的原模组",
+            TranslationKey::RelDependency => "前置依赖",
+            TranslationKey::RelDependencyHint => "当前模组运行所必需的前置模组",
+            TranslationKey::RelDependent => "后置依赖",
+            TranslationKey::RelDependentHint => "依赖于当前模组的其他模组",
+
+            // AI Prompt
+            TranslationKey::AiErrorsInLog => "日志中的错误总数：{}",
+            TranslationKey::AiHintGpuReset => "崩溃前日志显示显卡驱动重置 (DXGI 887a0005 设备被移除)。",
+            TranslationKey::AiHintOutOfMemory => "崩溃前日志显示内存耗尽 (Out of Memory)。",
+            TranslationKey::AiCrashExcerpt => "崩溃前的日志片段：",
+            TranslationKey::AiRecentErrors => "日志最后的报错信息：",
+
+            // Categories
+            TranslationKey::CategoriesAll => "全部类别",
+            TranslationKey::CategoriesMenu => "类别筛选",
+            TranslationKey::CategoriesReset => "重置类别",
+            TranslationKey::CategoriesManual => "手动指定",
+            TranslationKey::CategoriesNone => "未分类",
+
+            _ => "",
         }
     }
 }
@@ -1620,6 +2196,12 @@ pub struct I18n {
 
 impl I18n {
     pub fn new(lang: Language) -> Self {
+        let val = match lang {
+            Language::Russian => 0,
+            Language::English => 1,
+            Language::Chinese => 2,
+        };
+        CURRENT_LANGUAGE.store(val, Ordering::Relaxed);
         ENGLISH.store(lang == Language::English, Ordering::Relaxed);
         Self { lang }
     }
@@ -1629,6 +2211,12 @@ impl I18n {
     }
 
     pub fn set_language(&mut self, lang: Language) {
+        let val = match lang {
+            Language::Russian => 0,
+            Language::English => 1,
+            Language::Chinese => 2,
+        };
+        CURRENT_LANGUAGE.store(val, Ordering::Relaxed);
         ENGLISH.store(lang == Language::English, Ordering::Relaxed);
         self.lang = lang;
     }
@@ -1651,12 +2239,39 @@ mod tests {
 
     #[test]
     fn tr_follows_interface_language() {
+        let n = 3;
         let _ru = I18n::new(Language::Russian);
         assert_eq!(tr!("Да", "Yes"), "Да");
-        assert_eq!(tr!("Найдено: {}", "Found: {}", 3), "Найдено: 3");
+        assert_eq!(tr!("Да", "Yes", "是"), "Да");
+        assert_eq!(tr!("Найдено: {}", "Found: {}", n), "Найдено: 3");
+        assert_eq!(tr!("Найдено: {}", "Found: {}", "找到: {}", n), "Найдено: 3");
+
         let _en = I18n::new(Language::English);
         assert_eq!(tr!("Да", "Yes"), "Yes");
-        assert_eq!(tr!("Найдено: {}", "Found: {}", 3), "Found: 3");
-        ENGLISH.store(false, Ordering::Relaxed);
+        assert_eq!(tr!("Да", "Yes", "是"), "Yes");
+        assert_eq!(tr!("Найдено: {}", "Found: {}", n), "Found: 3");
+        assert_eq!(tr!("Найдено: {}", "Found: {}", "找到: {}", n), "Found: 3");
+
+        let _zh = I18n::new(Language::Chinese);
+        assert_eq!(tr!("Да", "Yes"), "Yes");
+        assert_eq!(tr!("Да", "Yes", "是"), "是");
+        assert_eq!(tr!("Да", "Yes", ""), "Yes");
+        assert_eq!(tr!("Найдено: {}", "Found: {}", n), "Found: 3");
+        assert_eq!(tr!("Найдено: {}", "Found: {}", "找到: {}", n), "找到: 3");
+        assert_eq!(tr!("Найдено: {}", "Found: {}", "", n), "Found: 3");
+
+        let _reset = I18n::new(Language::Russian);
+    }
+
+    #[test]
+    fn chinese_translation_fallback() {
+        let mut i18n = I18n::new(Language::Chinese);
+        assert_eq!(i18n.get(TranslationKey::TabMods), "模组");
+        assert_eq!(i18n.get(TranslationKey::TabSettings), "设置");
+        assert_eq!(
+            i18n.get(TranslationKey::VersionPrepatcher),
+            TranslationKey::VersionPrepatcher.translate(Language::English)
+        );
+        i18n.set_language(Language::Russian);
     }
 }

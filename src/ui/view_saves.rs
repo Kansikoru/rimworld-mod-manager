@@ -20,6 +20,7 @@ enum SaveAction {
     Dialog(SaveDialog),
     Refresh,
     OpenFolder,
+    OpenBackupsFolder,
     DownloadWorkshopDb,
 }
 
@@ -130,6 +131,13 @@ fn apply_actions(app: &mut App, actions: Vec<SaveAction>) {
             SaveAction::OpenFolder => {
                 if let Some(dir) = app.saves_folder() {
                     open_external(dir);
+                }
+            }
+            SaveAction::OpenBackupsFolder => {
+                if let Some(dir) = app.saves_folder() {
+                    let bdir = crate::saves::save_backups_dir(&dir);
+                    let _ = std::fs::create_dir_all(&bdir);
+                    open_external(bdir);
                 }
             }
             SaveAction::DownloadWorkshopDb => app.download_workshop_index(),
@@ -306,6 +314,9 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
             if secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::ModsBtnFolder)).clicked() {
                 actions.push(SaveAction::OpenFolder);
             }
+            if secondary_button_icon(ui, ICON_HISTORY, t.get(TranslationKey::SavesBtnOpenBackups)).clicked() {
+                actions.push(SaveAction::OpenBackupsFolder);
+            }
         });
         return;
     };
@@ -398,6 +409,9 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
         }
         if secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::ModsBtnFolder)).clicked() {
             actions.push(SaveAction::OpenFolder);
+        }
+        if secondary_button_icon(ui, ICON_HISTORY, t.get(TranslationKey::SavesBtnOpenBackups)).clicked() {
+            actions.push(SaveAction::OpenBackupsFolder);
         }
         if danger_button_icon(ui, ICON_TRASH, t.get(TranslationKey::SetsBtnDelete)).clicked() {
             actions.push(SaveAction::Dialog(SaveDialog::Delete { name: name.clone() }));
