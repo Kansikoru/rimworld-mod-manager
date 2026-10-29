@@ -106,7 +106,42 @@ fn fade_row(ui: &Ui, rect: egui::Rect) {
         .rect_filled(rect, Rounding::same(6.0), THEME.bg_surface.gamma_multiply(0.65));
 }
 
+/// Width of the details strip on the right (the player can drag its edge).
+const SIDE_DETAILS_W: f32 = 320.0;
+
+/// The mod's details on the right, as a strip the full height of the tab, when the window
+/// is wide enough for it and both lists; otherwise (or after its close button) as a card
+/// under the active list.
 fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
+    let side = app.is_details_panel_visible
+        && app.ui_prefs.details_side
+        && ui.available_width() >= NARROW_MODS + SIDE_DETAILS_W;
+    if !side {
+        render_mods_main(app, ui, false);
+        return;
+    }
+    egui::SidePanel::right("mod_details_side")
+        .resizable(true)
+        .default_width(SIDE_DETAILS_W)
+        .width_range(260.0..=560.0)
+        .show_separator_line(false)
+        .frame(egui::Frame::none().inner_margin(egui::Margin {
+            left: 12.0,
+            right: 0.0,
+            top: 4.0,
+            bottom: 4.0,
+        }))
+        // No scrolling of its own: the card stands to the bottom, only a long description
+        // scrolls inside it.
+        .show_inside(ui, |ui| render_mod_details_panel(app, ui, true));
+    egui::CentralPanel::default()
+        .frame(egui::Frame::none())
+        .show_inside(ui, |ui| render_mods_main(app, ui, true));
+}
+
+/// Toolbar, filters and the two lists. `side`: the details are in the strip on the right,
+/// so the active list gets no card under it.
+fn render_mods_main(app: &mut App, ui: &mut Ui, side: bool) {
     let t = app.i18n;
 
     // Toolbar: secondary "Auto-Sort", primary "Save Order", amber "● unsaved", library actions, search.
@@ -418,7 +453,7 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
             // A short window gives the space to the list; the details card opens from
             // the toolbar's info button.
             let details_fit = height > 420.0;
-            panel_card(ui, width, height, |ui| render_active_panel(app, ui, details_fit));
+            panel_card(ui, width, height, |ui| render_active_panel(app, ui, details_fit, !side));
         } else {
             panel_card(ui, width, height, |ui| render_inactive_mods_column(app, ui));
         }
@@ -436,7 +471,9 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = gap;
         panel_card(ui, col_width, total_height, |ui| render_inactive_mods_column(app, ui));
-        panel_card(ui, col_width, total_height, |ui| render_active_panel(app, ui, true));
+        panel_card(ui, col_width, total_height, |ui| {
+            render_active_panel(app, ui, true, !side)
+        });
     });
 }
 
@@ -446,19 +483,20 @@ const NARROW_MODS: f32 = 940.0;
 /// Below this width the category chips fold behind a "Filters" button.
 const NARROW_FILTERS: f32 = 900.0;
 
-/// The active list with the details card at its bottom. In a short window (`details_fit`
-/// false) the card gets at most 40% of the height and scrolls, so the list stays usable.
-fn render_active_panel(app: &mut App, ui: &mut Ui, details_fit: bool) {
+/// The active list with the details card at its bottom (`card`: the details aren't in the
+/// strip on the right). In a short window (`details_fit` false) the card gets at most 40%
+/// of the height and scrolls, so the list stays usable.
+fn render_active_panel(app: &mut App, ui: &mut Ui, details_fit: bool, card: bool) {
     // Details card takes exactly its own height at the bottom; the list gets the rest.
     // In a short window the summary (no mod selected) isn't worth the space.
-    let show_card = app.is_details_panel_visible && (details_fit || app.selected_mod_id.is_some());
+    let show_card = card && app.is_details_panel_visible && (details_fit || app.selected_mod_id.is_some());
     if show_card {
         let panel = egui::TopBottomPanel::bottom("mod_details_card")
             .frame(egui::Frame::none().inner_margin(egui::Margin::same(8.0)))
             .show_separator_line(false)
             .resizable(false);
         if details_fit {
-            panel.show_inside(ui, |ui| render_mod_details_panel(app, ui));
+            panel.show_inside(ui, |ui| render_mod_details_panel(app, ui, false));
         } else {
             let max_h = (ui.available_height() * 0.4).max(90.0);
             panel.max_height(max_h).show_inside(ui, |ui| {
@@ -466,7 +504,7 @@ fn render_active_panel(app: &mut App, ui: &mut Ui, details_fit: bool) {
                     .id_salt("mod_details_scroll")
                     // Leave the panel's own margins out, so the card never covers the list.
                     .max_height(max_h - 24.0)
-                    .show(ui, |ui| render_mod_details_panel(app, ui));
+                    .show(ui, |ui| render_mod_details_panel(app, ui, false));
             });
         }
     }
@@ -2144,7 +2182,9 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
 }
 
 /// Mod details panel at the bottom of the right column.
-fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
+/// The selected mod's details (or the summary). `side`: drawn in the strip on the right,
+/// where the close button moves them back under the active list.
+fn render_mod_details_panel(app: &mut App, ui: &mut Ui, side: bool) {
     let selected_opt = app.selected_mod_id.as_ref().and_then(|sel_id| {
         app.all_mods
             .iter()
@@ -2163,6 +2203,10 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
 
     frame.show(ui, |ui| {
         ui.set_width(ui.available_width());
+        if side {
+            // The strip on the right: the card reaches the bottom of the tab.
+            ui.set_min_height(ui.available_height());
+        }
         ui.spacing_mut().item_spacing.y = 8.0;
         // Header: icon + title (click collapses), close button on the right
         ui.horizontal(|ui| {
@@ -2187,10 +2231,32 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
                 app.is_details_panel_collapsed = !app.is_details_panel_collapsed;
             }
 
-            // Close button [✕] to hide panel
+            // Close button [✕]: the strip on the right goes back to the card under the list;
+            // the card hides. The card can move to the right again.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if icon_button(ui, ICON_CLOSE, Vec2::new(14.0, 14.0), THEME.text_muted).on_hover_text(app.i18n.get(TranslationKey::ModsHideInfoPanel)).clicked() {
-                    app.is_details_panel_visible = false;
+                let close_hint = if side {
+                    app.i18n.get(TranslationKey::ModsDetailsToBottom)
+                } else {
+                    app.i18n.get(TranslationKey::ModsHideInfoPanel)
+                };
+                if icon_button(ui, ICON_CLOSE, Vec2::new(14.0, 14.0), THEME.text_muted)
+                    .on_hover_text(close_hint)
+                    .clicked()
+                {
+                    if side {
+                        app.ui_prefs.details_side = false;
+                        let _ = app.ui_prefs.save();
+                    } else {
+                        app.is_details_panel_visible = false;
+                    }
+                }
+                if !side
+                    && small_button(ui, app.i18n.get(TranslationKey::ModsDetailsToSide), ButtonStyle::Secondary)
+                        .on_hover_text(app.i18n.get(TranslationKey::ModsDetailsToSideHint))
+                        .clicked()
+                {
+                    app.ui_prefs.details_side = true;
+                    let _ = app.ui_prefs.save();
                 }
             });
         });
@@ -2355,21 +2421,44 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui) {
                 app.subscribe_steam_mod(&ws_id);
             }
 
-            // Description box
-            if !m.description.is_empty() {
+            // Description box (the card under the list: a small scrolling box next to the
+            // preview; the strip on the right: below, full width, see after this block)
+            if !side && !m.description.is_empty() {
                 egui::ScrollArea::vertical()
                     .id_salt("mod_desc_scroll")
                     .max_height(60.0)
                     .show(ui, |ui| {
-                        ui.label(
-                            egui::RichText::new(&m.description)
-                                .color(THEME.text_secondary)
-                                .size(12.0),
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&m.description)
+                                    .color(THEME.text_secondary)
+                                    .size(12.0),
+                            )
+                            .wrap(),
                         );
                     });
             }
                 }); // close text column
             }); // close horizontal
+
+            // The strip on the right: the description takes the rest of the height, full width.
+            if side && !m.description.is_empty() {
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .id_salt("mod_desc_side_scroll")
+                    .auto_shrink([false, false])
+                    .max_height(ui.available_height().max(80.0))
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&m.description)
+                                    .color(THEME.text_secondary)
+                                    .size(12.5),
+                            )
+                            .wrap(),
+                        );
+                    });
+            }
         } else {
             // No mod selected: counts + reminder ("Mod list summary")
             let available = app.all_mods.len().saturating_sub(app.active_mods.len());

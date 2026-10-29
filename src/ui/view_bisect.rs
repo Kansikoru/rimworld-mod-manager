@@ -25,23 +25,46 @@ pub fn render_bisect_window(app: &mut App, ctx: &egui::Context) {
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .max_height(max_height)
-        .vscroll(true)
         .show(ctx, |ui| {
-            ui.set_width(width);
-            if app.bisect.is_some() {
-                render_search(app, ui);
-            } else {
-                render_setup(app, ui);
-            }
-            if let Some(note) = app.bisect_note.clone() {
-                ui.add_space(6.0);
-                ui.add(egui::Label::new(egui::RichText::new(note).color(THEME.accent_rose)).wrap());
-            }
+            // Solid scroll bars take their own room: the window's bar and the bar of a list
+            // inside it no longer lie on top of each other at the right edge.
+            ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+            egui::ScrollArea::vertical()
+                .id_salt("bisect_window_scroll")
+                .max_height(max_height)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.set_width(width);
+                    if app.bisect.is_some() {
+                        render_search(app, ui);
+                    } else {
+                        render_setup(app, ui);
+                    }
+                    if let Some(note) = app.bisect_note.clone() {
+                        ui.add_space(6.0);
+                        ui.add(egui::Label::new(egui::RichText::new(note).color(THEME.accent_rose)).wrap());
+                    }
+                });
         });
     if !open {
         // The search itself is kept: it can be continued from the header or the analyzer.
         app.close_bisect_window();
     }
+}
+
+/// A dark box with a border for a scrolling list inside the window.
+fn list_box(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
+    egui::Frame {
+        inner_margin: egui::Margin::symmetric(8.0, 6.0),
+        rounding: egui::Rounding::same(6.0),
+        fill: THEME.bg_dark,
+        stroke: egui::Stroke::new(1.0_f32, THEME.border_subtle),
+        ..Default::default()
+    }
+    .show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        add_contents(ui);
+    });
 }
 
 fn muted(ui: &mut Ui, text: &str) {
@@ -68,27 +91,30 @@ fn render_setup(app: &mut App, ui: &mut Ui) {
     search_input_width(ui, &mut app.bisect_filter, t.get(TranslationKey::BisectFilter), field_w);
     ui.add_space(4.0);
     let query = app.bisect_filter.trim().to_lowercase();
-    egui::ScrollArea::vertical()
-        .id_salt("bisect_keep_scroll")
-        // Shorter in a short window, so "Start" stays within reach.
-        .max_height((ui.ctx().screen_rect().height() * 0.3).clamp(100.0, 240.0))
-        .auto_shrink([false, true])
-        .show(ui, |ui| {
-            for id in &order {
-                let name = app.mod_display_name(id);
-                if !query.is_empty() && !name.to_lowercase().contains(&query) && !id.contains(&query) {
-                    continue;
-                }
-                let mut on = keep.contains(id);
-                if ui.checkbox(&mut on, egui::RichText::new(&name).size(12.5)).changed() {
-                    if on {
-                        keep.insert(id.clone());
-                    } else {
-                        keep.remove(id);
+    // The list in a box of its own: its scroll bar stays inside the box.
+    list_box(ui, |ui| {
+        egui::ScrollArea::vertical()
+            .id_salt("bisect_keep_scroll")
+            // Shorter in a short window, so "Start" stays within reach.
+            .max_height((ui.ctx().screen_rect().height() * 0.3).clamp(100.0, 240.0))
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                for id in &order {
+                    let name = app.mod_display_name(id);
+                    if !query.is_empty() && !name.to_lowercase().contains(&query) && !id.contains(&query) {
+                        continue;
+                    }
+                    let mut on = keep.contains(id);
+                    if ui.checkbox(&mut on, egui::RichText::new(&name).size(12.5)).changed() {
+                        if on {
+                            keep.insert(id.clone());
+                        } else {
+                            keep.remove(id);
+                        }
                     }
                 }
-            }
-        });
+            });
+    });
 
     // What the search will look like with these ticks.
     let keep_list: Vec<String> = keep.iter().cloned().collect();
@@ -181,18 +207,21 @@ fn render_search(app: &mut App, ui: &mut Ui) {
         egui::CollapsingHeader::new(egui::RichText::new(t.get(TranslationKey::BisectShowMods)).size(12.0))
             .id_salt(("bisect_tested", search.stage.answers))
             .show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .id_salt("bisect_tested_scroll")
-                    .max_height(160.0)
-                    .show(ui, |ui| {
-                        for id in &test.part {
-                            ui.label(
-                                egui::RichText::new(app.mod_display_name(id))
-                                    .size(12.0)
-                                    .color(THEME.text_secondary),
-                            );
-                        }
-                    });
+                list_box(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("bisect_tested_scroll")
+                        .max_height(160.0)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            for id in &test.part {
+                                ui.label(
+                                    egui::RichText::new(app.mod_display_name(id))
+                                        .size(12.0)
+                                        .color(THEME.text_secondary),
+                                );
+                            }
+                        });
+                });
             });
     }
     ui.add_space(8.0);

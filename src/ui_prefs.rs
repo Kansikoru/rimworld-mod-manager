@@ -105,10 +105,18 @@ pub struct UiPrefs {
     pub text_scale: f32,
     #[serde(default)]
     pub tabs: TabPrefs,
+    /// Mods tab: the mod's details in a full-height strip on the right (true) or as a card
+    /// under the active list (false, after the strip's close button).
+    #[serde(default = "default_true")]
+    pub details_side: bool,
 }
 
 fn default_text_scale() -> f32 {
     1.1
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for UiPrefs {
@@ -117,6 +125,7 @@ impl Default for UiPrefs {
             font: UiFont::default(),
             text_scale: default_text_scale(),
             tabs: TabPrefs::default(),
+            details_side: true,
         }
     }
 }
