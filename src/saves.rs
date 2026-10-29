@@ -111,16 +111,15 @@ pub fn backup_latest_save(saves_dir: &Path, keep: usize) -> std::io::Result<Opti
 
     std::fs::copy(&latest_path, &target)?;
 
-    // Rotate backups for this save stem
-    let stem_prefix = format!("{stem}.");
+    // Rotate backups of exactly this save: "Colony.2" has its own ("Colony." is a prefix of both).
     let mut backups: Vec<PathBuf> = std::fs::read_dir(&backup_dir)?
         .flatten()
         .map(|e| e.path())
         .filter(|p| {
             p.file_name()
                 .and_then(|n| n.to_str())
-                .map(|n| n.starts_with(&stem_prefix) && n.ends_with(".rws"))
-                .unwrap_or(false)
+                .and_then(parse_backup_stem)
+                .is_some_and(|s| s == stem)
         })
         .collect();
 
@@ -141,7 +140,6 @@ pub fn list_save_backups(saves_dir: &Path, stem: Option<&str>) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(&backup_dir) else {
         return Vec::new();
     };
-    let prefix = stem.map(|s| format!("{s}."));
     let mut list: Vec<PathBuf> = entries
         .flatten()
         .map(|e| e.path())
@@ -149,13 +147,9 @@ pub fn list_save_backups(saves_dir: &Path, stem: Option<&str>) -> Vec<PathBuf> {
             let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
                 return false;
             };
-            if !name.ends_with(".rws") {
-                return false;
-            }
-            if let Some(ref pfx) = prefix {
-                name.starts_with(pfx)
-            } else {
-                true
+            match stem {
+                Some(s) => parse_backup_stem(name) == Some(s),
+                None => name.ends_with(".rws"),
             }
         })
         .collect();
@@ -487,6 +481,18 @@ mod tests {
 
         let backups_all = list_save_backups(&dir, None);
         assert_eq!(backups_all.len(), 3, "2 from ColonyB + 1 from ColonyA");
+
+        // "ColonyB.2" starts like "ColonyB.": its backups are its own, never rotated away
+        // with ColonyB's.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(dir.join("ColonyB.2.rws"), "data_b2").unwrap();
+        backup_latest_save(&dir, 2).unwrap().unwrap();
+        assert_eq!(list_save_backups(&dir, Some("ColonyB.2")).len(), 1);
+        assert_eq!(
+            list_save_backups(&dir, Some("ColonyB")).len(),
+            2,
+            "ColonyB.2's backup isn't counted as ColonyB's"
+        );
 
         // Restore ColonyB from backup
         std::fs::remove_file(&save_b).unwrap();

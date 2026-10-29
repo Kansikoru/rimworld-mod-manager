@@ -563,6 +563,36 @@ fn classify_log_line(line: &str) -> LineLevel {
     }
 }
 
+/// A matching log line: (line number, byte start, byte end, level).
+type LogRow = (usize, usize, usize, LineLevel);
+/// The last filter of the full log view: (search, level, log file, log size) and its rows.
+type FilterCache = (
+    (String, crate::analyzer::LogLevelFilter, std::path::PathBuf, usize),
+    std::sync::Arc<Vec<LogRow>>,
+);
+
+/// Lines of `content` of the given level that contain `filter` (already lower case).
+fn filter_log_lines(content: &str, filter: &str, level_filter: crate::analyzer::LogLevelFilter) -> Vec<LogRow> {
+    let mut rows = Vec::new();
+    let mut start = 0usize;
+    for (idx, raw) in content.split_inclusive('\n').enumerate() {
+        let line = raw.trim_end_matches(['\n', '\r']);
+        let (line_start, line_end) = (start, start + line.len());
+        start += raw.len();
+        let level = classify_log_line(line);
+        let matches_level = match level_filter {
+            crate::analyzer::LogLevelFilter::All => true,
+            crate::analyzer::LogLevelFilter::Errors => level == LineLevel::Error,
+            crate::analyzer::LogLevelFilter::Warnings => level == LineLevel::Warning,
+            crate::analyzer::LogLevelFilter::Info => level == LineLevel::Info,
+        };
+        if matches_level && (filter.is_empty() || line.to_lowercase().contains(filter)) {
+            rows.push((idx + 1, line_start, line_end, level));
+        }
+    }
+    rows
+}
+
 fn render_full_log_view(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
     let Some(ref report) = app.log_report else { return };
@@ -642,27 +672,27 @@ fn render_full_log_view(app: &mut App, ui: &mut Ui) {
     let filter_text = app.log_filter_text.trim().to_lowercase();
     let level_filter = app.log_level_filter;
 
-    // Filter matching lines
-    let filtered_lines: Vec<(usize, &str, LineLevel)> = report
-        .raw_content
-        .lines()
-        .enumerate()
-        .filter_map(|(idx, line)| {
-            let level = classify_log_line(line);
-            let matches_level = match level_filter {
-                crate::analyzer::LogLevelFilter::All => true,
-                crate::analyzer::LogLevelFilter::Errors => level == LineLevel::Error,
-                crate::analyzer::LogLevelFilter::Warnings => level == LineLevel::Warning,
-                crate::analyzer::LogLevelFilter::Info => level == LineLevel::Info,
-            };
-            if !matches_level {
-                return None;
-            }
-            if !filter_text.is_empty() && !line.to_lowercase().contains(&filter_text) {
-                return None;
-            }
-            Some((idx + 1, line, level))
-        })
+    // Matching lines, worked out again only when the search, the level or the log change: a
+    // log has tens of thousands of lines, too many to sort through every frame.
+    let key = (
+        filter_text,
+        level_filter,
+        report.log_path.clone(),
+        report.raw_content.len(),
+    );
+    let cache_id = egui::Id::new("analyzer_full_log_filter");
+    let cached: Option<FilterCache> = ui.data(|d| d.get_temp(cache_id));
+    let rows = match cached {
+        Some(c) if c.0 == key => c.1,
+        _ => {
+            let rows = std::sync::Arc::new(filter_log_lines(&report.raw_content, &key.0, level_filter));
+            ui.data_mut(|d| d.insert_temp(cache_id, (key, rows.clone())));
+            rows
+        }
+    };
+    let filtered_lines: Vec<(usize, &str, LineLevel)> = rows
+        .iter()
+        .map(|&(line_no, start, end, level)| (line_no, &report.raw_content[start..end], level))
         .collect();
 
     let total_lines = report.total_lines;
@@ -734,4 +764,32 @@ fn render_full_log_view(app: &mut App, ui: &mut Ui) {
                 }
             });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn full_log_filter_slices_lines_exactly() {
+        let log = "Loading mods\r\nException: boom\r\nWarning: careful\nplain line\n";
+        let all = filter_log_lines(log, "", crate::analyzer::LogLevelFilter::All);
+        assert_eq!(all.len(), 4);
+        let text: Vec<&str> = all.iter().map(|&(_, s, e, _)| &log[s..e]).collect();
+        assert_eq!(
+            text,
+            ["Loading mods", "Exception: boom", "Warning: careful", "plain line"]
+        );
+
+        let errors = filter_log_lines(log, "", crate::analyzer::LogLevelFilter::Errors);
+        assert_eq!(
+            errors.iter().map(|r| r.0).collect::<Vec<_>>(),
+            [2],
+            "line numbers from 1"
+        );
+
+        let found = filter_log_lines(log, "careful", crate::analyzer::LogLevelFilter::All);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].3, LineLevel::Warning);
+    }
 }

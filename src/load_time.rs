@@ -143,8 +143,8 @@ impl LoadTimeHistory {
             let remove_count = self.entries.len() - MAX_HISTORY_ENTRIES;
             self.entries.drain(0..remove_count);
         }
-
-        let _ = self.save();
+        // Saved by the caller (`save`): tests record into a history of their own without
+        // touching the player's real file.
     }
 }
 
@@ -166,20 +166,15 @@ pub fn format_duration(secs: f32, is_ru: bool) -> String {
     }
 }
 
-/// Parses total loading time from Player.log contents, if present.
+/// Total loading time, when the log itself reports it (load-time mods, Prepatcher).
+///
+/// Not from timestamps: a 1.7 log goes on until the game is closed, and neither 1.6 nor 1.7
+/// writes a "loading finished" line, so the last line minus the start is the whole session.
 pub fn parse_load_time_from_log(content: &str) -> Option<f32> {
-    // 1. Waylith (1.7+) timestamp analysis:
-    // Started: 2026-10-27 18:44:30.150 +01:00
-    // Entries: 2026-10-27 18:44:53.368 INFO ...
-    if let Some(t) = parse_waylith_load_time(content) {
-        return Some(t);
-    }
-
-    // 2. Mod-logged startup times (FasterGameLoading, StartupImpact, etc.)
-    let re_mod_time = Regex::new(
-        r"(?i)(?:Total loading time|Startup took|Game loaded in|Loaded in)\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)\s*s",
-    )
-    .ok();
+    // Mod-logged startup times (FasterGameLoading, StartupImpact...). Not a bare "Loaded in":
+    // mods log that for single files too.
+    let re_mod_time =
+        Regex::new(r"(?i)(?:Total loading time|Startup took|Game loaded in)\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)\s*s").ok();
     if let Some(ref re) = re_mod_time {
         for line in content.lines().rev() {
             if let Some(caps) = re.captures(line) {
@@ -192,7 +187,7 @@ pub fn parse_load_time_from_log(content: &str) -> Option<f32> {
         }
     }
 
-    // 3. Prepatcher vanilla load time
+    // Prepatcher's vanilla load time
     let re_prepatcher = Regex::new(r"vanilla load took\s*([0-9]+(?:\.[0-9]+)?)\s*s").ok();
     if let Some(ref re) = re_prepatcher {
         for line in content.lines() {
@@ -200,54 +195,6 @@ pub fn parse_load_time_from_log(content: &str) -> Option<f32> {
                 if let Some(val) = caps.get(1).and_then(|m| m.as_str().parse::<f32>().ok()) {
                     if val > 0.0 && val < 3600.0 {
                         return Some(val);
-                    }
-                }
-            }
-        }
-    }
-
-    None
-}
-
-/// Extracts seconds from a "HH:MM:SS.fff" time string.
-fn parse_time_of_day_secs(s: &str) -> Option<f64> {
-    let parts: Vec<&str> = s.split(':').collect();
-    if parts.len() != 3 {
-        return None;
-    }
-    let h: f64 = parts[0].parse().ok()?;
-    let m: f64 = parts[1].parse().ok()?;
-    let s: f64 = parts[2].parse().ok()?;
-    Some(h * 3600.0 + m * 60.0 + s)
-}
-
-fn parse_waylith_load_time(content: &str) -> Option<f32> {
-    let re_started = Regex::new(r"Started:\s+\d{4}-\d{2}-\d{2}\s+(\d{2}:\d{2}:\d{2}\.\d{3})").ok()?;
-    let re_entry_time = Regex::new(r"^(\d{4}-\d{2}-\d{2}\s+)?(\d{2}:\d{2}:\d{2}\.\d{3})").ok()?;
-
-    let mut start_secs: Option<f64> = None;
-    for line in content.lines().take(20) {
-        if let Some(caps) = re_started.captures(line) {
-            if let Some(m) = caps.get(1) {
-                start_secs = parse_time_of_day_secs(m.as_str());
-                break;
-            }
-        }
-    }
-
-    let start = start_secs?;
-
-    // Search backwards for the last log line that has a timestamp
-    for line in content.lines().rev() {
-        if let Some(caps) = re_entry_time.captures(line) {
-            if let Some(m) = caps.get(2) {
-                if let Some(end_secs) = parse_time_of_day_secs(m.as_str()) {
-                    let mut diff = end_secs - start;
-                    if diff < 0.0 {
-                        diff += 86400.0; // crossed midnight
-                    }
-                    if diff > 0.1 && diff < 3600.0 {
-                        return Some(diff as f32);
                     }
                 }
             }
@@ -269,21 +216,19 @@ mod tests {
         assert_eq!(format_duration(85.0, false), "1m 25s");
     }
 
+    /// A 1.7 log runs until the game closes: its last line isn't the end of loading.
     #[test]
-    fn parse_waylith_load_time_test() {
+    fn timestamps_alone_give_no_load_time() {
         let log = "\
 === Waylith log ===
 Started:   2026-10-27 18:44:30.150 +01:00
 Version:   1.7.4990.1069
-OS:        Microsoft Windows 10
 
-2026-10-27 18:44:31.048  INFO Vulkan initialized
-2026-10-27 18:44:53.368  INFO Loading complete
+2026-10-27 18:44:31.048  INFO [VulkanStartup] Vulkan binding is using the bundled loader.
+2026-10-27 19:32:53.368  INFO [Game] Saved game
+[SomeMod] Loaded in 0.3s
 ";
-        let time = parse_load_time_from_log(log);
-        assert!(time.is_some());
-        let secs = time.unwrap();
-        assert!((secs - 23.218).abs() < 0.01);
+        assert_eq!(parse_load_time_from_log(log), None);
     }
 
     #[test]

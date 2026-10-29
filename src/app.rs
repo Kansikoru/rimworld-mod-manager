@@ -284,8 +284,12 @@ pub struct App {
     pub opt_rollback_rx: Option<Receiver<RollbackResult>>,
     /// Background VRAM check report vs GPU capacity (V2).
     pub vram_report: Option<crate::optimizer::VramReport>,
-    vram_rx: Option<Receiver<crate::optimizer::VramCheckResult>>,
+    vram_rx: Option<Receiver<Result<crate::optimizer::VramCheckResult, ()>>>,
     vram_cache: HashMap<PathBuf, (u64, u64)>,
+    /// Active mods changed while a VRAM scan was already running: scan again when it finishes.
+    vram_recheck: bool,
+    /// "Play" is waiting for the running VRAM scan to finish before deciding whether to warn.
+    launch_after_vram_check: bool,
 
     // Analyzer State
     pub log_report: Option<LogReport>,
@@ -293,6 +297,9 @@ pub struct App {
     /// F9: Snapshot of the last known working run and diff with current configuration.
     pub last_good: Option<crate::last_good::LastGoodSnapshot>,
     pub last_good_diff: Option<crate::last_good::LastGoodDiff>,
+    last_good_rx: Option<Receiver<crate::last_good::LastGoodDiff>>,
+    /// The active list changed while the diff was being computed: compute it again.
+    last_good_rerun: bool,
     /// F13: Log viewer mode (Report / FullLog) and filters.
     pub log_view_mode: crate::analyzer::LogViewMode,
     pub log_filter_text: String,
@@ -329,10 +336,13 @@ pub struct App {
     pub steam_stop_flag: Arc<AtomicBool>,
     /// History of game loading times and changes (F11).
     pub load_time_history: crate::load_time::LoadTimeHistory,
-    /// Instant when RimWorld was launched from the manager, for loading time tracking.
-    pub game_launch_instant: Option<std::time::Instant>,
+    /// Wall-clock timestamp when RimWorld was launched from the manager, used to verify
+    /// that `Player.log` on disk was actually produced by this launch (F9 / F11).
+    pub game_launch_time: Option<std::time::SystemTime>,
     /// Active mods at the time of the launch.
     pub game_launch_active_mods: Vec<String>,
+    /// Background watcher waiting for RimWorld to exit after a normal launch, then analyzing Player.log.
+    launch_watch_rx: Option<Receiver<Option<LogReport>>>,
 
     /// Deletion waiting for confirmation (modal window).
     pub pending_delete: Option<PendingDelete>,
@@ -639,11 +649,15 @@ impl App {
             vram_report: None,
             vram_rx: None,
             vram_cache: HashMap::new(),
+            vram_recheck: false,
+            launch_after_vram_check: false,
 
             log_report: None,
             custom_log_path: None,
             last_good: crate::last_good::LastGoodSnapshot::load(),
             last_good_diff: None,
+            last_good_rx: None,
+            last_good_rerun: false,
             log_view_mode: crate::analyzer::LogViewMode::default(),
             log_filter_text: String::new(),
             log_level_filter: crate::analyzer::LogLevelFilter::default(),
@@ -666,8 +680,9 @@ impl App {
             steam_progress_rx: None,
             steam_stop_flag: Arc::new(AtomicBool::new(false)),
             load_time_history: crate::load_time::LoadTimeHistory::load(),
-            game_launch_instant: None,
+            game_launch_time: None,
             game_launch_active_mods: Vec::new(),
+            launch_watch_rx: None,
 
             pending_delete: None,
             saved_active_mods: Vec::new(),
@@ -922,34 +937,24 @@ impl App {
             }
         }
         if let Some(rx) = &self.log_rx {
-            if let Ok(mut report) = rx.try_recv() {
+            if let Ok(report) = rx.try_recv() {
                 self.log_rx = None;
-                if report.load_time_secs.is_none() {
-                    if let Some(launch_time) = self.game_launch_instant.take() {
-                        let elapsed = launch_time.elapsed().as_secs_f32();
-                        if elapsed > 1.0 && elapsed < 1800.0 {
-                            report.load_time_secs = Some(elapsed);
-                        }
-                    }
-                }
-                if let Some(secs) = report.load_time_secs {
-                    let mods = if !self.game_launch_active_mods.is_empty() {
-                        std::mem::take(&mut self.game_launch_active_mods)
-                    } else {
-                        self.active_mods.clone()
-                    };
-                    let is_ru = self.is_russian;
-                    let mut history = std::mem::take(&mut self.load_time_history);
-                    history.record_launch(secs, &mods, |id| self.mod_display_name(id), is_ru);
-                    self.load_time_history = history;
-                }
-                if !std::mem::take(&mut self.log_silent) {
+                let silent = std::mem::take(&mut self.log_silent);
+                if !silent {
+                    self.handle_verified_launch_report(&report);
                     self.status_message = self.crash_summary_text(&report);
                 }
-                if report.total_errors == 0 && !report.has_hard_crash {
-                    self.remember_last_good();
-                }
                 self.log_report = Some(report);
+            }
+        }
+        if let Some(rx) = &self.launch_watch_rx {
+            if let Ok(opt_report) = rx.try_recv() {
+                self.launch_watch_rx = None;
+                if let Some(report) = opt_report {
+                    self.handle_verified_launch_report(&report);
+                    self.status_message = self.crash_summary_text(&report);
+                    self.log_report = Some(report);
+                }
             }
         }
         if let Some(rx) = &self.bisect_watch_rx {
@@ -963,7 +968,6 @@ impl App {
                     let answer = if report.has_hard_crash {
                         Some(true)
                     } else if report.total_errors == 0 && report.culprits.is_empty() {
-                        self.remember_last_good();
                         Some(false)
                     } else {
                         None
@@ -1017,6 +1021,7 @@ impl App {
         self.poll_name_search();
         self.poll_steamcmd();
         self.poll_workshop();
+        self.poll_last_good_diff();
         if let Some(rx) = &self.update_rx {
             if let Ok(res) = rx.try_recv() {
                 self.update_rx = None;
@@ -2914,18 +2919,18 @@ impl App {
         }
     }
 
-    /// F8: watches for the game process to exit after a bisect launch, then analyzes Player.log.
-    fn start_bisect_game_watch(&mut self) {
+    /// Spawns a background task that waits for RimWorld to exit and then analyzes a fresh Player.log.
+    fn spawn_game_log_watch(&self) -> Option<Receiver<Option<LogReport>>> {
         let log_target = self
             .custom_log_path
             .clone()
             .or_else(|| detect_rimworld_log_paths().into_iter().next().map(|(_, p)| p));
-        let Some(path) = log_target else { return };
+        let path = log_target?;
         let mods = self.all_mods.clone();
         let launched_at = std::time::SystemTime::now()
             .checked_sub(std::time::Duration::from_secs(2))
             .unwrap_or(std::time::UNIX_EPOCH);
-        self.bisect_watch_rx = Some(self.spawn_task(move || {
+        Some(self.spawn_task(move || {
             // Wait up to 20 s for RimWorld to appear in the process list.
             let mut started = false;
             for _ in 0..40 {
@@ -2950,7 +2955,17 @@ impl App {
                 return None;
             }
             Some(analyze_rimworld_log(&path, &mods))
-        }));
+        }))
+    }
+
+    /// F8: watches for the game process to exit after a bisect launch, then analyzes Player.log.
+    fn start_bisect_game_watch(&mut self) {
+        self.bisect_watch_rx = self.spawn_game_log_watch();
+    }
+
+    /// Watches for RimWorld to exit after a normal launch so F9 / F11 only record verified runs.
+    fn start_launch_game_watch(&mut self) {
+        self.launch_watch_rx = self.spawn_game_log_watch();
     }
 
     pub fn bisect_watching_game(&self) -> bool {
@@ -3018,33 +3033,88 @@ impl App {
         self.bisect_note = None;
     }
 
-    /// Refreshes the diff comparing current active mods with the last known working snapshot (F9).
+    /// Refreshes, in the background, the diff between the active mods and the last known
+    /// working snapshot (F9). It reads Steam's install records and walks the files of local
+    /// mods, too slow for every click in the mod list; a change during a run reruns it.
     pub fn refresh_last_good_diff(&mut self) {
-        let Some(snapshot) = &self.last_good else {
+        let Some(snapshot) = self.last_good.clone() else {
             self.last_good_diff = None;
             return;
         };
-        let timestamps = crate::last_good::collect_mod_timestamps(
-            &self.active_mods,
-            &self.all_mods,
-            self.steam_paths.workshop_path.as_deref(),
-            self.custom_steamcmd_dir.as_deref(),
-        );
-        self.last_good_diff = Some(snapshot.diff(&self.active_mods, &timestamps));
+        if self.last_good_rx.is_some() {
+            self.last_good_rerun = true;
+            return;
+        }
+        let active = self.active_mods.clone();
+        let mods: Vec<ModInfo> = active.iter().filter_map(|id| self.find_mod(id)).cloned().collect();
+        let workshop = self.steam_paths.workshop_path.clone();
+        let steamcmd = self.steamcmd_dir();
+        self.last_good_rx = Some(self.spawn_task(move || {
+            let timestamps =
+                crate::last_good::collect_mod_timestamps(&active, &mods, workshop.as_deref(), Some(&steamcmd));
+            snapshot.diff(&active, &timestamps)
+        }));
+    }
+
+    fn poll_last_good_diff(&mut self) {
+        let Some(rx) = &self.last_good_rx else { return };
+        if let Ok(diff) = rx.try_recv() {
+            self.last_good_rx = None;
+            self.last_good_diff = Some(diff);
+            if std::mem::take(&mut self.last_good_rerun) {
+                self.refresh_last_good_diff();
+            }
+        }
     }
 
     /// Records the current active mod configuration and file timestamps as the known good run (F9).
     pub fn remember_last_good(&mut self) {
-        let snap = crate::last_good::LastGoodSnapshot::create(
-            &self.active_mods,
-            &self.all_mods,
-            &self.steam_paths,
-            self.custom_steamcmd_dir.as_deref(),
-        );
+        let mods = self.active_mods.clone();
+        self.remember_last_good_for(&mods);
+        self.status_message = self.i18n.get(TranslationKey::LastGoodSavedMsg).to_string();
+    }
+
+    /// Saves a `LastGoodSnapshot` for the specified verified mod order without overwriting `status_message`.
+    pub fn remember_last_good_for(&mut self, active_mods: &[String]) {
+        let steamcmd = self.steamcmd_dir();
+        let snap =
+            crate::last_good::LastGoodSnapshot::create(active_mods, &self.all_mods, &self.steam_paths, Some(&steamcmd));
         let _ = snap.save();
         self.last_good = Some(snap);
         self.refresh_last_good_diff();
-        self.status_message = self.i18n.get(TranslationKey::LastGoodSavedMsg).to_string();
+    }
+
+    /// Records load time (F11) and last-good snapshot (F9) only when `report` comes from a
+    /// `Player.log` written after RimWorld was actually launched in this session.
+    /// Only a load time the log reports itself is recorded: the report comes when the game has
+    /// closed, so the time since the launch would be the whole session, not the loading.
+    pub fn handle_verified_launch_report(&mut self, report: &LogReport) {
+        if !is_verified_launch_log(
+            self.game_launch_time,
+            self.bisect.is_some(),
+            self.custom_log_path.is_some(),
+            &report.log_path,
+        ) {
+            return;
+        }
+        self.game_launch_time = None;
+        let mods = if !self.game_launch_active_mods.is_empty() {
+            std::mem::take(&mut self.game_launch_active_mods)
+        } else if !self.saved_active_mods.is_empty() {
+            self.saved_active_mods.clone()
+        } else {
+            self.active_mods.clone()
+        };
+        if let Some(secs) = report.load_time_secs {
+            let is_ru = self.is_russian;
+            let mut history = std::mem::take(&mut self.load_time_history);
+            history.record_launch(secs, &mods, |id| self.mod_display_name(id), is_ru);
+            let _ = history.save();
+            self.load_time_history = history;
+        }
+        if report.total_errors == 0 && !report.has_hard_crash && report.system_issue.is_none() {
+            self.remember_last_good_for(&mods);
+        }
     }
 
     /// Launches a bisect search specifically isolating the mods updated since the last good run (F9).
@@ -3096,7 +3166,7 @@ impl App {
         if self.save_config() {
             self.status_message = fmt(self.i18n.get(TranslationKey::SetsApplied), &[name]);
             if launch {
-                self.launch_game_now();
+                self.check_vram_and_launch();
             }
         }
     }
@@ -4058,7 +4128,7 @@ impl App {
                 crate::analyzer::generate_text_report(report, self.is_russian)
             };
             if let Err(e) = std::fs::write(&path, content) {
-                self.status_message = format!("Ошибка: {}", e);
+                self.status_message = tr!("Не удалось сохранить отчёт: {}", "Could not save the report: {}", e);
             } else {
                 self.status_message = tr!("Отчёт сохранён: {}", "Report saved: {}", path.display());
             }
@@ -4125,15 +4195,53 @@ impl App {
     }
 
     pub fn check_vram_and_launch(&mut self) {
-        if let Some(rx) = &self.vram_rx {
-            if let Ok((report, updated_cache)) = rx.recv_timeout(std::time::Duration::from_millis(150)) {
-                self.vram_report = Some(report);
-                for (dir, mtime, bytes) in updated_cache {
-                    self.vram_cache.insert(dir, (mtime, bytes));
+        if self.vram_report.is_none() && self.vram_rx.is_none() {
+            self.trigger_vram_check();
+        }
+        while let Some(rx) = &self.vram_rx {
+            match rx.recv_timeout(std::time::Duration::from_millis(150)) {
+                Ok(Ok((report, updated_cache))) => {
+                    for (dir, mtime, bytes) in updated_cache {
+                        self.vram_cache.insert(dir, (mtime, bytes));
+                    }
+                    self.vram_rx = None;
+                    if self.vram_recheck {
+                        self.vram_recheck = false;
+                        self.trigger_vram_check();
+                        continue;
+                    }
+                    self.vram_report = Some(report);
+                    break;
                 }
-                self.vram_rx = None;
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    self.launch_after_vram_check = true;
+                    self.status_message =
+                        tr!("Оценка VRAM перед запуском...", "Checking VRAM usage before launch...").to_string();
+                    return;
+                }
+                Ok(Err(())) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    self.fail_vram_check();
+                    return;
+                }
             }
         }
+        self.finish_vram_check_and_launch();
+    }
+
+    fn fail_vram_check(&mut self) {
+        self.vram_rx = None;
+        self.vram_recheck = false;
+        self.launch_after_vram_check = false;
+        self.vram_report = None;
+        self.status_message = tr!(
+            "Не удалось проверить использование VRAM; запуск отменён. Попробуйте снова.",
+            "Could not check VRAM usage; launch cancelled. Please try again."
+        )
+        .to_string();
+    }
+
+    fn finish_vram_check_and_launch(&mut self) {
+        self.launch_after_vram_check = false;
         if let Some(report) = &self.vram_report {
             if report.is_critical() {
                 self.pending_question = Some(PendingQuestion::VramWarning {
@@ -4149,7 +4257,9 @@ impl App {
 
     /// Triggers a background evaluation of active mod texture VRAM vs GPU capacity (V2).
     pub fn trigger_vram_check(&mut self) {
+        self.vram_report = None;
         if self.vram_rx.is_some() {
+            self.vram_recheck = true;
             return;
         }
         let active_mods: Vec<(String, PathBuf)> = self
@@ -4160,20 +4270,38 @@ impl App {
             .map(|m| (m.name.clone(), m.dir_path.clone()))
             .collect();
 
-        let (tx, rx) = channel();
-        crate::optimizer::check_vram_async(active_mods, self.steam_paths.engine, self.vram_cache.clone(), tx);
-        self.vram_rx = Some(rx);
+        let engine = self.steam_paths.engine;
+        let cache = self.vram_cache.clone();
+        self.vram_rx = Some(self.spawn_task(move || {
+            let (tx, rx) = channel();
+            crate::optimizer::check_vram_async(active_mods, engine, cache, tx);
+            rx.recv().map_err(|_| ())
+        }));
     }
 
     fn poll_vram_check(&mut self) {
-        if let Some(rx) = &self.vram_rx {
-            if let Ok((report, updated_cache)) = rx.try_recv() {
-                self.vram_report = Some(report);
+        let Some(rx) = &self.vram_rx else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok((report, updated_cache))) => {
                 for (dir, mtime, bytes) in updated_cache {
                     self.vram_cache.insert(dir, (mtime, bytes));
                 }
                 self.vram_rx = None;
+                if self.vram_recheck {
+                    self.vram_recheck = false;
+                    self.trigger_vram_check();
+                    return;
+                }
+                self.vram_report = Some(report);
+                if std::mem::take(&mut self.launch_after_vram_check) {
+                    self.finish_vram_check_and_launch();
+                }
             }
+            Ok(Err(())) => self.fail_vram_check(),
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.fail_vram_check(),
         }
     }
 
@@ -4190,11 +4318,22 @@ impl App {
 
     fn launch_game_now(&mut self) {
         self.backup_latest_save_if_enabled();
-        self.game_launch_instant = Some(std::time::Instant::now());
-        self.game_launch_active_mods = self.active_mods.clone();
         let args = self.launch_args();
         match launch_rimworld(&self.steam_paths, &args) {
             Ok(_) => {
+                self.game_launch_time = Some(
+                    std::time::SystemTime::now()
+                        .checked_sub(std::time::Duration::from_secs(2))
+                        .unwrap_or_else(std::time::SystemTime::now),
+                );
+                self.game_launch_active_mods = if !self.saved_active_mods.is_empty() {
+                    self.saved_active_mods.clone()
+                } else {
+                    self.active_mods.clone()
+                };
+                if self.bisect.is_none() {
+                    self.start_launch_game_watch();
+                }
                 self.status_message = tr!("RimWorld запущен", "RimWorld started").to_string();
             }
             Err(e) => {
@@ -4742,7 +4881,7 @@ impl App {
                                     ui.horizontal(|ui| {
                                         ui.label(egui::RichText::new(format!("• {}", name)).color(THEME.text_primary));
                                         ui.label(
-                                            egui::RichText::new(format!("(~{} МБ)", mb))
+                                            egui::RichText::new(tr!("(~{} МБ)", "(~{} MB)", mb))
                                                 .color(THEME.text_muted)
                                                 .size(11.0),
                                         );
@@ -5152,6 +5291,24 @@ fn history_diff_label(ui: &mut egui::Ui, diff: crate::mods_config::ListDiff) {
     ));
 }
 
+/// Returns whether `log_path` belongs to a RimWorld run launched during this session.
+pub fn is_verified_launch_log(
+    game_launch_time: Option<std::time::SystemTime>,
+    bisect_active: bool,
+    has_custom_log: bool,
+    log_path: &Path,
+) -> bool {
+    let Some(launched_at) = game_launch_time else {
+        return false;
+    };
+    if bisect_active || has_custom_log {
+        return false;
+    }
+    std::fs::metadata(log_path)
+        .and_then(|m| m.modified())
+        .is_ok_and(|mtime| mtime >= launched_at)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5287,5 +5444,29 @@ mod tests {
         assert!(!active.iter().any(|a| a == "test.unrelated"));
         // Nothing left to enable: a second run adds nothing.
         assert_eq!(enable_dependencies_recursive(&mut active, &mods), 0);
+    }
+
+    #[test]
+    fn verified_launch_log_rejects_unlaunched_or_stale_logs() {
+        let dir = std::env::temp_dir().join(format!("rwmm_test_log_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let log_path = dir.join("Player.log");
+        std::fs::write(&log_path, "Mono path[0] = ...\n").unwrap();
+        let mtime = std::fs::metadata(&log_path).unwrap().modified().unwrap();
+
+        // Not launched in this session -> never verified (e.g. startup auto-check).
+        assert!(!is_verified_launch_log(None, false, false, &log_path));
+
+        // Log file older than launch timestamp -> stale log from a previous run.
+        let future_launch = mtime + std::time::Duration::from_secs(10);
+        assert!(!is_verified_launch_log(Some(future_launch), false, false, &log_path));
+
+        // Fresh log after launch -> verified, unless bisect or custom log is active.
+        let past_launch = mtime - std::time::Duration::from_secs(2);
+        assert!(is_verified_launch_log(Some(past_launch), false, false, &log_path));
+        assert!(!is_verified_launch_log(Some(past_launch), true, false, &log_path));
+        assert!(!is_verified_launch_log(Some(past_launch), false, true, &log_path));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
