@@ -24,6 +24,7 @@ pub fn move_mod_dir_to_trash(dir: &std::path::Path) -> Result<(), String> {
         tr!(
             "Не удалось переместить {} в Корзину: {}",
             "Could not move {} to the Recycle Bin: {}",
+            "无法将 {} 移至回收站：{}",
             dir.display(),
             e
         )
@@ -51,7 +52,8 @@ fn unsubscribe(item_ids: &[&str], steam_paths: &SteamPaths) -> Result<usize, Str
     let dll = steam_paths.steam_dll_path.as_ref().ok_or_else(|| {
         tr!(
             "steam_api64.dll не найден, отписаться нельзя",
-            "steam_api64.dll not found, can't unsubscribe"
+            "steam_api64.dll not found, can't unsubscribe",
+            "找不到 steam_api64.dll，无法取消订阅"
         )
         .to_string()
     })?;
@@ -61,7 +63,7 @@ fn unsubscribe(item_ids: &[&str], steam_paths: &SteamPaths) -> Result<usize, Str
 fn not_deleted_because(err: &str) -> String {
     tr!(
         "Отписка в Steam не удалась ({}). Моды из Workshop не удалены: иначе Steam скачает их обратно. Запустите Steam и повторите.",
-        "Steam unsubscribe failed ({}). Workshop mods were not deleted: Steam would download them again. Start Steam and try again.",
+        "Steam unsubscribe failed ({}). Workshop mods were not deleted: Steam would download them again. Start Steam and try again.", "Steam 取消订阅失败（{}）。创意工坊模组没有删除：否则 Steam 会重新下载它们。请启动 Steam 后重试。",
         err
     )
 }
@@ -75,6 +77,7 @@ pub fn delete_translation_mods(mods_to_delete: &[&ModInfo], steam_paths: &SteamP
             result.errors.push(tr!(
                 "Защищённый мод '{}' нельзя удалить",
                 "Protected mod '{}' can't be deleted",
+                "受保护的模组「{}」不能删除",
                 m.package_id
             ));
             result.failed_count += 1;
@@ -82,6 +85,7 @@ pub fn delete_translation_mods(mods_to_delete: &[&ModInfo], steam_paths: &SteamP
             result.errors.push(tr!(
                 "Мод {} не перевод — не удалён",
                 "Mod {} is not a translation — not deleted",
+                "模组 {} 不是翻译 — 未删除",
                 m.name
             ));
             result.failed_count += 1;
@@ -128,6 +132,7 @@ pub fn unsubscribe_and_delete_single(m: &ModInfo, steam_paths: &SteamPaths) -> R
         return Err(tr!(
             "Защищённый мод '{}' нельзя удалить",
             "Protected mod '{}' can't be deleted",
+            "受保护的模组「{}」不能删除",
             m.package_id
         ));
     }

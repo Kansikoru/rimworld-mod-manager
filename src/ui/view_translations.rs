@@ -166,16 +166,21 @@ fn render_installed_translations_column(app: &mut App, ui: &mut Ui) {
                             );
                             if let Some(ref parent_id) = m.parent_package_id {
                                 ui.label(
-                                    egui::RichText::new(tr!("Перевод для: {}", "Translation of: {}", parent_id))
-                                        .color(THEME.accent_cyan)
-                                        .size(12.0),
+                                    egui::RichText::new(tr!(
+                                        "Перевод для: {}",
+                                        "Translation of: {}",
+                                        "翻译对象：{}",
+                                        parent_id
+                                    ))
+                                    .color(THEME.accent_cyan)
+                                    .size(12.0),
                                 );
                             }
                         });
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if icon_button(ui, ICON_TRASH, egui::vec2(14.0, 14.0), THEME.text_muted)
-                                .on_hover_text(tr!("Удалить и отписаться", "Delete and unsubscribe"))
+                                .on_hover_text(tr!("Удалить и отписаться", "Delete and unsubscribe", "删除并取消订阅"))
                                 .clicked()
                             {
                                 to_delete_single = Some(m.package_id.clone());
@@ -211,7 +216,7 @@ fn render_workshop_search_column(app: &mut App, ui: &mut Ui) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         if app.is_batch_searching() {
-            if danger_button_icon(ui, ICON_STOP, tr!("Остановить", "Stop")).clicked() {
+            if danger_button_icon(ui, ICON_STOP, tr!("Остановить", "Stop", "停止")).clicked() {
                 app.stop_batch_translation_search();
             }
             let (done, total) = app.batch_progress;
@@ -223,10 +228,10 @@ fn render_workshop_search_column(app: &mut App, ui: &mut Ui) {
             );
         } else {
             let lang = app.trans_target_lang.label();
-            if primary_button_icon(ui, ICON_SEARCH, tr!("Найти переводы для сборки", "Find translations for my mods"))
+            if primary_button_icon(ui, ICON_SEARCH, tr!("Найти переводы для сборки", "Find translations for my mods", "为我的模组查找翻译"))
                 .on_hover_text(tr!(
                     "Ищет перевод на {} для каждого активного мода. Показывает только переводы, в названии которых есть название мода. Моды, где этот язык уже есть, пропускаются.",
-                    "Looks for a {} translation of every active mod. Shows only translations whose title has the mod's name. Mods that already have this language are skipped.",
+                    "Looks for a {} translation of every active mod. Shows only translations whose title has the mod's name. Mods that already have this language are skipped.", "为每个已启用的模组查找 {} 翻译。只显示标题中含有该模组名称的翻译。已经有该语言的模组会被跳过。",
                     lang
                 ))
                 .clicked()
@@ -239,12 +244,12 @@ fn render_workshop_search_column(app: &mut App, ui: &mut Ui) {
                 .and_then(|id| app.find_mod(id))
                 .map(|m| m.name.clone());
             let hint = match &selected_name {
-                Some(name) => tr!("Искать перевод только для «{}» (выбран на вкладке «Моды»)", "Search only for \"{}\" (selected on the Mods tab)", name),
-                None => tr!("Сначала выберите мод на вкладке «Моды»", "Select a mod on the Mods tab first").to_string(),
+                Some(name) => tr!("Искать перевод только для «{}» (выбран на вкладке «Моды»)", "Search only for \"{}\" (selected on the Mods tab)", "只搜索「{}」（在「模组」页中所选）", name),
+                None => tr!("Сначала выберите мод на вкладке «Моды»", "Select a mod on the Mods tab first", "请先在「模组」页选择一个模组").to_string(),
             };
             let searching = app.workshop_rx.is_some();
             ui.add_enabled_ui(!searching && selected_name.is_some(), |ui| {
-                if secondary_button(ui, tr!("Для выбранного мода", "For the selected mod"))
+                if secondary_button(ui, tr!("Для выбранного мода", "For the selected mod", "针对所选模组"))
                     .on_hover_text(&hint)
                     .on_disabled_hover_text(&hint)
                     .clicked()
@@ -290,7 +295,8 @@ fn render_workshop_search_column(app: &mut App, ui: &mut Ui) {
         && ui
             .link(tr!(
                 "← Показать переводы для сборки",
-                "← Back to translations for my mods"
+                "← Back to translations for my mods",
+                "← 返回我的模组的翻译"
             ))
             .clicked()
     {
@@ -361,6 +367,7 @@ fn render_batch_results(app: &mut App, ui: &mut Ui) {
     let mut summary = tr!(
         "Модов с переводом на {}: {} (проверено {} из {})",
         "Mods with a {} translation: {} (checked {} of {})",
+        "有 {} 翻译的模组：{}（已检查 {}/{}）",
         lang,
         app.batch_results.len(),
         done,
@@ -370,6 +377,7 @@ fn render_batch_results(app: &mut App, ui: &mut Ui) {
         summary.push_str(&tr!(
             " · пропущено {}: язык уже есть",
             " · {} skipped: language already there",
+            " · 已跳过 {} 个：已有该语言",
             app.batch_skipped
         ));
     }
@@ -390,7 +398,8 @@ fn render_batch_results(app: &mut App, ui: &mut Ui) {
             }
         });
         if found_items > 0 && !app.is_batch_searching() {
-            if small_button(ui, tr!("Отметить все", "Tick all"), ButtonStyle::Secondary).clicked() {
+            if small_button(ui, tr!("Отметить все", "Tick all", "全选"), ButtonStyle::Secondary).clicked()
+            {
                 for r in &app.batch_results {
                     for item in &r.items {
                         if !app.batch_subscribed.contains(&item.id) {
@@ -399,7 +408,7 @@ fn render_batch_results(app: &mut App, ui: &mut Ui) {
                     }
                 }
             }
-            if small_button(ui, tr!("Снять все", "Untick all"), ButtonStyle::Secondary).clicked() {
+            if small_button(ui, tr!("Снять все", "Untick all", "全不选"), ButtonStyle::Secondary).clicked() {
                 app.batch_checked.clear();
             }
         }
@@ -415,15 +424,21 @@ fn render_batch_results(app: &mut App, ui: &mut Ui) {
                     let text = if app.is_batch_searching() {
                         tr!(
                             "Ищу... Найденные переводы появятся здесь сразу.",
-                            "Searching... Found translations show up here right away."
+                            "Searching... Found translations show up here right away.",
+                            "搜索中... 找到的翻译会立即显示在这里。"
                         )
                     } else if total == 0 {
                         tr!(
                             "Искать нечего: у всех активных модов этот язык уже есть.",
-                            "Nothing to search: every active mod already has this language."
+                            "Nothing to search: every active mod already has this language.",
+                            "无需搜索：所有已启用的模组都已有该语言。"
                         )
                     } else {
-                        tr!("Подходящих переводов не нашлось.", "No matching translations found.")
+                        tr!(
+                            "Подходящих переводов не нашлось.",
+                            "No matching translations found.",
+                            "未找到匹配的翻译。"
+                        )
                     };
                     ui.label(egui::RichText::new(text).color(THEME.text_muted).size(13.0));
                 });
@@ -435,7 +450,11 @@ fn render_batch_results(app: &mut App, ui: &mut Ui) {
                     for item in &r.items {
                         ui.horizontal(|ui| {
                             if app.batch_subscribed.contains(&item.id) {
-                                tag(ui, tr!("подписка отправлена", "subscribed"), THEME.accent_emerald);
+                                tag(
+                                    ui,
+                                    tr!("подписка отправлена", "subscribed", "已订阅"),
+                                    THEME.accent_emerald,
+                                );
                             } else {
                                 let mut on = app.batch_checked.contains(&item.id);
                                 if ui.checkbox(&mut on, "").changed() {
@@ -451,7 +470,11 @@ fn render_batch_results(app: &mut App, ui: &mut Ui) {
                             );
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if icon_button(ui, ICON_STEAM, egui::vec2(14.0, 14.0), THEME.text_muted)
-                                    .on_hover_text(tr!("Открыть в Мастерской", "Open on the Workshop"))
+                                    .on_hover_text(tr!(
+                                        "Открыть в Мастерской",
+                                        "Open on the Workshop",
+                                        "在创意工坊中打开"
+                                    ))
                                     .clicked()
                                 {
                                     open_external(crate::steam::workshop_url(&item.id));

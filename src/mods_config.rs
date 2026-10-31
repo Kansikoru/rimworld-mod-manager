@@ -205,13 +205,19 @@ pub fn save_active_mods_with_backup(
     backup_dir: &Path,
 ) -> Result<(), String> {
     if !config_path.exists() {
-        return Err(tr!("Файл не найден: {}", "File not found: {}", config_path.display()));
+        return Err(tr!(
+            "Файл не найден: {}",
+            "File not found: {}",
+            "找不到文件：{}",
+            config_path.display()
+        ));
     }
 
     backup_config(config_path, backup_dir, MAX_CONFIG_BACKUPS).map_err(|e| {
         tr!(
             "Не удалось сделать копию ModsConfig.xml в {}: {}",
             "Could not back up ModsConfig.xml to {}: {}",
+            "无法将 ModsConfig.xml 备份到 {}：{}",
             backup_dir.display(),
             e
         )
@@ -223,7 +229,12 @@ pub fn save_active_mods_with_backup(
 /// is made when it starts, so its many test launches don't push real backups out.
 pub fn write_active_mods(config_path: &Path, active_mods: &[String]) -> Result<(), String> {
     if !config_path.exists() {
-        return Err(tr!("Файл не найден: {}", "File not found: {}", config_path.display()));
+        return Err(tr!(
+            "Файл не найден: {}",
+            "File not found: {}",
+            "找不到文件：{}",
+            config_path.display()
+        ));
     }
 
     let mut unique: Vec<String> = Vec::with_capacity(active_mods.len());
@@ -239,6 +250,7 @@ pub fn write_active_mods(config_path: &Path, active_mods: &[String]) -> Result<(
         tr!(
             "Ошибка чтения ModsConfig.xml: {}",
             "Could not read ModsConfig.xml: {}",
+            "无法读取 ModsConfig.xml：{}",
             e
         )
     })?;
@@ -333,7 +345,7 @@ pub fn write_active_mods(config_path: &Path, active_mods: &[String]) -> Result<(
                     writer.write_event(event).map_err(|e| e.to_string())?;
                 }
             }
-            Err(e) => return Err(tr!("Ошибка в XML: {}", "XML error: {}", e)),
+            Err(e) => return Err(tr!("Ошибка в XML: {}", "XML error: {}", "XML 错误：{}", e)),
         }
         buf.clear();
     }
@@ -344,6 +356,7 @@ pub fn write_active_mods(config_path: &Path, active_mods: &[String]) -> Result<(
         tr!(
             "Ошибка записи ModsConfig.xml: {}",
             "Could not write ModsConfig.xml: {}",
+            "无法写入 ModsConfig.xml：{}",
             e
         )
     })?;
@@ -352,6 +365,7 @@ pub fn write_active_mods(config_path: &Path, active_mods: &[String]) -> Result<(
         tr!(
             "Ошибка записи ModsConfig.xml: {}",
             "Could not write ModsConfig.xml: {}",
+            "无法写入 ModsConfig.xml：{}",
             e
         )
     })?;

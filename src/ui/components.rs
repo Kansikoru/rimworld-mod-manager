@@ -14,7 +14,7 @@ pub fn local_date_time(unix_secs: u64) -> String {
     let Some(utc) = chrono::DateTime::from_timestamp(unix_secs as i64, 0) else {
         return String::new();
     };
-    let format = crate::i18n::tr!("%d.%m.%Y %H:%M", "%Y-%m-%d %H:%M");
+    let format = crate::i18n::tr!("%d.%m.%Y %H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M");
     utc.with_timezone(&chrono::Local).format(format).to_string()
 }
 

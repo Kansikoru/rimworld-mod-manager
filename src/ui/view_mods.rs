@@ -46,11 +46,13 @@ fn handle_mod_drag(app: &mut App, ctx: &egui::Context) {
     ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
     if let Some(pos) = ctx.pointer_interact_pos() {
         let hint = match app.drop_target {
-            Some(DropTarget::Available) => Some(tr!("отпустите, чтобы отключить", "release to disable")),
-            Some(DropTarget::Active(_)) if !drag.from_active => {
-                Some(tr!("отпустите, чтобы включить сюда", "release to enable here"))
-            }
-            None => Some(tr!("Esc — отмена", "Esc to cancel")),
+            Some(DropTarget::Available) => Some(tr!("отпустите, чтобы отключить", "release to disable", "松开以停用")),
+            Some(DropTarget::Active(_)) if !drag.from_active => Some(tr!(
+                "отпустите, чтобы включить сюда",
+                "release to enable here",
+                "松开以在此启用"
+            )),
+            None => Some(tr!("Esc — отмена", "Esc to cancel", "按 Esc 取消")),
             _ => None,
         };
         egui::Area::new(egui::Id::new("mod_drag_label"))
@@ -154,7 +156,7 @@ fn render_mods_main(app: &mut App, ui: &mut Ui, side: bool) {
         // What fits in a narrow window: first the library buttons lose their labels
         // (the label stays as a tooltip), then the search field becomes a magnifier button.
         let unsaved = app.has_unsaved_changes();
-        let unsaved_text = crate::i18n::tr!("● не сохранено", "● unsaved");
+        let unsaved_text = crate::i18n::tr!("● не сохранено", "● unsaved", "● 未保存");
         let scanning = app.is_rescanning();
         let mut library: Vec<(egui::ImageSource<'static>, &str)> = vec![
             (ICON_REFRESH, t.get(TranslationKey::BtnRescanMods)),
@@ -223,7 +225,8 @@ fn render_mods_main(app: &mut App, ui: &mut Ui, side: bool) {
             ui.label(egui::RichText::new(unsaved_text).color(THEME.accent_amber).size(12.0))
                 .on_hover_text(crate::i18n::tr!(
                     "Порядок модов отличается от ModsConfig.xml. Нажмите «Сохранить порядок», чтобы игра его увидела.",
-                    "The load order differs from ModsConfig.xml. Press \"Save Order\" so the game sees it."
+                    "The load order differs from ModsConfig.xml. Press \"Save Order\" so the game sees it.",
+                    "加载顺序与 ModsConfig.xml 不同。请点击「保存排序」让游戏使用它。"
                 ));
         }
 
@@ -912,7 +915,7 @@ fn log_error_badge(ui: &mut Ui, culprit: Option<&crate::analyzer::CrashCulprit>,
     let Some(resp) = tag_if_fits(ui, t.get(TranslationKey::ModsLogErrorBadge), color) else {
         return false;
     };
-    let sev = c.severity.badge_text(t.language() == crate::i18n::Language::Russian);
+    let sev = c.severity.badge_text(t.language());
     let hint = fmt(
         t.get(TranslationKey::ModsLogErrorHint),
         &[sev, &c.occurrences.to_string(), &c.headline],
@@ -1241,7 +1244,8 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
         if boxed_icon_button(ui, ICON_HISTORY)
             .on_hover_text(tr!(
                 "История: вернуть порядок модов из прошлых сохранений",
-                "History: bring back the load order from earlier saves"
+                "History: bring back the load order from earlier saves",
+                "历史：恢复之前保存的加载顺序"
             ))
             .clicked()
         {
@@ -1757,11 +1761,12 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
 
     // Footer: visible range and a reminder of how the order works.
     let showing = if visible_rows.is_empty() {
-        tr!("Нет модов", "No mods").to_string()
+        tr!("Нет модов", "No mods", "没有模组").to_string()
     } else {
         tr!(
             "Показаны {}–{} из {}",
             "Showing {}–{} of {}",
+            "显示第 {}–{} 个，共 {} 个",
             shown_range.start + 1,
             shown_range.end.min(visible_rows.len()),
             visible_rows.len()
@@ -1772,7 +1777,11 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
         false,
         None,
         &showing,
-        Some(tr!("Загрузка сверху вниз", "Loads from top to bottom")),
+        Some(tr!(
+            "Загрузка сверху вниз",
+            "Loads from top to bottom",
+            "从上到下依次加载"
+        )),
     );
 
     // Request missing icons
@@ -2130,7 +2139,8 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
         Some(ICON_PLUS),
         tr!(
             "Нажмите + или перетащите мод вправо, чтобы включить его.",
-            "Use + or drag a mod to the right to enable it."
+            "Use + or drag a mod to the right to enable it.",
+            "点击 + 或把模组拖到右侧即可启用。"
         ),
         None,
     );
@@ -2466,14 +2476,14 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui, side: bool) {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 16.0;
                 ui.label(
-                    egui::RichText::new(tr!("Активно: {}", "{} active", app.active_mods.len()))
+                    egui::RichText::new(tr!("Активно: {}", "{} active", "已启用 {}", app.active_mods.len()))
                         .color(THEME.text_secondary)
                         .size(12.0),
                 );
-                ui.label(egui::RichText::new(tr!("Доступно: {}", "{} available", available)).color(THEME.text_secondary).size(12.0));
+                ui.label(egui::RichText::new(tr!("Доступно: {}", "{} available", "可用 {}", available)).color(THEME.text_secondary).size(12.0));
                 if incompatible > 0 {
                     ui.label(
-                        egui::RichText::new(tr!("Несовместимых: {}", "{} incompatible", incompatible))
+                        egui::RichText::new(tr!("Несовместимых: {}", "{} incompatible", "不兼容 {}", incompatible))
                             .color(THEME.accent_rose)
                             .size(12.0),
                     );
@@ -2482,7 +2492,7 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui, side: bool) {
             ui.label(
                 egui::RichText::new(tr!(
                     "Проверьте совместимость и сохраните порядок перед игрой. Нажмите на мод, чтобы увидеть подробности.",
-                    "Review compatibility and save your order before playing. Click a mod for details."
+                    "Review compatibility and save your order before playing. Click a mod for details.", "运行游戏前请检查兼容性并保存排序。点击模组查看详情。"
                 ))
                 .color(THEME.text_muted)
                 .size(12.0),

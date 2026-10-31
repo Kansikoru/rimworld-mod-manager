@@ -140,6 +140,11 @@ pub fn manager_data_dir() -> PathBuf {
 
 /// Whether RimWorld is running right now (1.6: RimWorldWin64.exe, 1.7: RimWorld.exe).
 pub fn is_game_running() -> bool {
+    game_pid().is_some()
+}
+
+/// Process ID of the running game (either engine), if any.
+pub fn game_pid() -> Option<u32> {
     let mut cmd = std::process::Command::new("tasklist");
     cmd.args(["/NH", "/FO", "CSV"]);
     #[cfg(windows)]
@@ -149,14 +154,155 @@ pub fn is_game_running() -> bool {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let Ok(out) = cmd.output() else {
-        return false;
-    };
-    let list = String::from_utf8_lossy(&out.stdout).to_lowercase();
-    // CSV rows start with the quoted image name: "rimworld.exe","1234",...
-    [UNITY_EXE, WAYLITH_EXE]
-        .iter()
-        .any(|exe| list.contains(&format!("\"{}\"", exe.to_lowercase())))
+    let out = cmd.output().ok()?;
+    find_game_pid(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The game's PID in `tasklist /NH /FO CSV` output. Rows start with the quoted image name
+/// and PID: "RimWorldWin64.exe","1234",...
+fn find_game_pid(list: &str) -> Option<u32> {
+    let exes = [UNITY_EXE.to_lowercase(), WAYLITH_EXE.to_lowercase()];
+    list.lines().find_map(|row| {
+        let mut cols = row.split(',').map(|c| c.trim().trim_matches('"'));
+        let name = cols.next()?.to_lowercase();
+        if !exes.contains(&name) {
+            return None;
+        }
+        cols.next()?.parse().ok()
+    })
+}
+
+/// What the game process is doing right now (F11): CPU time used so far (user + kernel, all
+/// threads, seconds), bytes read from disk so far, private memory, and whether its window
+/// answers (`None`: no visible window yet; `Some(false)`: "Not responding").
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ProcessStats {
+    pub cpu_secs: f64,
+    pub read_bytes: u64,
+    pub private_bytes: u64,
+    pub responsive: Option<bool>,
+}
+
+#[cfg(windows)]
+pub fn process_stats(pid: u32) -> Option<ProcessStats> {
+    use std::ffi::c_void;
+    #[repr(C)]
+    #[derive(Default)]
+    struct FileTime {
+        low: u32,
+        high: u32,
+    }
+    #[repr(C)]
+    #[derive(Default)]
+    struct IoCounters {
+        read_ops: u64,
+        write_ops: u64,
+        other_ops: u64,
+        read_bytes: u64,
+        write_bytes: u64,
+        other_bytes: u64,
+    }
+    #[repr(C)]
+    #[derive(Default)]
+    struct MemoryCounters {
+        cb: u32,
+        page_fault_count: u32,
+        peak_working_set: usize,
+        working_set: usize,
+        quota_peak_paged_pool: usize,
+        quota_paged_pool: usize,
+        quota_peak_non_paged_pool: usize,
+        quota_non_paged_pool: usize,
+        pagefile_usage: usize,
+        peak_pagefile_usage: usize,
+        private_usage: usize,
+    }
+    extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+        fn GetProcessTimes(
+            process: *mut c_void,
+            creation: *mut FileTime,
+            exit: *mut FileTime,
+            kernel: *mut FileTime,
+            user: *mut FileTime,
+        ) -> i32;
+        fn GetProcessIoCounters(process: *mut c_void, counters: *mut IoCounters) -> i32;
+        fn K32GetProcessMemoryInfo(process: *mut c_void, counters: *mut MemoryCounters, cb: u32) -> i32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+    }
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const PROCESS_VM_READ: u32 = 0x0010;
+    let ticks = |t: &FileTime| (u64::from(t.high) << 32) | u64::from(t.low);
+    // SAFETY: plain Win32 calls; the handle is checked and closed, the out structs are ours
+    // and sized as the API expects.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let (mut c, mut e, mut k, mut u) = Default::default();
+        let times_ok = GetProcessTimes(handle, &mut c, &mut e, &mut k, &mut u) != 0;
+        let mut io = IoCounters::default();
+        let io_ok = GetProcessIoCounters(handle, &mut io) != 0;
+        let mut mem = MemoryCounters {
+            cb: std::mem::size_of::<MemoryCounters>() as u32,
+            ..Default::default()
+        };
+        let mem_ok = K32GetProcessMemoryInfo(handle, &mut mem, mem.cb) != 0;
+        CloseHandle(handle);
+        if !(times_ok && io_ok && mem_ok) {
+            return None;
+        }
+        Some(ProcessStats {
+            // FILETIME counts 100 ns ticks.
+            cpu_secs: (ticks(&k) + ticks(&u)) as f64 / 10_000_000.0,
+            read_bytes: io.read_bytes,
+            private_bytes: mem.private_usage as u64,
+            responsive: window_responsive(pid),
+        })
+    }
+}
+
+#[cfg(not(windows))]
+pub fn process_stats(_pid: u32) -> Option<ProcessStats> {
+    None
+}
+
+/// Whether the process's main window answers (Windows calls it "Not responding" after 5 s
+/// without an answer, and then shows a ghost window of its own instead). `None`: no visible
+/// top-level window.
+#[cfg(windows)]
+fn window_responsive(pid: u32) -> Option<bool> {
+    use std::ffi::c_void;
+    #[link(name = "user32")]
+    extern "system" {
+        fn EnumWindows(callback: unsafe extern "system" fn(*mut c_void, isize) -> i32, param: isize) -> i32;
+        fn GetWindowThreadProcessId(window: *mut c_void, pid: *mut u32) -> u32;
+        fn IsWindowVisible(window: *mut c_void) -> i32;
+        fn GetWindow(window: *mut c_void, cmd: u32) -> *mut c_void;
+        fn IsHungAppWindow(window: *mut c_void) -> i32;
+    }
+    const GW_OWNER: u32 = 4;
+    struct Search {
+        pid: u32,
+        found: Option<bool>,
+    }
+    unsafe extern "system" fn visit(window: *mut c_void, param: isize) -> i32 {
+        // SAFETY: `param` is the `Search` below, alive for the whole EnumWindows call.
+        let search = unsafe { &mut *(param as *mut Search) };
+        let mut owner_pid = 0u32;
+        unsafe { GetWindowThreadProcessId(window, &mut owner_pid) };
+        let main_window = unsafe { IsWindowVisible(window) != 0 && GetWindow(window, GW_OWNER).is_null() };
+        if owner_pid == search.pid && main_window {
+            search.found = Some(unsafe { IsHungAppWindow(window) } == 0);
+            return 0; // stop
+        }
+        1
+    }
+    let mut search = Search { pid, found: None };
+    // SAFETY: the callback only reads windows and writes `search`, which outlives the call.
+    unsafe { EnumWindows(visit, &mut search as *mut Search as isize) };
+    search.found
 }
 
 /// Folders where RimWorld 1.7 keeps its own compressed textures and compiled shaders.
@@ -183,13 +329,15 @@ pub fn clear_game_caches() -> Result<Vec<String>, String> {
     if is_game_running() {
         return Err(tr!(
             "Закройте RimWorld: игра держит файлы кэша открытыми",
-            "Close RimWorld first: the game keeps its cache files open"
+            "Close RimWorld first: the game keeps its cache files open",
+            "请先关闭 RimWorld：游戏会占用其缓存文件"
         )
         .to_string());
     }
     let base = user_data_dir().ok_or(tr!(
         "Папка данных RimWorld не найдена",
-        "RimWorld data folder not found"
+        "RimWorld data folder not found",
+        "找不到 RimWorld 数据文件夹"
     ))?;
     let mut cleared = Vec::new();
     for dir in GAME_CACHE_DIRS {
@@ -219,6 +367,59 @@ pub fn known_launch_flags(engine: GameEngine) -> &'static [(&'static str, bool)]
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn cpu_time_of_a_running_process_is_read() {
+        // Burn a little CPU so the counter is above zero.
+        let mut x = 0u64;
+        for i in 0..20_000_000u64 {
+            x = x.wrapping_add(i ^ (x >> 3));
+        }
+        std::hint::black_box(x);
+        let stats = process_stats(std::process::id()).expect("own process");
+        assert!(stats.cpu_secs > 0.0, "{stats:?}");
+        assert!(stats.private_bytes > 0, "{stats:?}");
+        assert_eq!(process_stats(0xFFFF_FFF0), None, "no such process");
+    }
+
+    /// Live: Explorer always has a visible window (the taskbar), which answers.
+    /// `cargo test explorer_window_answers -- --ignored --nocapture`
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    fn explorer_window_answers() {
+        let out = std::process::Command::new("tasklist")
+            .args(["/NH", "/FO", "CSV", "/FI", "IMAGENAME eq explorer.exe"])
+            .output()
+            .unwrap();
+        let list = String::from_utf8_lossy(&out.stdout);
+        let pid: u32 = list
+            .lines()
+            .find_map(|r| r.split(',').nth(1)?.trim_matches('"').parse().ok())
+            .expect("explorer.exe");
+        let stats = process_stats(pid).expect("explorer stats");
+        println!("{stats:?}");
+        assert_eq!(stats.responsive, Some(true));
+        // The test process has no window.
+        assert_eq!(process_stats(std::process::id()).unwrap().responsive, None);
+    }
+
+    #[test]
+    fn game_pid_is_read_from_tasklist_csv() {
+        let list = "\"System\",\"4\",\"Services\",\"0\",\"144 K\"\r\n\
+                    \"RimWorldWin64.exe\",\"12345\",\"Console\",\"1\",\"3,104,220 K\"\r\n";
+        assert_eq!(find_game_pid(list), Some(12345));
+        assert_eq!(
+            find_game_pid("\"RimWorld.exe\",\"77\",\"Console\",\"1\",\"1 K\""),
+            Some(77)
+        );
+        // A name that only contains the exe name is another program.
+        assert_eq!(
+            find_game_pid("\"MyRimWorldWin64.exe\",\"9\",\"Console\",\"1\",\"1 K\""),
+            None
+        );
+    }
 
     #[test]
     fn parses_major_minor() {

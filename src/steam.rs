@@ -207,6 +207,7 @@ where
             return Err(tr!(
                 "Steam API не запустился (код {}): {}",
                 "Steam API failed to start (code {}): {}",
+                "Steam API 启动失败（代码 {}）：{}",
                 code,
                 msg
             ));
@@ -219,7 +220,8 @@ where
         if !init() {
             return Err(tr!(
                 "Не удалось запустить Steam API (возможно, клиент Steam закрыт)",
-                "Could not start the Steam API (is the Steam client running?)"
+                "Could not start the Steam API (is the Steam client running?)",
+                "无法启动 Steam API（Steam 客户端是否在运行？）"
             )
             .to_string());
         }
@@ -243,7 +245,8 @@ where
     if ugc_ptr.is_null() {
         return Err(tr!(
             "Интерфейс Steam Workshop (UGC) недоступен в этой версии steam_api64.dll",
-            "The Steam Workshop (UGC) interface is not available in this steam_api64.dll"
+            "The Steam Workshop (UGC) interface is not available in this steam_api64.dll",
+            "此 steam_api64.dll 中没有 Steam 创意工坊 (UGC) 接口"
         )
         .to_string());
     }
@@ -412,9 +415,14 @@ pub fn subscribe_workshop_items_with_progress(
 }
 
 fn parse_item_id(item_id_str: &str) -> Result<u64, String> {
-    item_id_str
-        .parse::<u64>()
-        .map_err(|_| tr!("Неверный Steam Item ID: {}", "Invalid Steam item ID: {}", item_id_str))
+    item_id_str.parse::<u64>().map_err(|_| {
+        tr!(
+            "Неверный Steam Item ID: {}",
+            "Invalid Steam item ID: {}",
+            "无效的 Steam 物品 ID：{}",
+            item_id_str
+        )
+    })
 }
 
 pub fn unsubscribe_workshop_item_native(dll_path: &Path, item_id_str: &str) -> Result<bool, String> {
@@ -435,10 +443,11 @@ pub fn workshop_url(item_id: &str) -> String {
 /// Starts the game executable that matches the installed engine
 /// (`RimWorldWin64.exe` for 1.6/Unity, `RimWorld.exe` for 1.7/Waylith).
 pub fn launch_rimworld(steam_paths: &SteamPaths, args: &[String]) -> Result<(), String> {
-    let game_dir = steam_paths
-        .game_path
-        .as_ref()
-        .ok_or(tr!("Папка игры RimWorld не найдена", "RimWorld game folder not found"))?;
+    let game_dir = steam_paths.game_path.as_ref().ok_or(tr!(
+        "Папка игры RimWorld не найдена",
+        "RimWorld game folder not found",
+        "找不到 RimWorld 游戏文件夹"
+    ))?;
 
     let exe_path = steam_paths
         .exe_path
@@ -448,6 +457,7 @@ pub fn launch_rimworld(steam_paths: &SteamPaths, args: &[String]) -> Result<(), 
             tr!(
                 "Не найден исполняемый файл игры ({} или {}) в {}",
                 "Game executable ({} or {}) not found in {}",
+                "在 {2} 中找不到游戏程序（{0} 或 {1}）",
                 game_install::WAYLITH_EXE,
                 game_install::UNITY_EXE,
                 game_dir.display()
@@ -463,6 +473,7 @@ pub fn launch_rimworld(steam_paths: &SteamPaths, args: &[String]) -> Result<(), 
         Err(e) => Err(tr!(
             "Не удалось запустить процесс: {}",
             "Could not start the process: {}",
+            "无法启动进程：{}",
             e
         )),
     }

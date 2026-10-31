@@ -88,7 +88,7 @@ pub fn backup_latest_save(saves_dir: &Path, keep: usize) -> std::io::Result<Opti
         }
     }
 
-    let Some((latest_path, _)) = newest_save else {
+    let Some((latest_path, latest_mtime)) = newest_save else {
         return Ok(None);
     };
 
@@ -96,6 +96,17 @@ pub fn backup_latest_save(saves_dir: &Path, keep: usize) -> std::io::Result<Opti
     std::fs::create_dir_all(&backup_dir)?;
 
     let stem = latest_path.file_stem().and_then(|s| s.to_str()).unwrap_or("Save");
+
+    // Unchanged since its newest backup (launched again without playing): no copy, or a few
+    // such launches would push out the older backups that differ.
+    let latest_len = std::fs::metadata(&latest_path)?.len();
+    if let Some(newest) = list_save_backups(saves_dir, Some(stem)).first() {
+        if let Ok(meta) = std::fs::metadata(newest) {
+            if meta.len() == latest_len && meta.modified().ok() == Some(latest_mtime) {
+                return Ok(None);
+            }
+        }
+    }
 
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -110,6 +121,11 @@ pub fn backup_latest_save(saves_dir: &Path, keep: usize) -> std::io::Result<Opti
     }
 
     std::fs::copy(&latest_path, &target)?;
+    // The backup keeps the save's own time: that is how an unchanged save is recognized.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&target)
+        .and_then(|f| f.set_modified(latest_mtime))?;
 
     // Rotate backups of exactly this save: "Colony.2" has its own ("Colony." is a prefix of both).
     let mut backups: Vec<PathBuf> = std::fs::read_dir(&backup_dir)?
@@ -467,11 +483,20 @@ mod tests {
         assert!(b1.exists());
         assert!(b1.file_name().unwrap().to_str().unwrap().starts_with("ColonyB."));
 
-        // Multiple backups to trigger rotation
-        let _b2 = backup_latest_save(&dir, 2).unwrap().unwrap();
-        let b3 = backup_latest_save(&dir, 2).unwrap().unwrap();
+        // Launched again without playing: the unchanged save is not copied again.
+        assert_eq!(backup_latest_save(&dir, 2).unwrap(), None);
+        assert_eq!(list_save_backups(&dir, Some("ColonyB")).len(), 1);
+
+        // Played and saved twice more: rotation keeps 2.
+        let mut b3 = b1.clone();
+        for i in 1..=2 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            std::fs::write(&save_b, format!("data_b{i}")).unwrap();
+            b3 = backup_latest_save(&dir, 2).unwrap().unwrap();
+        }
         let backups_b = list_save_backups(&dir, Some("ColonyB"));
         assert_eq!(backups_b.len(), 2, "rotation keeps at most 2 backups for ColonyB");
+        assert_eq!(backups_b[0], b3, "newest first");
 
         // Touch save_a to make it newer
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -499,7 +524,7 @@ mod tests {
         assert!(!save_b.exists());
         let restored = restore_save_backup(&b3, &dir).unwrap();
         assert_eq!(restored, save_b);
-        assert_eq!(std::fs::read_to_string(&restored).unwrap(), "data_b");
+        assert_eq!(std::fs::read_to_string(&restored).unwrap(), "data_b2");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

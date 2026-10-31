@@ -53,8 +53,8 @@ fn ids_of(value: Option<&serde_json::Value>) -> Vec<String> {
 
 /// Parses the RimSort/RimPy format, or this app's own format (map of `CommunityRule`).
 pub fn parse_rules_json(text: &str) -> Result<HashMap<String, CommunityRule>, String> {
-    let value: serde_json::Value =
-        serde_json::from_str(text.trim_start_matches('\u{feff}')).map_err(|e| tr!("не JSON: {}", "not JSON: {}", e))?;
+    let value: serde_json::Value = serde_json::from_str(text.trim_start_matches('\u{feff}'))
+        .map_err(|e| tr!("не JSON: {}", "not JSON: {}", "不是 JSON：{}", e))?;
 
     if let Some(rules) = value.get("rules").and_then(|r| r.as_object()) {
         let mut out = HashMap::with_capacity(rules.len());
@@ -80,7 +80,8 @@ pub fn parse_rules_json(text: &str) -> Result<HashMap<String, CommunityRule>, St
     let own: HashMap<String, CommunityRule> = serde_json::from_value(value).map_err(|_| {
         tr!(
             "неизвестный формат: нет ключа \"rules\"",
-            "unknown format: no \"rules\" key"
+            "unknown format: no \"rules\" key",
+            "未知格式：没有「rules」键"
         )
         .to_string()
     })?;
@@ -129,7 +130,7 @@ pub fn load_effective_db() -> CommunityDatabase {
 fn store_rules_text(text: &str, dest: &Path) -> Result<usize, String> {
     let count = parse_rules_json(text)?.len();
     if count == 0 {
-        return Err(tr!("файл не содержит правил", "the file has no rules").to_string());
+        return Err(tr!("файл не содержит правил", "the file has no rules", "文件中没有规则").to_string());
     }
     let tmp = dest.with_extension("json.tmp");
     std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
@@ -148,7 +149,14 @@ pub fn download_rules() -> Result<usize, String> {
     let text = ureq::get(RIMSORT_RULES_URL)
         .timeout(Duration::from_secs(30))
         .call()
-        .map_err(|e| tr!("нет связи с GitHub: {}", "can't reach GitHub: {}", e))?
+        .map_err(|e| {
+            tr!(
+                "нет связи с GitHub: {}",
+                "can't reach GitHub: {}",
+                "无法连接 GitHub：{}",
+                e
+            )
+        })?
         .into_string()
         .map_err(|e| e.to_string())?;
     store_rules_text(&text, &local_rules_path())

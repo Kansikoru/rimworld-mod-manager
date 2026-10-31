@@ -331,9 +331,16 @@ impl ManifestEntry {
         self.flipped.unwrap_or(false) != want_flipped
     }
 
-    /// The DDS was created with a different max_size setting than currently requested.
-    pub fn wrong_max_size(&self, wanted_max_size: Option<u32>) -> bool {
-        self.max_size != wanted_max_size
+    /// The DDS would come out another size with the requested max_size. A texture smaller
+    /// than both limits stays as it is: changing the setting does not re-encode it.
+    pub fn wrong_max_size(&self, source: &Path, wanted_max_size: Option<u32>) -> bool {
+        if self.max_size == wanted_max_size {
+            return false;
+        }
+        match image::image_dimensions(source) {
+            Ok((w, h)) => target_dimensions(w, h, self.max_size) != target_dimensions(w, h, wanted_max_size),
+            Err(_) => true,
+        }
     }
 }
 
@@ -439,7 +446,7 @@ pub fn plan_textures(
                     let fresh = entry.source_fp.is_some()
                         && entry.source_fp == source_fingerprint(&path)
                         && !entry.wrong_orientation(want_flipped)
-                        && !entry.wrong_max_size(want_max_size);
+                        && !entry.wrong_max_size(&path, want_max_size);
                     if force || !fresh {
                         plan.to_convert.push(path);
                     } else {
@@ -887,6 +894,7 @@ pub fn run_optimization(
                                 let _ = tx_clone.send(OptimizationMsg::FileError(tr!(
                                     "Не удалось записать журнал DDS {}: {}",
                                     "Could not write the DDS log {}: {}",
+                                    "无法写入 DDS 记录 {}：{}",
                                     log_path.display(),
                                     e
                                 )));
@@ -904,6 +912,7 @@ pub fn run_optimization(
                                     let _ = tx_clone.send(OptimizationMsg::FileError(tr!(
                                         "{}: не удалось перенести исходник в бэкап: {}",
                                         "{}: could not move the source to the backup: {}",
+                                        "{}：无法将源文件移到备份：{}",
                                         path.display(),
                                         e
                                     )));
@@ -930,6 +939,7 @@ pub fn run_optimization(
                         let _ = tx_clone.send(OptimizationMsg::FileError(tr!(
                             "{}: сбой при конвертации (panic)",
                             "{}: conversion crashed (panic)",
+                            "{}：转换崩溃 (panic)",
                             path.display()
                         )));
                     }
@@ -961,6 +971,7 @@ pub fn run_optimization(
                 let _ = tx.send(OptimizationMsg::FileError(tr!(
                     "Не удалось записать журнал DDS {}: {}",
                     "Could not write the DDS log {}: {}",
+                    "无法写入 DDS 记录 {}：{}",
                     manifest_path().display(),
                     e
                 )));
@@ -1232,117 +1243,228 @@ fn detect_vram_registry() -> Option<u64> {
     (max_vram > 0).then_some(max_vram)
 }
 
-/// Estimated VRAM used by textures of one mod in bytes (V2).
-/// DDS files are counted at their file length (compressed data + mipmaps).
-/// PNG/JPG files are evaluated according to engine (1.6 Unity uncompressed RGBA vs 1.7 Waylith BC7).
-pub fn estimate_mod_vram(mod_dir: &Path, engine: crate::game_install::GameEngine) -> u64 {
-    let mut total_bytes = 0u64;
-    let with_mips = |b: u64| b + b / 3;
-    let is_waylith = engine == crate::game_install::GameEngine::Waylith;
-    let mut counted_dds = std::collections::HashSet::new();
+/// "1.6" from a game version like "1.6.4633 rev1261".
+pub fn short_game_version(version: &str) -> Option<String> {
+    let mut parts = version.trim().split(|c: char| !c.is_ascii_digit());
+    let major = parts.next().filter(|s| !s.is_empty())?;
+    let minor = parts.next().filter(|s| !s.is_empty())?;
+    Some(format!("{major}.{minor}"))
+}
 
-    for entry in WalkDir::new(mod_dir)
-        .into_iter()
-        .filter_entry(|entry| {
-            if entry.file_type().is_dir() {
-                let name = entry.file_name().to_string_lossy().to_lowercase();
-                name != "assemblies"
-                    && name != "source"
-                    && name != ".git"
-                    && name != "languages"
-                    && name != "defs"
-                    && name != "patches"
-                    && name != "about"
-            } else {
-                true
-            }
-        })
-        .filter_map(|e| e.ok())
-    {
-        if !entry.file_type().is_file() {
+/// (major, minor) of a folder or section name like "1.6" / "v1.6".
+fn version_of(name: &str) -> Option<(u32, u32)> {
+    let name = name.trim().trim_start_matches(['v', 'V']);
+    let (major, minor) = name.split_once('.')?;
+    Some((major.parse().ok()?, minor.parse().ok()?))
+}
+
+/// Folders of `<loadFolders>` for `version` (exact, else `default`, else the newest older one).
+fn load_folders_from_xml(xml: &str, version: Option<(u32, u32)>) -> Option<Vec<String>> {
+    let re_open = regex::Regex::new(r"<([vV]\d+\.\d+|default)\s*>").ok()?;
+    let re_li = regex::Regex::new(r"(?s)<li\b[^>]*>(.*?)</li>").ok()?;
+    let mut sections: Vec<(String, &str)> = Vec::new();
+    for c in re_open.captures_iter(xml) {
+        let (Some(whole), Some(name)) = (c.get(0), c.get(1)) else {
             continue;
+        };
+        let body = &xml[whole.end()..];
+        if let Some(len) = body.find(&format!("</{}>", name.as_str())) {
+            sections.push((name.as_str().to_string(), &body[..len]));
         }
-        let path = entry.path();
-        if !is_in_textures_folder(path) || is_in_about_folder(path) || is_in_dangerous_folder(path) {
-            continue;
-        }
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-        if ext == "dds" {
-            let key = path_key(path);
-            if counted_dds.insert(key) {
-                if let Ok(meta) = entry.metadata() {
-                    total_bytes += meta.len();
-                }
-            }
-        } else if ext == "png" || ext == "jpg" || ext == "jpeg" {
-            let dds_path = path.with_extension("dds");
-            let dds_key = path_key(&dds_path);
-            if dds_path.is_file() {
-                if counted_dds.insert(dds_key) {
-                    if let Ok(meta) = std::fs::metadata(&dds_path) {
-                        total_bytes += meta.len();
-                    }
-                }
-            } else if let Ok((w, h)) = image::image_dimensions(path) {
-                let px = u64::from(w) * u64::from(h);
-                if is_waylith {
-                    total_bytes += with_mips(px);
+    }
+    let pick = |name: &dyn Fn(&str) -> bool| sections.iter().find(|(n, _)| name(n)).map(|(_, body)| *body);
+    let body = version
+        .and_then(|v| pick(&|n| version_of(n) == Some(v)))
+        .or_else(|| pick(&|n| n.eq_ignore_ascii_case("default")))
+        .or_else(|| {
+            sections
+                .iter()
+                .filter_map(|(n, body)| Some((version_of(n)?, *body)))
+                .filter(|(v, _)| version.is_none_or(|want| *v <= want))
+                .max_by_key(|(v, _)| *v)
+                .map(|(_, body)| body)
+        })?;
+    Some(
+        re_li
+            .captures_iter(body)
+            .filter_map(|c| c.get(1))
+            .map(|m| m.as_str().trim().to_string())
+            .collect(),
+    )
+}
+
+/// The folders the game loads from a mod (V2): those of `loadFolders.xml` for this version,
+/// else the mod root, `Common` and the best version folder (the game's own, or the newest
+/// older one).
+pub fn mod_load_folders(mod_dir: &Path, game_version: Option<&str>) -> Vec<PathBuf> {
+    let version = game_version.and_then(short_game_version).and_then(|v| version_of(&v));
+    let xml = ["loadFolders.xml", "LoadFolders.xml"]
+        .iter()
+        .find_map(|n| std::fs::read_to_string(mod_dir.join(n)).ok());
+    if let Some(folders) = xml.and_then(|x| load_folders_from_xml(&x, version)) {
+        if !folders.is_empty() {
+            let mut out: Vec<PathBuf> = Vec::new();
+            for f in folders {
+                let rel = f.trim_matches(['/', '\\']);
+                let dir = if rel.is_empty() {
+                    mod_dir.to_path_buf()
                 } else {
-                    total_bytes += with_mips(px * 4);
+                    mod_dir.join(rel)
+                };
+                if !out.contains(&dir) {
+                    out.push(dir);
+                }
+            }
+            return out;
+        }
+    }
+    let mut out = vec![mod_dir.to_path_buf()];
+    let common = mod_dir.join("Common");
+    if common.is_dir() {
+        out.push(common);
+    }
+    let best_version_dir = std::fs::read_dir(mod_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|e| Some((version_of(&e.file_name().to_string_lossy())?, e.path())))
+        .filter(|(v, _)| version.is_none_or(|want| *v <= want))
+        .max_by_key(|(v, _)| *v);
+    if let Some((_, dir)) = best_version_dir {
+        out.push(dir);
+    }
+    out
+}
+
+/// Texture files the game loads from one mod: everything under `<load folder>/Textures`
+/// (apparel, bodies and UI too: they fill video memory like any other).
+fn mod_texture_files(mod_dir: &Path, game_version: Option<&str>) -> Vec<(PathBuf, std::fs::Metadata)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for folder in mod_load_folders(mod_dir, game_version) {
+        let Ok(entries) = std::fs::read_dir(&folder) else {
+            continue;
+        };
+        let textures = entries
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case("textures"));
+        let Some(textures) = textures else { continue };
+        for entry in WalkDir::new(textures.path()).into_iter().flatten() {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let ext = entry
+                .path()
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "dds") {
+                continue;
+            }
+            if seen.insert(path_key(entry.path())) {
+                if let Ok(meta) = entry.metadata() {
+                    out.push((entry.into_path(), meta));
                 }
             }
         }
     }
-    total_bytes
+    out
 }
 
-fn dir_mtime(dir: &Path) -> u64 {
-    let tex_dir = dir.join("Textures");
-    let check_path = if tex_dir.is_dir() { &tex_dir } else { dir };
-    std::fs::metadata(check_path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+/// Changes when a texture is added, removed or rewritten anywhere in the mod's texture folders.
+fn texture_fingerprint(files: &[(PathBuf, std::fs::Metadata)]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    files.len().hash(&mut h);
+    for (path, meta) in files {
+        path_key(path).hash(&mut h);
+        meta.len().hash(&mut h);
+        meta.modified()
+            .ok()
+            .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .hash(&mut h);
+    }
+    h.finish()
+}
+
+/// Estimated VRAM used by textures of one mod in bytes (V2).
+/// DDS files are counted at their file length (compressed data + mipmaps); a PNG/JPG next to
+/// a DDS is not loaded. PNG/JPG: uncompressed RGBA on 1.6 (Unity), BC7 on 1.7 (Waylith).
+fn estimate_texture_bytes(files: &[(PathBuf, std::fs::Metadata)], engine: crate::game_install::GameEngine) -> u64 {
+    let with_mips = |b: u64| b + b / 3;
+    let bytes_per_px = if engine == crate::game_install::GameEngine::Waylith {
+        1
+    } else {
+        4
+    };
+    let dds: std::collections::HashSet<String> = files
+        .iter()
+        .filter(|(p, _)| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("dds")))
+        .map(|(p, _)| path_key(&p.with_extension("")))
+        .collect();
+    files
+        .iter()
+        .map(|(path, meta)| {
+            let is_dds = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("dds"));
+            if is_dds {
+                meta.len()
+            } else if dds.contains(&path_key(&path.with_extension(""))) {
+                0
+            } else {
+                image::image_dimensions(path)
+                    .map(|(w, h)| with_mips(u64::from(w) * u64::from(h) * bytes_per_px))
+                    .unwrap_or(0)
+            }
+        })
+        .sum()
+}
+
+/// Estimated VRAM used by textures of one mod in bytes (V2).
+pub fn estimate_mod_vram(mod_dir: &Path, engine: crate::game_install::GameEngine, game_version: Option<&str>) -> u64 {
+    estimate_texture_bytes(&mod_texture_files(mod_dir, game_version), engine)
 }
 
 /// Evaluates active mod texture memory against dedicated video memory (V2).
-/// Uses cached per-mod results when directory mtime is unchanged.
+/// A mod's estimate is reused while its texture files stay the same (cache: dir ->
+/// (fingerprint, bytes)); returns the new cache entries too.
 pub fn check_vram_usage(
     active_mods: &[(String, PathBuf)],
     engine: crate::game_install::GameEngine,
+    game_version: Option<&str>,
     cache: &HashMap<PathBuf, (u64, u64)>,
 ) -> (VramReport, Vec<(PathBuf, u64, u64)>) {
     let total_vram = detect_dedicated_vram();
-    let mut total_used = 0u64;
-    let mut heavy_mods = Vec::new();
-    let mut updated_cache = Vec::new();
-
-    for (name, dir) in active_mods {
-        let mtime_secs = dir_mtime(dir);
-        let mod_vram = if let Some(&(cached_mtime, cached_bytes)) = cache.get(dir) {
-            if cached_mtime == mtime_secs && mtime_secs > 0 {
-                cached_bytes
-            } else {
-                let bytes = estimate_mod_vram(dir, engine);
-                updated_cache.push((dir.clone(), mtime_secs, bytes));
-                bytes
+    // Per mod: its bytes and, when estimated anew, the cache entry (dir, fingerprint, bytes).
+    type CacheEntry = (PathBuf, u64, u64);
+    let per_mod: Vec<(u64, Option<CacheEntry>)> = active_mods
+        .par_iter()
+        .map(|(_, dir)| {
+            let files = mod_texture_files(dir, game_version);
+            let fp = texture_fingerprint(&files);
+            match cache.get(dir) {
+                Some(&(cached_fp, bytes)) if cached_fp == fp => (bytes, None),
+                _ => {
+                    let bytes = estimate_texture_bytes(&files, engine);
+                    (bytes, Some((dir.clone(), fp, bytes)))
+                }
             }
-        } else {
-            let bytes = estimate_mod_vram(dir, engine);
-            updated_cache.push((dir.clone(), mtime_secs, bytes));
-            bytes
-        };
+        })
+        .collect();
 
-        total_used += mod_vram;
-        if mod_vram >= 25 * 1024 * 1024 {
-            heavy_mods.push((name.clone(), mod_vram));
-        }
-    }
-
+    let total_used = per_mod.iter().map(|(b, _)| b).sum();
+    let mut heavy_mods: Vec<(String, u64)> = active_mods
+        .iter()
+        .zip(&per_mod)
+        .filter(|(_, (bytes, _))| *bytes >= 25 * 1024 * 1024)
+        .map(|((name, _), (bytes, _))| (name.clone(), *bytes))
+        .collect();
     heavy_mods.sort_by_key(|b| std::cmp::Reverse(b.1));
     heavy_mods.truncate(8);
+    let updated_cache = per_mod.into_iter().filter_map(|(_, c)| c).collect();
 
     (
         VramReport {
@@ -1358,11 +1480,12 @@ pub fn check_vram_usage(
 pub fn check_vram_async(
     active_mods: Vec<(String, PathBuf)>,
     engine: crate::game_install::GameEngine,
+    game_version: Option<String>,
     cache: HashMap<PathBuf, (u64, u64)>,
     tx: mpsc::Sender<VramCheckResult>,
 ) {
     std::thread::spawn(move || {
-        let res = check_vram_usage(&active_mods, engine, &cache);
+        let res = check_vram_usage(&active_mods, engine, game_version.as_deref(), &cache);
         let _ = tx.send(res);
     });
 }
@@ -1955,7 +2078,7 @@ mod tests {
         let tex = dir.join("Mod").join("Textures").join("Things");
         std::fs::create_dir_all(&tex).unwrap();
         let png = tex.join("art.png");
-        write_png(&png, 256, 256, 255);
+        write_png(&png, 1600, 800, 255);
         let dds = png.with_extension("dds");
         std::fs::write(&dds, b"dds").unwrap();
 
@@ -1978,10 +2101,10 @@ mod tests {
         assert_eq!(plan_smaller.up_to_date, 0);
         assert_eq!(plan_smaller.to_convert.len(), 1);
 
-        // No limit -> to_convert (re-encode to full size)
+        // No limit: 1600 px fits under 2048 too, it comes out the same, nothing to redo.
         let plan_none = plan_textures(&[dir.join("Mod")], false, false, None, &manifest);
-        assert_eq!(plan_none.up_to_date, 0);
-        assert_eq!(plan_none.to_convert.len(), 1);
+        assert_eq!(plan_none.up_to_date, 1);
+        assert_eq!(plan_none.to_convert.len(), 0);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2050,7 +2173,7 @@ mod tests {
         let mut cache = HashMap::new();
 
         // 1st pass: cache miss, calculates usage
-        let (report1, new_cache) = check_vram_usage(&mods, GameEngine::Unity, &cache);
+        let (report1, new_cache) = check_vram_usage(&mods, GameEngine::Unity, None, &cache);
         assert!(report1.estimated_used_bytes > 0);
         assert_eq!(new_cache.len(), 1);
 
@@ -2059,10 +2182,67 @@ mod tests {
         }
 
         // 2nd pass: cache hit, gives exact same used bytes
-        let (report2, new_cache2) = check_vram_usage(&mods, GameEngine::Unity, &cache);
+        let (report2, new_cache2) = check_vram_usage(&mods, GameEngine::Unity, None, &cache);
         assert_eq!(report1.estimated_used_bytes, report2.estimated_used_bytes);
         assert_eq!(new_cache2.len(), 0, "no new items should be cached on cache hit");
 
+        // A texture changed deep inside a subfolder: estimated again.
+        let deep = tex_dir.join("Things").join("Item");
+        std::fs::create_dir_all(&deep).unwrap();
+        write_png(&deep.join("new.png"), 128, 128, 255);
+        let (report3, new_cache3) = check_vram_usage(&mods, GameEngine::Unity, None, &cache);
+        assert_eq!(new_cache3.len(), 1);
+        assert!(report3.estimated_used_bytes > report2.estimated_used_bytes);
+
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vram_estimate_counts_only_loaded_folders_and_all_texture_kinds() {
+        use crate::game_install::GameEngine;
+        let dir = temp_dir("vram_folders");
+        let m = dir.join("Mod");
+        // Old and current version folders, an apparel texture (skipped by the optimizer,
+        // still in video memory).
+        for (sub, side) in [
+            ("1.5/Textures", 256u32),
+            ("1.6/Textures/Things/Apparel", 128),
+            ("Textures", 64),
+        ] {
+            std::fs::create_dir_all(m.join(sub)).unwrap();
+            write_png(&m.join(sub).join("t.png"), side, side, 255);
+        }
+        let px = |s: u64| (s * s * 4) + (s * s * 4) / 3;
+        // 1.6: root + 1.6, not 1.5.
+        assert_eq!(
+            estimate_mod_vram(&m, GameEngine::Unity, Some("1.6.4633 rev1261")),
+            px(128) + px(64)
+        );
+        // 1.5: root + 1.5.
+        assert_eq!(
+            estimate_mod_vram(&m, GameEngine::Unity, Some("1.5.4409")),
+            px(256) + px(64)
+        );
+
+        // loadFolders.xml decides, for this version.
+        std::fs::write(
+            m.join("loadFolders.xml"),
+            "<loadFolders>\n  <v1.5>\n    <li>/</li>\n  </v1.5>\n  <v1.6>\n    <li>1.5</li>\n    <li IfModActive=\"x.y\">/</li>\n  </v1.6>\n</loadFolders>",
+        )
+        .unwrap();
+        assert_eq!(
+            estimate_mod_vram(&m, GameEngine::Unity, Some("1.6.1")),
+            px(256) + px(64)
+        );
+        assert_eq!(estimate_mod_vram(&m, GameEngine::Unity, Some("1.5.1")), px(64));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn short_game_version_takes_major_and_minor() {
+        assert_eq!(short_game_version("1.6.4633 rev1261").as_deref(), Some("1.6"));
+        assert_eq!(short_game_version("1.7.4990.1069").as_deref(), Some("1.7"));
+        assert_eq!(short_game_version("unknown"), None);
     }
 }

@@ -162,7 +162,7 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
                 ui.add(egui::Label::new(
                     egui::RichText::new(tr!(
                         "Исходники переносятся в %LOCALAPPDATA%\\RimWorldModManager\\texture_backup и возвращаются кнопкой «Откатить».\nОставьте выключенным, если у вас достаточно места на диске: некоторые моды читают PNG напрямую.",
-                        "Sources are moved to %LOCALAPPDATA%\\RimWorldModManager\\texture_backup and come back with \"Rollback\".\nLeave it off if you have enough disk space: some mods read PNG files directly."
+                        "Sources are moved to %LOCALAPPDATA%\\RimWorldModManager\\texture_backup and come back with \"Rollback\".\nLeave it off if you have enough disk space: some mods read PNG files directly.", "源文件会移到 %LOCALAPPDATA%\\RimWorldModManager\\texture_backup，可用「回滚」恢复。\n如果磁盘空间足够，请保持关闭：有些模组会直接读取 PNG 文件。"
                     ))
                         .color(THEME.accent_rose)
                         .size(12.0)
@@ -242,6 +242,7 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
                         egui::RichText::new(tr!(
                             "Обработано: {} / {} ({}%)",
                             "Processed: {} / {} ({}%)",
+                            "已处理：{} / {}（{}%）",
                             app.opt_done,
                             app.opt_total,
                             progress_pct
@@ -252,7 +253,7 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
                     if app.opt_errors > 0 {
                         badge(
                             ui,
-                            &tr!("Ошибок: {}", "Errors: {}", app.opt_errors),
+                            &tr!("Ошибок: {}", "Errors: {}", "错误：{}", app.opt_errors),
                             THEME.accent_rose.linear_multiply(0.2),
                             THEME.accent_rose,
                         );
@@ -271,7 +272,7 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
                 if !app.opt_current_file.is_empty() {
                     ui.add_space(4.0);
                     ui.label(
-                        egui::RichText::new(tr!("Файл: {}", "File: {}", app.opt_current_file))
+                        egui::RichText::new(tr!("Файл: {}", "File: {}", "文件：{}", app.opt_current_file))
                             .color(THEME.text_muted)
                             .size(12.0),
                     );

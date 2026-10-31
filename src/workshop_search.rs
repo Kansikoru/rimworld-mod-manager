@@ -61,12 +61,13 @@ pub fn search_steam_workshop(query: &str) -> Result<Vec<WorkshopItemResult>, Str
         .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         .set("Accept-Language", "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7")
         .call()
-        .map_err(|e| tr!("Нет связи со Steam Workshop: {}", "Can't reach the Steam Workshop: {}", e))?;
+        .map_err(|e| tr!("Нет связи со Steam Workshop: {}", "Can't reach the Steam Workshop: {}", "无法连接 Steam 创意工坊：{}", e))?;
 
     let html = html_resp.into_string().map_err(|e| {
         tr!(
             "Ошибка чтения ответа Steam Workshop: {}",
             "Could not read the Steam Workshop response: {}",
+            "无法读取 Steam 创意工坊的响应：{}",
             e
         )
     })?;
@@ -117,7 +118,7 @@ pub fn search_steam_workshop(query: &str) -> Result<Vec<WorkshopItemResult>, Str
                             let id = item.publishedfileid.unwrap_or_default();
                             let title = item
                                 .title
-                                .unwrap_or_else(|| tr!("Без названия", "Untitled").to_string());
+                                .unwrap_or_else(|| tr!("Без названия", "Untitled", "无标题").to_string());
                             let preview_url = item.preview_url;
                             let mut tags = Vec::new();
                             let mut is_translation = false;

@@ -159,7 +159,7 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
                     ],
                 );
                 if let Some(load_time) = report.load_time_secs {
-                    let dur_str = crate::load_time::format_duration(load_time, app.is_russian);
+                    let dur_str = crate::load_time::format_duration(load_time);
                     file_stats.push_str(&format!(" • {}: {}", t.get(TranslationKey::LoadTimeTitle), dur_str));
                 }
 
@@ -174,7 +174,8 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
         ui.add_space(8.0);
 
         if let Some(issue) = report.system_issue {
-            if render_system_issue_card(ui, t, issue) {
+            // On 1.7 the game compresses textures itself: no optimizer to send to.
+            if render_system_issue_card(ui, t, issue, !report.is_waylith) {
                 switch_to_optimizer = true;
             }
             ui.add_space(8.0);
@@ -221,7 +222,7 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
                                 }
                                 badge(
                                     ui,
-                                    culprit.severity.badge_text(app.is_russian),
+                                    culprit.severity.badge_text(t.language()),
                                     Color32::from_rgb(badge_bg[0], badge_bg[1], badge_bg[2]),
                                     Color32::from_rgb(badge_fg[0], badge_fg[1], badge_fg[2]),
                                 );
@@ -274,10 +275,15 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
     }
 }
 
-fn render_system_issue_card(ui: &mut Ui, t: crate::i18n::I18n, issue: crate::analyzer::SystemCrashIssue) -> bool {
+fn render_system_issue_card(
+    ui: &mut Ui,
+    t: crate::i18n::I18n,
+    issue: crate::analyzer::SystemCrashIssue,
+    optimizer_available: bool,
+) -> bool {
     let mut go_to_opt = false;
     card_container(ui, |ui| {
-        let (icon, color, title, desc, advice) = match issue {
+        let (icon, color, title, desc, mut advice) = match issue {
             crate::analyzer::SystemCrashIssue::GpuReset => (
                 ICON_STATUS_CRASH,
                 THEME.accent_rose,
@@ -302,6 +308,16 @@ fn render_system_issue_card(ui: &mut Ui, t: crate::i18n::I18n, issue: crate::ana
                 ],
             ),
         };
+        if !optimizer_available {
+            let opt_tips = [
+                t.get(TranslationKey::CrashGpuAdviceOptimizer),
+                t.get(TranslationKey::CrashOomAdviceReduceMods),
+            ];
+            advice.retain(|a| !opt_tips.contains(a));
+            if issue == crate::analyzer::SystemCrashIssue::OutOfMemory {
+                advice.push(t.get(TranslationKey::CrashOomAdviceFewerMods));
+            }
+        }
 
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
@@ -317,9 +333,11 @@ fn render_system_issue_card(ui: &mut Ui, t: crate::i18n::I18n, issue: crate::ana
                     ui.label(egui::RichText::new(item).color(THEME.text_primary).size(12.0));
                 });
             }
-            ui.add_space(8.0);
-            if primary_button_icon(ui, ICON_OPTIMIZER, t.get(TranslationKey::CrashBtnGoToOptimizer)).clicked() {
-                go_to_opt = true;
+            if optimizer_available {
+                ui.add_space(8.0);
+                if primary_button_icon(ui, ICON_OPTIMIZER, t.get(TranslationKey::CrashBtnGoToOptimizer)).clicked() {
+                    go_to_opt = true;
+                }
             }
         });
     });
@@ -413,7 +431,7 @@ pub fn render_last_good_card(app: &mut App, ui: &mut Ui) {
                 }
             });
 
-            if !diff.updated.is_empty() {
+            if !diff.updated.is_empty() || !diff.added.is_empty() {
                 ui.add_space(6.0);
                 ui.label(
                     egui::RichText::new(t.get(TranslationKey::LastGoodUpdatedAdvice))
@@ -421,10 +439,15 @@ pub fn render_last_good_card(app: &mut App, ui: &mut Ui) {
                         .size(12.0),
                 );
                 ui.add_space(2.0);
-                for id in &diff.updated {
+                let suspects = diff
+                    .updated
+                    .iter()
+                    .map(|id| (id, THEME.accent_amber))
+                    .chain(diff.added.iter().map(|id| (id, THEME.accent_cyan)));
+                for (id, color) in suspects {
                     let name = app.mod_display_name(id);
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("•").color(THEME.accent_amber).strong());
+                        ui.label(egui::RichText::new("•").color(color).strong());
                         ui.label(egui::RichText::new(name).color(THEME.text_primary).size(12.0));
                         ui.label(
                             egui::RichText::new(format!("({})", id))
@@ -460,28 +483,28 @@ pub fn render_load_time_card(app: &mut App, ui: &mut Ui) {
                         .color(THEME.text_primary)
                         .size(15.0)
                         .strong(),
-                );
+                )
+                .on_hover_text(t.get(TranslationKey::LoadTimeHint));
 
                 if let Some(entry) = latest_entry {
-                    let dur_str = crate::load_time::format_duration(entry.duration_secs, app.is_russian);
+                    let dur_str = crate::load_time::format_duration(entry.duration_secs);
                     tag(ui, &dur_str, THEME.accent_cyan);
                 } else if let Some(secs) = current_log_secs {
-                    let dur_str = crate::load_time::format_duration(secs, app.is_russian);
+                    let dur_str = crate::load_time::format_duration(secs);
                     tag(ui, &dur_str, THEME.accent_cyan);
                 }
             });
 
             if let Some(entry) = latest_entry {
-                if let Some(ref diff) = entry.diff_summary {
+                if let Some(diff) = entry.change_text() {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        let is_faster = diff.starts_with('-');
-                        let badge_color = if is_faster {
-                            THEME.accent_emerald
-                        } else {
+                        let badge_color = if entry.is_slower() {
                             THEME.accent_amber
+                        } else {
+                            THEME.accent_emerald
                         };
-                        tag(ui, diff, badge_color);
+                        tag(ui, &diff, badge_color);
                     });
                 }
 
@@ -498,14 +521,17 @@ pub fn render_load_time_card(app: &mut App, ui: &mut Ui) {
                             ui.horizontal(|ui| {
                                 let dt = crate::ui::components::local_date_time(e.recorded_at);
                                 ui.label(egui::RichText::new(dt).color(THEME.text_muted).size(11.0));
-                                let dur = crate::load_time::format_duration(e.duration_secs, app.is_russian);
+                                let dur = crate::load_time::format_duration(e.duration_secs);
                                 ui.label(egui::RichText::new(dur).color(THEME.text_primary).size(12.0).strong());
                                 ui.label(
-                                    egui::RichText::new(format!("({} mods)", e.active_mods.len()))
-                                        .color(THEME.text_muted)
-                                        .size(11.0),
+                                    egui::RichText::new(crate::i18n::fmt(
+                                        t.get(TranslationKey::LoadTimeModsCount),
+                                        &[&e.active_mods.len().to_string()],
+                                    ))
+                                    .color(THEME.text_muted)
+                                    .size(11.0),
                                 );
-                                if let Some(ref d) = e.diff_summary {
+                                if let Some(d) = e.change_text() {
                                     ui.label(egui::RichText::new(d).color(THEME.text_secondary).size(11.0));
                                 }
                             });

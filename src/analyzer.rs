@@ -1,4 +1,4 @@
-use crate::i18n::tr;
+use crate::i18n::{tr, Language, TranslationKey};
 use crate::models::ModInfo;
 use regex::Regex;
 use std::collections::HashMap;
@@ -21,76 +21,20 @@ pub enum ErrorSeverity {
 }
 
 impl ErrorSeverity {
-    pub fn badge_text(&self, is_ru: bool) -> &'static str {
-        match self {
-            ErrorSeverity::HardCrash => {
-                if is_ru {
-                    "Вылет игры"
-                } else {
-                    "Game crash"
-                }
-            }
-            ErrorSeverity::PrepatcherHarmonyError => {
-                if is_ru {
-                    "Ошибка Prepatcher / Harmony"
-                } else {
-                    "Prepatcher / Harmony error"
-                }
-            }
-            ErrorSeverity::DefException => {
-                if is_ru {
-                    "Ошибка в Defs"
-                } else {
-                    "Defs error"
-                }
-            }
-            ErrorSeverity::InstantiationError => {
-                if is_ru {
-                    "Ошибка создания класса"
-                } else {
-                    "Instantiation error"
-                }
-            }
-            ErrorSeverity::CrossReferenceError => {
-                if is_ru {
-                    "Ошибка ссылок в Defs"
-                } else {
-                    "Cross-reference error"
-                }
-            }
-            ErrorSeverity::BrokenTexture => {
-                if is_ru {
-                    "Битая текстура"
-                } else {
-                    "Broken texture"
-                }
-            }
-            ErrorSeverity::MissingDependency => {
-                if is_ru {
-                    "Нет зависимости"
-                } else {
-                    "Missing dependency"
-                }
-            }
-            ErrorSeverity::ModError => {
-                if is_ru {
-                    "Ошибка в моде"
-                } else {
-                    "Mod error"
-                }
-            }
-            ErrorSeverity::Warning => {
-                if is_ru {
-                    "Предупреждение"
-                } else {
-                    "Warning"
-                }
-            }
-        }
-    }
-
-    pub fn badge_label(&self, is_ru: bool) -> &'static str {
-        self.badge_text(is_ru)
+    /// Badge text in `lang`.
+    pub fn badge_text(&self, lang: Language) -> &'static str {
+        let key = match self {
+            ErrorSeverity::HardCrash => TranslationKey::SevHardCrash,
+            ErrorSeverity::PrepatcherHarmonyError => TranslationKey::SevPrepatcherHarmony,
+            ErrorSeverity::DefException => TranslationKey::SevDefException,
+            ErrorSeverity::InstantiationError => TranslationKey::SevInstantiation,
+            ErrorSeverity::CrossReferenceError => TranslationKey::SevCrossReference,
+            ErrorSeverity::BrokenTexture => TranslationKey::SevBrokenTexture,
+            ErrorSeverity::MissingDependency => TranslationKey::SevMissingDependency,
+            ErrorSeverity::ModError => TranslationKey::SevModError,
+            ErrorSeverity::Warning => TranslationKey::SevWarning,
+        };
+        key.translate(lang)
     }
 
     pub fn badge_colors(&self) -> ([u8; 3], [u8; 3]) {
@@ -295,35 +239,20 @@ impl<'a> ModMatcher<'a> {
 
 /// Summary line in the requested language (the report's own summary_text uses the
 /// interface language at the time of the analysis).
-pub fn summary_for(report: &LogReport, is_ru: bool) -> String {
-    let n = report.culprits.len();
-    let e = report.total_errors;
-    if let Some(issue) = report.system_issue {
-        return match (is_ru, issue) {
-            (true, SystemCrashIssue::GpuReset) => {
-                format!("Сбой видеокарты (D3D 887a0005 / DEVICE_REMOVED). Найдено виновников среди модов: {n}.")
-            }
-            (false, SystemCrashIssue::GpuReset) => {
-                format!("GPU reset (D3D 887a0005 / DEVICE_REMOVED). Found mod culprits: {n}.")
-            }
-            (true, SystemCrashIssue::OutOfMemory) => {
-                format!("Нехватка оперативной памяти (Out of Memory). Найдено виновников среди модов: {n}.")
-            }
-            (false, SystemCrashIssue::OutOfMemory) => {
-                format!("Out of memory (System RAM exhausted). Found mod culprits: {n}.")
-            }
-        };
-    }
-    match (is_ru, report.has_hard_crash, n > 0, e > 0) {
-        (true, true, _, _) => format!("В логе зафиксирован фатальный краш процесса (CTD). Найдено виновников: {n}."),
-        (false, true, _, _) => format!("Fatal process crash (CTD) detected in log. Found culprits: {n}."),
-        (true, false, true, _) => format!("Обнаружены критические ошибки. Найдено проблемных модов: {n}."),
-        (false, false, true, _) => format!("Critical errors detected. Found problematic mods: {n}."),
-        (true, false, false, true) => format!("В логе найдено {e} ошибок, но прямых виновников не выявлено."),
-        (false, false, false, true) => format!("Found {e} errors in the log, but no direct culprits identified."),
-        (true, ..) => "Лог чист. Критических ошибок и вылетов не обнаружено.".to_string(),
-        (false, ..) => "Log is clean. No critical errors or crashes detected.".to_string(),
-    }
+pub fn summary_for(report: &LogReport, lang: Language) -> String {
+    let n = report.culprits.len().to_string();
+    let key = match report.system_issue {
+        Some(SystemCrashIssue::GpuReset) => TranslationKey::SummaryGpuReset,
+        Some(SystemCrashIssue::OutOfMemory) => TranslationKey::SummaryOutOfMemory,
+        None if report.has_hard_crash => TranslationKey::SummaryHardCrash,
+        None if !report.culprits.is_empty() => TranslationKey::SummaryCulprits,
+        None if report.total_errors > 0 => {
+            let e = report.total_errors.to_string();
+            return crate::i18n::fmt(TranslationKey::SummaryErrorsOnly.translate(lang), &[&e]);
+        }
+        None => TranslationKey::SummaryClean,
+    };
+    crate::i18n::fmt(key.translate(lang), &[&n])
 }
 
 /// Finds Player.log files, newest first.
@@ -340,25 +269,32 @@ fn log_paths_in(base: &Path) -> Vec<(String, PathBuf)> {
         (
             tr!(
                 "Logs/Player.log (1.7+, последний запуск)",
-                "Logs/Player.log (1.7+, last run)"
+                "Logs/Player.log (1.7+, last run)",
+                "Logs/Player.log（1.7+，上次运行）"
             ),
             base.join("Logs").join("Player.log"),
         ),
         (
             tr!(
                 "Logs/Player-prev.log (1.7+, предыдущий запуск)",
-                "Logs/Player-prev.log (1.7+, previous run)"
+                "Logs/Player-prev.log (1.7+, previous run)",
+                "Logs/Player-prev.log（1.7+，再上一次运行）"
             ),
             base.join("Logs").join("Player-prev.log"),
         ),
         (
-            tr!("Player.log (1.6, последний запуск)", "Player.log (1.6, last run)"),
+            tr!(
+                "Player.log (1.6, последний запуск)",
+                "Player.log (1.6, last run)",
+                "Player.log（1.6，上次运行）"
+            ),
             base.join("Player.log"),
         ),
         (
             tr!(
                 "Player-prev.log (1.6, предыдущий запуск)",
-                "Player-prev.log (1.6, previous run)"
+                "Player-prev.log (1.6, previous run)",
+                "Player-prev.log（1.6，再上一次运行）"
             ),
             base.join("Player-prev.log"),
         ),
@@ -511,6 +447,7 @@ fn analyze_waylith_entries<'a>(
             explanation: tr!(
                 "Ошибка возникла в коде мода: `{}` (уровень {}).",
                 "The error came from the mod's code: `{}` (level {}).",
+                "错误来自模组代码：`{}`（级别 {}）。",
                 frame,
                 entry.level
             ),
@@ -538,7 +475,12 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
     let metadata = match fs::metadata(log_path) {
         Ok(m) => m,
         Err(_) => {
-            report.summary_text = tr!("Не удалось прочитать файл лога.", "Could not read the log file.").to_string();
+            report.summary_text = tr!(
+                "Не удалось прочитать файл лога.",
+                "Could not read the log file.",
+                "无法读取日志文件。"
+            )
+            .to_string();
             return report;
         }
     };
@@ -553,7 +495,6 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
     };
 
     report.raw_content = content.clone();
-    report.load_time_secs = crate::load_time::parse_load_time_from_log(&content);
     let lines: Vec<&str> = content.lines().collect();
     report.total_lines = lines.len();
 
@@ -590,7 +531,13 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
     let re_config_error = Regex::new(r"Exception in ConfigErrors\(\) of ([A-Za-z0-9_]+):").ok();
     let re_instantiate =
         Regex::new(r"(?:Error while instantiating class|Exception creating instance of)\s+([A-Za-z0-9_\.]+)").ok();
-    let re_cross_ref = Regex::new(r"Could not resolve cross-reference to\s+([^\s:]+)(?:\s+\(type\s+([^)]+)\))?").ok();
+    // The game writes both "Could not resolve cross-reference: No Verse.SoundDef named X found
+    // to give to Some.Class ..." and "Could not resolve cross-reference to Verse.ThingDef named X
+    // (wanter=costList)".
+    let re_cross_ref = Regex::new(
+        r"Could not resolve cross-reference(?::\s*No|\s+to)\s+([A-Za-z0-9_\.]+)\s+named\s+(\S+?)(?:\s+found to give to\s+([A-Za-z0-9_\.]+))?(?:\s|$)",
+    )
+    .ok();
     let re_texture_err = Regex::new(r"(?:Could not load UnityEngine\.Texture2D at|Failed to load texture at|Could not find a texture named)\s+([^\s]+)").ok();
     let re_harmony_conflict = Regex::new(
         r"(?:Method not found:\s+'HarmonyLib|MissingMethodException:.*?HarmonyLib|Could not load type 'HarmonyLib)",
@@ -655,11 +602,13 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
                                 headline: tr!(
                                     "Вызов метода `{}` привёл к вылету игры (CTD)",
                                     "Calling `{}` crashed the game (CTD)",
+                                    "调用 `{}` 导致游戏崩溃 (CTD)",
                                     method
                                 ),
                                 explanation: tr!(
                                     "Метод `{}:{}` выполнялся прямо перед сбоем движка Unity.",
                                     "`{}:{}` was running right before the Unity engine crashed.",
+                                    "Unity 引擎崩溃前正在运行 `{}:{}`。",
                                     full_class,
                                     method
                                 ),
@@ -698,10 +647,16 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
                                     package_id: Some(matched_mod.package_id.clone()),
                                     mod_dir: Some(matched_mod.dir_path.clone()),
                                     severity: ErrorSeverity::HardCrash,
-                                    headline: tr!("Вылет игры в моде `{}`", "Game crash in mod `{}`", matched_mod.name),
+                                    headline: tr!(
+                                        "Вылет игры в моде `{}`",
+                                        "Game crash in mod `{}`",
+                                        "模组 `{}` 导致游戏崩溃",
+                                        matched_mod.name
+                                    ),
                                     explanation: tr!(
                                         "Исключение в методе `{}:{}` завершило процесс игры.",
                                         "An exception in `{}:{}` ended the game process.",
+                                        "`{}:{}` 中的异常终止了游戏进程。",
                                         full_class,
                                         method
                                     ),
@@ -745,12 +700,12 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
                             severity: ErrorSeverity::PrepatcherHarmonyError,
                             headline: tr!(
                                 "Ошибка Prepatcher в моде `{}`",
-                                "Prepatcher error in mod `{}`",
+                                "Prepatcher error in mod `{}`", "模组 `{}` 的 Prepatcher 错误",
                                 matched_mod.name
                             ),
                             explanation: tr!(
                                 "Патч `{}` не смог встроиться в сборку. Это часто даёт чёрный экран или зависание загрузки.",
-                                "Patch `{}` could not be applied to the assembly. This often causes a black screen or a stuck loading screen.",
+                                "Patch `{}` could not be applied to the assembly. This often causes a black screen or a stuck loading screen.", "补丁 `{}` 无法应用到程序集。这常常导致黑屏或卡在加载界面。",
                                 patch_class
                             ),
                             stack_trace_excerpt: excerpt.clone(),
@@ -790,11 +745,13 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
                         headline: tr!(
                             "Нет или не загружена зависимость `{}`",
                             "Dependency `{}` is missing or not loaded",
+                            "前置 `{}` 缺失或未加载",
                             dep_id
                         ),
                         explanation: tr!(
                             "Мод `{}` требует включённый мод с Package ID `{}`.",
                             "Mod `{}` needs an enabled mod with Package ID `{}`.",
+                            "模组 `{}` 需要启用 Package ID 为 `{}` 的模组。",
                             target_name,
                             dep_id
                         ),
@@ -832,11 +789,13 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
                             headline: tr!(
                                 "Ошибка DefDatabase / NullReference в объекте `{}`",
                                 "DefDatabase / NullReference error in `{}`",
+                                "`{}` 中的 DefDatabase / NullReference 错误",
                                 def_name
                             ),
                             explanation: tr!(
                                 "Ошибка в настройках объекта `{}` в моде `{}`.",
                                 "Broken definition of `{}` in mod `{}`.",
+                                "模组 `{1}` 中 `{0}` 的定义有误。",
                                 def_name,
                                 m.name
                             ),
@@ -865,12 +824,12 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
                             severity: ErrorSeverity::InstantiationError,
                             headline: tr!(
                                 "Ошибка создания экземпляра класса `{}`",
-                                "Error while instantiating class `{}`",
+                                "Error while instantiating class `{}`", "创建类 `{}` 的实例时出错",
                                 class_name
                             ),
                             explanation: tr!(
                                 "Движок не смог создать объект класса. Проверьте совместимость мода с версией игры.",
-                                "The engine could not instantiate the class. Check mod compatibility with your game version."
+                                "The engine could not instantiate the class. Check mod compatibility with your game version.", "引擎无法创建该类的实例。请检查模组是否与你的游戏版本兼容。"
                             )
                             .to_string(),
                             stack_trace_excerpt: line.to_string(),
@@ -891,32 +850,28 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
             }
             if let Some(ref re) = re_cross_ref {
                 if let Some(caps) = re.captures(line) {
-                    let target = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-                    let matched_mod = matcher.find_mod(target);
-                    let target_name = matched_mod
-                        .as_ref()
-                        .map(|m| m.name.clone())
-                        .unwrap_or_else(|| target.to_string());
+                    let def_type = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+                    let def_type = def_type.rsplit('.').next().unwrap_or(def_type);
+                    let def_name = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+                    let wanter = caps.get(3).map(|m| m.as_str());
+                    // The class that wants the def may belong to a mod; the def name rarely tells.
+                    let matched_mod = wanter
+                        .and_then(|w| matcher.find_mod(w))
+                        .or_else(|| matcher.find_mod(def_name));
                     let key = matched_mod
-                        .as_ref()
                         .map(|m| m.package_id.to_lowercase())
-                        .unwrap_or_else(|| target.to_lowercase());
+                        .unwrap_or_else(|| format!("xref:{}", def_name.to_lowercase()));
+                    let t = |k: TranslationKey| crate::i18n::text(k);
 
                     let entry = culprits_map.entry(key).or_insert_with(|| CrashCulprit {
-                        mod_name: target_name,
-                        package_id: matched_mod.as_ref().map(|m| m.package_id.clone()),
-                        mod_dir: matched_mod.as_ref().map(|m| m.dir_path.clone()),
+                        mod_name: matched_mod
+                            .map(|m| m.name.clone())
+                            .unwrap_or_else(|| format!("{def_type} {def_name}")),
+                        package_id: matched_mod.map(|m| m.package_id.clone()),
+                        mod_dir: matched_mod.map(|m| m.dir_path.clone()),
                         severity: ErrorSeverity::CrossReferenceError,
-                        headline: tr!(
-                            "Не разрешена кросс-ссылка на `{}`",
-                            "Unresolved cross-reference to `{}`",
-                            target
-                        ),
-                        explanation: tr!(
-                            "XML Def ссылается на недостающий объект или класс (возможно, выключен нужный мод).",
-                            "An XML Def references a missing object or class (a required mod might be disabled)."
-                        )
-                        .to_string(),
+                        headline: crate::i18n::fmt(t(TranslationKey::XrefHeadline), &[def_type, def_name]),
+                        explanation: crate::i18n::fmt(t(TranslationKey::XrefExplanation), &[wanter.unwrap_or("?")]),
                         stack_trace_excerpt: line.to_string(),
                         occurrences: 0,
                     });
@@ -955,12 +910,12 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
                         severity: ErrorSeverity::BrokenTexture,
                         headline: tr!(
                             "Не найдена или повреждена текстура `{}`",
-                            "Missing or broken texture `{}`",
+                            "Missing or broken texture `{}`", "纹理 `{}` 缺失或损坏",
                             path
                         ),
                         explanation: tr!(
                             "Игра не смогла загрузить текстуру: файл повреждён, отсутствует или сохранён в неподдерживаемом формате.",
-                            "The game failed to load the texture: file is missing, corrupt, or in an unsupported format."
+                            "The game failed to load the texture: file is missing, corrupt, or in an unsupported format.", "游戏无法加载该纹理：文件缺失、损坏或格式不受支持。"
                         )
                         .to_string(),
                         stack_trace_excerpt: line.to_string(),
@@ -980,14 +935,14 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
             }
             let key = "brrainz.harmony".to_string();
             let entry = culprits_map.entry(key).or_insert_with(|| CrashCulprit {
-                mod_name: "Harmony (конфликт версий / version conflict)".to_string(),
+                mod_name: crate::i18n::text(TranslationKey::HarmonyConflictName).to_string(),
                 package_id: Some("brrainz.harmony".to_string()),
                 mod_dir: None,
                 severity: ErrorSeverity::PrepatcherHarmonyError,
-                headline: tr!("Конфликт версий Harmony", "Harmony version conflict").to_string(),
+                headline: tr!("Конфликт версий Harmony", "Harmony version conflict", "Harmony 版本冲突").to_string(),
                 explanation: tr!(
                     "Один из модов загружает устаревшую версию 0Harmony.dll, что приводит к сбоям вызова методов Harmony.",
-                    "A mod is loading an outdated 0Harmony.dll, causing method call failures in Harmony."
+                    "A mod is loading an outdated 0Harmony.dll, causing method call failures in Harmony.", "某个模组加载了过时的 0Harmony.dll，导致 Harmony 方法调用失败。"
                 )
                 .to_string(),
                 stack_trace_excerpt: line.to_string(),
@@ -1013,7 +968,7 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
     report.culprits = culprits;
     report.recent_errors = recent_errors(&lines, report.is_waylith);
 
-    report.summary_text = summary_for(&report, !crate::i18n::is_english());
+    report.summary_text = summary_for(&report, crate::i18n::current_language());
     report
 }
 
@@ -1063,7 +1018,7 @@ pub fn generate_ai_diagnostic_prompt(report: &LogReport, is_ru: bool) -> String 
     if is_ru {
         out.push_str("Помоги разобраться с ошибкой или вылетом RimWorld. Ниже данные из Player.log.\n\n");
         out.push_str(&format!("Файл лога: {}\n", report.log_file_name));
-        out.push_str(&format!("Итог анализа: {}\n", summary_for(report, true)));
+        out.push_str(&format!("Итог анализа: {}\n", summary_for(report, Language::Russian)));
 
         out.push_str(if report.is_waylith {
             "Версия игры: RimWorld 1.7+ (движок Waylith, .NET 10)\n"
@@ -1088,7 +1043,7 @@ pub fn generate_ai_diagnostic_prompt(report: &LogReport, is_ru: bool) -> String 
                     c.mod_name,
                     c.package_id.as_deref().unwrap_or("неизвестен")
                 ));
-                out.push_str(&format!("   Тип: {}\n", c.severity.badge_text(true)));
+                out.push_str(&format!("   Тип: {}\n", c.severity.badge_text(Language::Russian)));
                 out.push_str(&format!("   Ошибка: {}\n", c.headline));
                 out.push_str(&format!("   Подробности: {}\n", c.explanation));
 
@@ -1111,7 +1066,10 @@ pub fn generate_ai_diagnostic_prompt(report: &LogReport, is_ru: bool) -> String 
     } else {
         out.push_str("Help me find the cause of a RimWorld error or crash. Data from Player.log is below.\n\n");
         out.push_str(&format!("Log file: {}\n", report.log_file_name));
-        out.push_str(&format!("Analysis result: {}\n", summary_for(report, false)));
+        out.push_str(&format!(
+            "Analysis result: {}\n",
+            summary_for(report, Language::English)
+        ));
 
         out.push_str(if report.is_waylith {
             "Game version: RimWorld 1.7+ (Waylith engine, .NET 10)\n"
@@ -1136,7 +1094,7 @@ pub fn generate_ai_diagnostic_prompt(report: &LogReport, is_ru: bool) -> String 
                     c.mod_name,
                     c.package_id.as_deref().unwrap_or("unknown")
                 ));
-                out.push_str(&format!("   Type: {}\n", c.severity.badge_text(false)));
+                out.push_str(&format!("   Type: {}\n", c.severity.badge_text(Language::English)));
                 out.push_str(&format!("   Error: {}\n", c.headline));
                 out.push_str(&format!("   Details: {}\n", c.explanation));
 
@@ -1163,119 +1121,124 @@ pub fn generate_ai_diagnostic_prompt(report: &LogReport, is_ru: bool) -> String 
     out
 }
 
-/// Generates a comprehensive plain-text diagnostic report suitable for sharing or saving (F13).
-pub fn generate_text_report(report: &LogReport, is_ru: bool) -> String {
+/// Graphics card / memory failure: title, description and advice in `lang`.
+fn system_issue_texts(issue: SystemCrashIssue, lang: Language) -> (&'static str, &'static str, Vec<&'static str>) {
+    let keys = match issue {
+        SystemCrashIssue::GpuReset => (
+            TranslationKey::CrashGpuResetTitle,
+            TranslationKey::CrashGpuResetDesc,
+            vec![
+                TranslationKey::CrashGpuAdviceOptimizer,
+                TranslationKey::CrashGpuAdviceHighQuality,
+                TranslationKey::CrashGpuAdviceDriver,
+                TranslationKey::CrashGpuAdviceEventLog,
+            ],
+        ),
+        SystemCrashIssue::OutOfMemory => (
+            TranslationKey::CrashOomTitle,
+            TranslationKey::CrashOomDesc,
+            vec![
+                TranslationKey::CrashOomAdviceCloseApps,
+                TranslationKey::CrashOomAdvicePagingFile,
+                TranslationKey::CrashOomAdviceReduceMods,
+            ],
+        ),
+    };
+    (
+        keys.0.translate(lang),
+        keys.1.translate(lang),
+        keys.2.iter().map(|k| k.translate(lang)).collect(),
+    )
+}
+
+fn engine_label(report: &LogReport) -> &'static str {
+    if report.is_waylith {
+        "RimWorld 1.7+ (Waylith)"
+    } else {
+        "RimWorld 1.6 (Unity)"
+    }
+}
+
+/// Generates a plain-text diagnostic report in the interface language (F13).
+pub fn generate_text_report(report: &LogReport) -> String {
+    let lang = crate::i18n::current_language();
+    let t = |k: TranslationKey| k.translate(lang);
     let mut out = String::new();
     let sep = "=".repeat(78);
     let subsep = "-".repeat(78);
 
     out.push_str(&sep);
     out.push('\n');
-    out.push_str(if is_ru {
-        "RimWorld Mod Manager — Отчёт анализа лога\n"
-    } else {
-        "RimWorld Mod Manager — Log Analysis Report\n"
-    });
-    out.push_str(&format!("Файл / File: {}\n", report.log_path.display()));
+    out.push_str(&format!("RimWorld Mod Manager — {}\n", t(TranslationKey::ReportTitle)));
     out.push_str(&format!(
-        "Строк / Lines: {} | Размер / Size: {} байт | Ошибок / Errors: {}\n",
-        report.total_lines, report.file_size_bytes, report.total_errors
+        "{}: {}\n",
+        t(TranslationKey::ReportFile),
+        report.log_path.display()
     ));
     out.push_str(&format!(
-        "Движок / Engine: {}\n",
-        if report.is_waylith {
-            "RimWorld 1.7+ (Waylith)"
-        } else {
-            "RimWorld 1.6 (Unity)"
-        }
+        "{}: {} | {}: {} | {}: {}\n",
+        t(TranslationKey::ReportLines),
+        report.total_lines,
+        t(TranslationKey::ReportSize),
+        crate::i18n::fmt(t(TranslationKey::ReportBytes), &[&report.file_size_bytes.to_string()]),
+        t(TranslationKey::ReportErrors),
+        report.total_errors
+    ));
+    out.push_str(&format!(
+        "{}: {}\n",
+        t(TranslationKey::ReportEngine),
+        engine_label(report)
     ));
     if let Some(load_time) = report.load_time_secs {
-        let dur = crate::load_time::format_duration(load_time, is_ru);
         out.push_str(&format!(
             "{}: {}\n",
-            if is_ru {
-                "Время загрузки"
-            } else {
-                "Loading time"
-            },
-            dur
+            t(TranslationKey::LoadTimeTitle),
+            crate::load_time::format_duration_in(load_time, lang)
         ));
     }
     out.push_str(&sep);
     out.push_str("\n\n");
 
-    out.push_str(if is_ru {
-        "[ИТОГ АНАЛИЗА]\n"
-    } else {
-        "[SUMMARY]\n"
-    });
-    out.push_str(&summary_for(report, is_ru));
+    out.push_str(&format!("[{}]\n", t(TranslationKey::ReportSummary)));
+    out.push_str(&summary_for(report, lang));
     out.push_str("\n\n");
 
     if let Some(issue) = report.system_issue {
+        let (title, desc, advice) = system_issue_texts(issue, lang);
         out.push_str(&subsep);
         out.push('\n');
-        match issue {
-            SystemCrashIssue::GpuReset => {
-                out.push_str(if is_ru {
-                    "СБОЙ ВИДЕОКАРТЫ (D3D error 887a0005 / DXGI_ERROR_DEVICE_REMOVED)\n\
-                     Видеодрайвер был сброшен системой (TDR) при создании/отрисовке текстур.\n\
-                     Рекомендации:\n\
-                     • Уменьшите размер текстур во вкладке «Оптимизатор» (кнопка «Макс. размер» 2048 или 1024).\n\
-                     • Отключите в настройках графики модов опцию «High quality textures».\n\
-                     • Обновите видеодрайвер до актуальной стабильной версии.\n\
-                     • Проверьте журнал событий Windows (источник Display, TDR сброс).\n\n"
-                } else {
-                    "GRAPHICS CARD RESET (D3D error 887a0005 / DXGI_ERROR_DEVICE_REMOVED)\n\
-                     The graphics driver was reset by the OS (TDR) while handling textures.\n\
-                     Recommendations:\n\
-                     • Downscale textures in the Optimizer tab (Max size 2048 or 1024).\n\
-                     • Disable 'High quality textures' in mod graphics options.\n\
-                     • Update your GPU driver to the latest stable release.\n\
-                     • Check Windows Event Viewer (Display source, TDR reset).\n\n"
-                });
-            }
-            SystemCrashIssue::OutOfMemory => {
-                out.push_str(if is_ru {
-                    "НЕХВАТКА ОПЕРАТИВНОЙ ПАМЯТИ (Out of Memory / RAM exhausted)\n\
-                     Игре не хватило свободной системной памяти (RAM) для аллокации объектов.\n\
-                     Рекомендации:\n\
-                     • Закройте другие программы перед запуском игры.\n\
-                     • Увеличьте размер файла подкачки (pagefile.sys) в настройках Windows.\n\
-                     • Уменьшите размер текстур или сократите количество модов.\n\n"
-                } else {
-                    "OUT OF MEMORY (System RAM exhausted)\n\
-                     The game ran out of available memory to allocate objects or load mods.\n\
-                     Recommendations:\n\
-                     • Close background programs before launching RimWorld.\n\
-                     • Increase Windows paging file (pagefile.sys) size.\n\
-                     • Downscale mod textures or reduce active mod count.\n\n"
-                });
-            }
+        out.push_str(&format!("{title}\n{desc}\n"));
+        for a in advice {
+            out.push_str(&format!("• {a}\n"));
         }
+        out.push('\n');
     }
 
     if !report.culprits.is_empty() {
         out.push_str(&subsep);
         out.push('\n');
-        out.push_str(if is_ru {
-            "ПОДОЗРЕВАЕМЫЕ МОДЫ:\n\n"
-        } else {
-            "CULPRIT MODS:\n\n"
-        });
+        out.push_str(&format!("{}:\n\n", t(TranslationKey::ReportCulprits)));
         for (i, c) in report.culprits.iter().enumerate() {
             out.push_str(&format!(
-                "{}. {} [{}] (вхождений: {})\n",
+                "{}. {} [{}] ({})\n",
                 i + 1,
                 c.mod_name,
                 c.package_id.as_deref().unwrap_or("—"),
-                c.occurrences
+                crate::i18n::fmt(t(TranslationKey::ReportOccurrences), &[&c.occurrences.to_string()])
             ));
-            out.push_str(&format!("   Статус: {}\n", c.severity.badge_text(is_ru)));
-            out.push_str(&format!("   Причина: {}\n", c.headline));
-            out.push_str(&format!("   Пояснение: {}\n", c.explanation));
+            out.push_str(&format!(
+                "   {}: {}\n",
+                t(TranslationKey::ReportStatus),
+                c.severity.badge_text(lang)
+            ));
+            out.push_str(&format!("   {}: {}\n", t(TranslationKey::ReportCause), c.headline));
+            out.push_str(&format!(
+                "   {}: {}\n",
+                t(TranslationKey::ReportExplanation),
+                c.explanation
+            ));
             if !c.stack_trace_excerpt.is_empty() {
-                out.push_str("   Фрагмент стека:\n");
+                out.push_str(&format!("   {}:\n", t(TranslationKey::ReportStack)));
                 for l in c.stack_trace_excerpt.lines().take(15) {
                     out.push_str(&format!("     {}\n", l));
                 }
@@ -1287,11 +1250,7 @@ pub fn generate_text_report(report: &LogReport, is_ru: bool) -> String {
     if !report.recent_errors.is_empty() {
         out.push_str(&subsep);
         out.push('\n');
-        out.push_str(if is_ru {
-            "ПОСЛЕДНИЕ ОШИБКИ ИЗ ЛОГА:\n\n"
-        } else {
-            "RECENT LOG ERRORS:\n\n"
-        });
+        out.push_str(&format!("{}:\n\n", t(TranslationKey::ReportRecentErrors)));
         for (idx, err) in report.recent_errors.iter().enumerate() {
             out.push_str(&format!("--- [#{}] ---\n{}\n\n", idx + 1, err));
         }
@@ -1300,15 +1259,13 @@ pub fn generate_text_report(report: &LogReport, is_ru: bool) -> String {
     out
 }
 
-/// Generates a standalone, dark-themed HTML diagnostic report (F13).
-pub fn generate_html_report(report: &LogReport, is_ru: bool) -> String {
-    let title = if is_ru {
-        "RimWorld Mod Manager — Отчёт анализа лога"
-    } else {
-        "RimWorld Mod Manager — Log Analysis Report"
-    };
+/// Generates a standalone, dark-themed HTML diagnostic report in the interface language (F13).
+pub fn generate_html_report(report: &LogReport) -> String {
+    let lang = crate::i18n::current_language();
+    let t = |k: TranslationKey| k.translate(lang);
+    let title = format!("RimWorld Mod Manager — {}", t(TranslationKey::ReportTitle));
 
-    let summary = summary_for(report, is_ru);
+    let summary = summary_for(report, lang);
     let mut culprits_html = String::new();
     for (i, c) in report.culprits.iter().enumerate() {
         let (bg, fg) = c.severity.badge_colors();
@@ -1331,14 +1288,14 @@ pub fn generate_html_report(report: &LogReport, is_ru: bool) -> String {
             </div>",
             i + 1,
             html_escape(&c.mod_name),
-            html_escape(c.package_id.as_deref().unwrap_or("unknown")),
+            html_escape(c.package_id.as_deref().unwrap_or("—")),
             bg[0],
             bg[1],
             bg[2],
             fg[0],
             fg[1],
             fg[2],
-            c.severity.badge_text(is_ru),
+            html_escape(c.severity.badge_text(lang)),
             html_escape(&c.headline),
             html_escape(&c.explanation),
             stack
@@ -1347,36 +1304,17 @@ pub fn generate_html_report(report: &LogReport, is_ru: bool) -> String {
 
     let mut system_html = String::new();
     if let Some(issue) = report.system_issue {
-        let (issue_title, issue_desc) = match (issue, is_ru) {
-            (SystemCrashIssue::GpuReset, true) => (
-                "Сбой видеокарты: нехватка памяти или сбой драйвера (887a0005)",
-                "Видеодрайвер был сброшен системой (TDR) при создании или загрузке текстур. \
-                 Рекомендуется уменьшить текстуры во вкладке «Оптимизатор» (2048 или 1024), \
-                 отключить High quality textures и обновить драйвер видеокарты.",
-            ),
-            (SystemCrashIssue::GpuReset, false) => (
-                "Graphics card reset: out of video memory or driver crash (887a0005)",
-                "The graphics driver was reset by the OS (TDR) while loading textures. \
-                 Downscaling textures via the Optimizer (2048 or 1024), disabling High quality textures, \
-                 and updating the GPU driver is recommended.",
-            ),
-            (SystemCrashIssue::OutOfMemory, true) => (
-                "Нехватка оперативной памяти (Out of Memory)",
-                "Игре не хватило свободной системной памяти (RAM). Закройте фоновые приложения, \
-                 увеличьте файл подкачки Windows и уменьшите размер текстур или список модов.",
-            ),
-            (SystemCrashIssue::OutOfMemory, false) => (
-                "Out of memory (System RAM exhausted)",
-                "The game ran out of available system memory (RAM). Close background programs, \
-                 increase Windows paging file size, or downscale mod textures.",
-            ),
-        };
+        let (issue_title, issue_desc, advice) = system_issue_texts(issue, lang);
+        let items: String = advice.iter().map(|a| format!("<li>{}</li>", html_escape(a))).collect();
         system_html = format!(
             "<div class=\"card system-issue\">\
                 <h3>⚠️ {}</h3>\
                 <p>{}</p>\
+                <ul>{}</ul>\
             </div>",
-            issue_title, issue_desc
+            html_escape(issue_title),
+            html_escape(issue_desc),
+            items
         );
     }
 
@@ -1385,18 +1323,25 @@ pub fn generate_html_report(report: &LogReport, is_ru: bool) -> String {
         errors_html.push_str(&format!("<pre class=\"log-block\">{}</pre>", html_escape(err)));
     }
 
-    let load_time_meta = if let Some(secs) = report.load_time_secs {
-        format!(
+    let load_time_meta = match report.load_time_secs {
+        Some(secs) => format!(
             " | {}: {}",
-            if is_ru {
-                "Время загрузки"
-            } else {
-                "Loading time"
-            },
-            crate::load_time::format_duration(secs, is_ru)
-        )
-    } else {
-        String::new()
+            t(TranslationKey::LoadTimeTitle),
+            crate::load_time::format_duration_in(secs, lang)
+        ),
+        None => String::new(),
+    };
+    let html_lang = match lang {
+        Language::Russian => "ru",
+        Language::English => "en",
+        Language::Chinese => "zh-CN",
+    };
+    let section = |key: TranslationKey, body: &str| {
+        if body.is_empty() {
+            String::new()
+        } else {
+            format!("<h2>{}</h2>{}", t(key), body)
+        }
     };
 
     format!(
@@ -1406,7 +1351,7 @@ pub fn generate_html_report(report: &LogReport, is_ru: bool) -> String {
             <meta charset=\"UTF-8\">\n\
             <title>{}</title>\n\
             <style>\n\
-                body {{ background: #0F1117; color: #E2E8F0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 24px; line-height: 1.5; }}\n\
+                body {{ background: #0F1117; color: #E2E8F0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Microsoft YaHei', sans-serif; margin: 0; padding: 24px; line-height: 1.5; }}\n\
                 .container {{ max-width: 900px; margin: 0 auto; }}\n\
                 h1 {{ font-size: 22px; color: #FFFFFF; margin-bottom: 6px; }}\n\
                 .meta {{ font-size: 13px; color: #94A3B8; margin-bottom: 20px; }}\n\
@@ -1437,19 +1382,19 @@ pub fn generate_html_report(report: &LogReport, is_ru: bool) -> String {
             </div>\n\
         </body>\n\
         </html>",
-        if is_ru { "ru" } else { "en" },
-        title,
-        title,
-        if is_ru { "Файл" } else { "File" },
+        html_lang,
+        html_escape(&title),
+        html_escape(&title),
+        t(TranslationKey::ReportFile),
         html_escape(&report.log_file_name),
-        if report.is_waylith { "RimWorld 1.7+ (Waylith)" } else { "RimWorld 1.6 (Unity)" },
-        if is_ru { "Строк" } else { "Lines" },
+        engine_label(report),
+        t(TranslationKey::ReportLines),
         report.total_lines,
         load_time_meta,
-        summary,
+        html_escape(&summary),
         system_html,
-        if culprits_html.is_empty() { String::new() } else { format!("<h2>{}</h2>{}", if is_ru { "Подозреваемые моды" } else { "Culprit mods" }, culprits_html) },
-        if errors_html.is_empty() { String::new() } else { format!("<h2>{}</h2>{}", if is_ru { "Ошибки из лога" } else { "Recent errors" }, errors_html) }
+        section(TranslationKey::ReportCulprits, &culprits_html),
+        section(TranslationKey::ReportRecentErrors, &errors_html)
     )
 }
 
@@ -1632,8 +1577,8 @@ Runtime:   .NET 10.0.13-waylithclr.dev
             ..Default::default()
         };
         let en = generate_ai_diagnostic_prompt(&report, false);
-        assert!(en.contains("Found 3 errors") && !en.contains("русский"));
-        assert!(generate_ai_diagnostic_prompt(&report, true).contains("найдено 3 ошибок"));
+        assert!(en.contains("has 3 errors") && !en.contains("русский"));
+        assert!(generate_ai_diagnostic_prompt(&report, true).contains("найдено ошибок: 3"));
     }
 
     #[test]
@@ -1661,7 +1606,8 @@ Runtime:   .NET 10.0.13-waylithclr.dev
 
         let log = "Initialize engine version: 2022.3.35f1\n\
              Error while instantiating class author.moda.CustomComponent\n\
-             Could not resolve cross-reference to author.modb.BrokenDef (type Verse.ThingDef)\n\
+             Could not resolve cross-reference: No Verse.SoundDef named BrokenSound found to give to author.modb.CompProperties_X author.modb.CompProperties_X (using undefined sound instead)\n\
+             Could not resolve cross-reference to Verse.ThingDef named MissingSteel (wanter=costList)\n\
              Could not load UnityEngine.Texture2D at author.modc/Textures/Missing\n\
              Method not found: 'HarmonyLib.Harmony.CreateAndPatchAll'\n";
         std::fs::write(&log_path, log).unwrap();
@@ -1680,8 +1626,21 @@ Runtime:   .NET 10.0.13-waylithclr.dev
         ];
         let report = analyze_rimworld_log(&log_path, &mods);
 
-        assert_eq!(report.total_errors, 4);
+        assert_eq!(report.total_errors, 5);
         assert!(!report.raw_content.is_empty());
+
+        // Cross-references in both real formats: the wanting class names the mod; a def
+        // nobody claims gets a card of its own.
+        let xref: Vec<&CrashCulprit> = report
+            .culprits
+            .iter()
+            .filter(|c| c.severity == ErrorSeverity::CrossReferenceError)
+            .collect();
+        assert_eq!(xref.len(), 2, "{xref:?}");
+        assert!(xref
+            .iter()
+            .any(|c| c.mod_name == "Mod B" && c.headline.contains("BrokenSound")));
+        assert!(xref.iter().any(|c| c.mod_name == "ThingDef MissingSteel"));
 
         let has_inst = report
             .culprits
@@ -1702,11 +1661,11 @@ Runtime:   .NET 10.0.13-waylithclr.dev
         assert!(has_tex, "texture pattern matched");
         assert!(has_harm, "harmony conflict pattern matched");
 
-        let txt = generate_text_report(&report, true);
-        assert!(txt.contains("Mod A"));
-        assert!(txt.contains("ПОДОЗРЕВАЕМЫЕ МОДЫ"));
+        let txt = generate_text_report(&report);
+        assert!(txt.contains("Mod A") && txt.contains("Mod B"));
+        assert!(txt.contains("RimWorld 1.6 (Unity)"));
 
-        let html = generate_html_report(&report, true);
+        let html = generate_html_report(&report);
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("Mod A"));
 

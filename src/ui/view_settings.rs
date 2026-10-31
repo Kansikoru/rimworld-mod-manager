@@ -258,6 +258,7 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
                     app.status_message = crate::i18n::tr!(
                         "Не удалось сохранить настройки шрифта: {}",
                         "Could not save font settings: {}",
+                        "无法保存字体设置：{}",
                         e
                     );
                 }

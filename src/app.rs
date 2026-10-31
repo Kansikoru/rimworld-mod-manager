@@ -298,6 +298,8 @@ pub struct App {
     pub last_good: Option<crate::last_good::LastGoodSnapshot>,
     pub last_good_diff: Option<crate::last_good::LastGoodDiff>,
     last_good_rx: Option<Receiver<crate::last_good::LastGoodDiff>>,
+    /// A new "last working run" snapshot being written in the background.
+    last_good_save_rx: Option<Receiver<crate::last_good::LastGoodSnapshot>>,
     /// The active list changed while the diff was being computed: compute it again.
     last_good_rerun: bool,
     /// F13: Log viewer mode (Report / FullLog) and filters.
@@ -343,6 +345,8 @@ pub struct App {
     pub game_launch_active_mods: Vec<String>,
     /// Background watcher waiting for RimWorld to exit after a normal launch, then analyzing Player.log.
     launch_watch_rx: Option<Receiver<Option<LogReport>>>,
+    /// Save backup made before a launch (F12), running in the background.
+    save_backup_rx: Option<Receiver<Result<(), String>>>,
 
     /// Deletion waiting for confirmation (modal window).
     pub pending_delete: Option<PendingDelete>,
@@ -657,6 +661,7 @@ impl App {
             last_good: crate::last_good::LastGoodSnapshot::load(),
             last_good_diff: None,
             last_good_rx: None,
+            last_good_save_rx: None,
             last_good_rerun: false,
             log_view_mode: crate::analyzer::LogViewMode::default(),
             log_filter_text: String::new(),
@@ -683,6 +688,7 @@ impl App {
             game_launch_time: None,
             game_launch_active_mods: Vec::new(),
             launch_watch_rx: None,
+            save_backup_rx: None,
 
             pending_delete: None,
             saved_active_mods: Vec::new(),
@@ -774,7 +780,7 @@ impl App {
             active_scroll_offset: 0.0,
             active_scroll_to: None,
 
-            status_message: tr!("Готов к работе", "Ready").to_string(),
+            status_message: tr!("Готов к работе", "Ready", "就绪").to_string(),
         };
 
         // Scans in the background: the window opens at once and fills in when the scan is done.
@@ -893,7 +899,12 @@ impl App {
                         self.status_message = status;
                     }
                     Err(e) => {
-                        self.status_message = tr!("Ошибка поиска в Workshop: {}", "Workshop search failed: {}", e)
+                        self.status_message = tr!(
+                            "Ошибка поиска в Workshop: {}",
+                            "Workshop search failed: {}",
+                            "创意工坊搜索失败：{}",
+                            e
+                        )
                     }
                 }
             }
@@ -939,9 +950,9 @@ impl App {
         if let Some(rx) = &self.log_rx {
             if let Ok(report) = rx.try_recv() {
                 self.log_rx = None;
-                let silent = std::mem::take(&mut self.log_silent);
-                if !silent {
-                    self.handle_verified_launch_report(&report);
+                // F9 / F11 are recorded only from the launch watcher, once the game has
+                // closed: a log analyzed by hand may be of a game still loading.
+                if !std::mem::take(&mut self.log_silent) {
                     self.status_message = self.crash_summary_text(&report);
                 }
                 self.log_report = Some(report);
@@ -1022,6 +1033,8 @@ impl App {
         self.poll_steamcmd();
         self.poll_workshop();
         self.poll_last_good_diff();
+        self.poll_last_good_save();
+        self.poll_save_backup();
         if let Some(rx) = &self.update_rx {
             if let Ok(res) = rx.try_recv() {
                 self.update_rx = None;
@@ -1252,7 +1265,12 @@ impl App {
         if let Err(e) =
             crate::categories::save_overrides(&crate::categories::overrides_path(), &self.category_overrides)
         {
-            self.status_message = tr!("Не удалось сохранить категории: {}", "Could not save categories: {}", e);
+            self.status_message = tr!(
+                "Не удалось сохранить категории: {}",
+                "Could not save categories: {}",
+                "无法保存分类：{}",
+                e
+            );
         }
     }
 
@@ -1316,7 +1334,12 @@ impl App {
             match snap.save_to(&crate::settings::AppSettings::path()) {
                 Ok(()) => self.last_saved_settings = snap,
                 Err(e) => {
-                    self.status_message = tr!("Не удалось сохранить настройки: {}", "Could not save settings: {}", e);
+                    self.status_message = tr!(
+                        "Не удалось сохранить настройки: {}",
+                        "Could not save settings: {}",
+                        "无法保存设置：{}",
+                        e
+                    );
                     self.last_saved_settings = snap; // don't retry every frame
                 }
             }
@@ -1374,7 +1397,12 @@ impl App {
             return;
         }
         if !self.rescan_keep_status {
-            self.status_message = tr!("Сканирование модов на диске...", "Scanning mods on disk...").to_string();
+            self.status_message = tr!(
+                "Сканирование модов на диске...",
+                "Scanning mods on disk...",
+                "正在扫描磁盘上的模组..."
+            )
+            .to_string();
         }
 
         let workshop = self.steam_paths.workshop_path.clone();
@@ -1484,7 +1512,8 @@ impl App {
         let Some(config_p) = self.mods_config_path.clone() else {
             self.status_message = tr!(
                 "ModsConfig.xml не найден — укажите его в Настройках",
-                "ModsConfig.xml not found — set it in Settings"
+                "ModsConfig.xml not found — set it in Settings",
+                "找不到 ModsConfig.xml — 请在设置中指定"
             )
             .to_string();
             return false;
@@ -1496,11 +1525,16 @@ impl App {
                 self.status_message = if crate::game_install::is_game_running() {
                     tr!(
                         "ModsConfig.xml сохранён, но RimWorld запущен: порядок применится после перезапуска игры, а изменения модов в самой игре перезапишут этот файл",
-                        "ModsConfig.xml saved, but RimWorld is running: the order applies after a game restart, and changing mods inside the game will overwrite this file"
+                        "ModsConfig.xml saved, but RimWorld is running: the order applies after a game restart, and changing mods inside the game will overwrite this file", "ModsConfig.xml 已保存，但 RimWorld 正在运行：排序会在重启游戏后生效，在游戏内修改模组会覆盖此文件"
                     )
                     .to_string()
                 } else {
-                    tr!("ModsConfig.xml сохранён", "ModsConfig.xml saved").to_string()
+                    tr!(
+                        "ModsConfig.xml сохранён",
+                        "ModsConfig.xml saved",
+                        "ModsConfig.xml 已保存"
+                    )
+                    .to_string()
                 };
                 true
             }
@@ -1508,6 +1542,7 @@ impl App {
                 self.status_message = tr!(
                     "Ошибка сохранения ModsConfig.xml: {}",
                     "Could not save ModsConfig.xml: {}",
+                    "无法保存 ModsConfig.xml：{}",
                     e
                 );
                 false
@@ -1634,7 +1669,9 @@ impl App {
 
     fn start_steam_client_download(&mut self, dll: PathBuf, ids: Vec<String>) {
         let t = self.i18n;
-        self.steam_stop_flag.store(false, Ordering::Relaxed);
+        // A flag of its own: a wait stopped just before keeps its "stop" even if it has not
+        // looked at it yet.
+        self.steam_stop_flag = Arc::new(AtomicBool::new(false));
         let stop_flag = self.steam_stop_flag.clone();
         let (prog_tx, prog_rx) = channel();
         self.steam_progress = Some(crate::steam::SteamDownloadProgress {
@@ -2930,21 +2967,63 @@ impl App {
         let launched_at = std::time::SystemTime::now()
             .checked_sub(std::time::Duration::from_secs(2))
             .unwrap_or(std::time::UNIX_EPOCH);
+        let launch_clock = std::time::Instant::now();
         Some(self.spawn_task(move || {
             // Wait up to 20 s for RimWorld to appear in the process list.
-            let mut started = false;
+            let mut pid = None;
             for _ in 0..40 {
-                if crate::game_install::is_game_running() {
-                    started = true;
+                pid = crate::game_install::game_pid();
+                if pid.is_some() {
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
-            if !started {
-                return None;
+            let mut pid = pid?;
+            // F11: measure the loading while the game runs. When Steam restarts the game the
+            // PID changes: the CPU time and disk reads of the first process carry over.
+            let mut probe = crate::load_time::LoadProbe::default();
+            // The samples of the last launch, to see why a time was or was not measured.
+            let mut probe_log = std::fs::File::create(crate::load_time::probe_log_path()).ok();
+            if let Some(f) = probe_log.as_mut() {
+                use std::io::Write;
+                let _ = writeln!(f, "{}", crate::load_time::ProbeSample::CSV_HEADER);
             }
-            while crate::game_install::is_game_running() {
+            let mut base = crate::game_install::ProcessStats::default();
+            let mut last = base;
+            let mut measurable = true;
+            loop {
+                if measurable && probe.result().is_none() {
+                    match crate::game_install::process_stats(pid) {
+                        Some(stats) => {
+                            last = stats;
+                            let sample = crate::load_time::ProbeSample {
+                                cpu_secs: base.cpu_secs + stats.cpu_secs,
+                                read_bytes: base.read_bytes + stats.read_bytes,
+                                private_bytes: stats.private_bytes,
+                                log_len: std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
+                                responsive: stats.responsive,
+                            };
+                            let secs = launch_clock.elapsed().as_secs_f32();
+                            let done = probe.push(secs, sample);
+                            if let Some(f) = probe_log.as_mut() {
+                                use std::io::Write;
+                                let _ = writeln!(f, "{}", sample.csv_row(secs, done));
+                            }
+                        }
+                        None => measurable = false,
+                    }
+                }
                 std::thread::sleep(std::time::Duration::from_secs(1));
+                match crate::game_install::game_pid() {
+                    Some(p) if p == pid => {}
+                    Some(p) => {
+                        base.cpu_secs += last.cpu_secs;
+                        base.read_bytes += last.read_bytes;
+                        last = crate::game_install::ProcessStats::default();
+                        pid = p;
+                    }
+                    None => break,
+                }
             }
             // Give the game a moment to flush Player.log on exit.
             std::thread::sleep(std::time::Duration::from_millis(600));
@@ -2954,7 +3033,9 @@ impl App {
             if !fresh {
                 return None;
             }
-            Some(analyze_rimworld_log(&path, &mods))
+            let mut report = analyze_rimworld_log(&path, &mods);
+            report.load_time_secs = probe.result();
+            Some(report)
         }))
     }
 
@@ -3074,20 +3155,34 @@ impl App {
         self.status_message = self.i18n.get(TranslationKey::LastGoodSavedMsg).to_string();
     }
 
-    /// Saves a `LastGoodSnapshot` for the specified verified mod order without overwriting `status_message`.
+    /// Saves a `LastGoodSnapshot` for the specified verified mod order without overwriting
+    /// `status_message`. In the background: it reads Steam's records and walks local mods.
     pub fn remember_last_good_for(&mut self, active_mods: &[String]) {
         let steamcmd = self.steamcmd_dir();
-        let snap =
-            crate::last_good::LastGoodSnapshot::create(active_mods, &self.all_mods, &self.steam_paths, Some(&steamcmd));
-        let _ = snap.save();
-        self.last_good = Some(snap);
-        self.refresh_last_good_diff();
+        let active = active_mods.to_vec();
+        let mods: Vec<ModInfo> = active.iter().filter_map(|id| self.find_mod(id)).cloned().collect();
+        let steam_paths = self.steam_paths.clone();
+        self.last_good_save_rx = Some(self.spawn_task(move || {
+            let snap = crate::last_good::LastGoodSnapshot::create(&active, &mods, &steam_paths, Some(&steamcmd));
+            let _ = snap.save();
+            snap
+        }));
+    }
+
+    fn poll_last_good_save(&mut self) {
+        let Some(rx) = &self.last_good_save_rx else { return };
+        if let Ok(snap) = rx.try_recv() {
+            self.last_good_save_rx = None;
+            self.last_good = Some(snap);
+            self.refresh_last_good_diff();
+        }
     }
 
     /// Records load time (F11) and last-good snapshot (F9) only when `report` comes from a
-    /// `Player.log` written after RimWorld was actually launched in this session.
-    /// Only a load time the log reports itself is recorded: the report comes when the game has
-    /// closed, so the time since the launch would be the whole session, not the loading.
+    /// `Player.log` written after RimWorld was actually launched in this session (the launch
+    /// watcher, once the game has closed).
+    /// A run counts as working when the game neither crashed nor hit a graphics card or memory
+    /// failure nor a broken Prepatcher / Harmony patch: big mod lists nearly always log some errors.
     pub fn handle_verified_launch_report(&mut self, report: &LogReport) {
         if !is_verified_launch_log(
             self.game_launch_time,
@@ -3106,29 +3201,34 @@ impl App {
             self.active_mods.clone()
         };
         if let Some(secs) = report.load_time_secs {
-            let is_ru = self.is_russian;
             let mut history = std::mem::take(&mut self.load_time_history);
-            history.record_launch(secs, &mods, |id| self.mod_display_name(id), is_ru);
+            history.record_launch(secs, &mods, |id| self.mod_display_name(id));
             let _ = history.save();
             self.load_time_history = history;
         }
-        if report.total_errors == 0 && !report.has_hard_crash && report.system_issue.is_none() {
+        if is_working_run(report) {
             self.remember_last_good_for(&mods);
         }
     }
 
-    /// Launches a bisect search specifically isolating the mods updated since the last good run (F9).
+    /// Launches a bisect search over the mods updated or added since the last good run (F9);
+    /// the rest stay on as the base.
     pub fn start_bisect_on_updated(&mut self) {
         let Some(diff) = &self.last_good_diff else { return };
-        if diff.updated.is_empty() {
+        if diff.updated.is_empty() && diff.added.is_empty() {
             return;
         };
-        let updated_set: std::collections::HashSet<String> = diff.updated.iter().map(|id| id.to_lowercase()).collect();
+        let suspects: std::collections::HashSet<String> = diff
+            .updated
+            .iter()
+            .chain(&diff.added)
+            .map(|id| id.to_lowercase())
+            .collect();
 
         let mut keep = std::collections::HashSet::new();
         for id in &self.active_mods {
             let key = id.to_lowercase();
-            if !updated_set.contains(&key) {
+            if !suspects.contains(&key) {
                 keep.insert(key);
             }
         }
@@ -3322,6 +3422,7 @@ impl App {
         self.status_message = tr!(
             "Загружен порядок от {} — нажмите «Сохранить порядок», чтобы его увидела игра",
             "Loaded the order from {} — press \"Save Order\" so the game sees it",
+            "已从 {} 加载排序 — 请点击「保存排序」让游戏使用它",
             crate::ui::components::local_date_time(backup.saved_at)
         );
     }
@@ -3367,6 +3468,7 @@ impl App {
             tr!(
                 "Включено зависимостей: {}, порядок загрузки отсортирован",
                 "Enabled dependencies: {}, load order sorted",
+                "已启用前置：{}，加载顺序已排序",
                 added
             )
         } else {
@@ -3414,6 +3516,7 @@ impl App {
             self.status_message = tr!(
                 "Защищённый мод '{}' нельзя удалить",
                 "Protected mod '{}' can't be deleted",
+                "受保护的模组「{}」不能删除",
                 m.package_id
             );
             return;
@@ -3447,7 +3550,7 @@ impl App {
             return;
         }
         let steam_paths = self.steam_paths.clone();
-        self.status_message = tr!("Удаление...", "Deleting...").to_string();
+        self.status_message = tr!("Удаление...", "Deleting...", "正在删除...").to_string();
 
         self.delete_rx = Some(self.spawn_task(move || match pending.kind {
             DeleteKind::Translations => {
@@ -3456,19 +3559,37 @@ impl App {
                 let mut msg = tr!(
                     "Перемещено в Корзину: {} | Отписано в Steam: {}",
                     "Moved to Recycle Bin: {} | Unsubscribed in Steam: {}",
+                    "已移至回收站：{} | 已在 Steam 取消订阅：{}",
                     res.deleted_count,
                     res.unsubscribed_count
                 );
                 if let Some(err) = res.errors.first() {
-                    msg.push_str(&tr!(" | Ошибок: {} ({})", " | Errors: {} ({})", res.errors.len(), err));
+                    msg.push_str(&tr!(
+                        " | Ошибок: {} ({})",
+                        " | Errors: {} ({})",
+                        " | 错误：{}（{}）",
+                        res.errors.len(),
+                        err
+                    ));
                 }
                 msg
             }
             DeleteKind::Single => {
                 let m = &targets[0];
                 match unsubscribe_and_delete_single(m, &steam_paths) {
-                    Ok(()) => tr!("Мод {} перемещён в Корзину", "Mod {} moved to the Recycle Bin", m.name),
-                    Err(e) => tr!("Мод {} не удалён: {}", "Mod {} not deleted: {}", m.name, e),
+                    Ok(()) => tr!(
+                        "Мод {} перемещён в Корзину",
+                        "Mod {} moved to the Recycle Bin",
+                        "模组 {} 已移至回收站",
+                        m.name
+                    ),
+                    Err(e) => tr!(
+                        "Мод {} не удалён: {}",
+                        "Mod {} not deleted: {}",
+                        "模组 {} 未删除：{}",
+                        m.name,
+                        e
+                    ),
                 }
             }
         }));
@@ -3492,7 +3613,8 @@ impl App {
         let Some(m) = self.selected_mod_id.as_deref().and_then(|id| self.find_mod(id)) else {
             self.status_message = tr!(
                 "Выберите мод в списке, чтобы найти для него перевод",
-                "Select a mod in the list to find a translation for it"
+                "Select a mod in the list to find a translation for it",
+                "请在列表中选择一个模组以查找它的翻译"
             )
             .to_string();
             return;
@@ -3503,7 +3625,12 @@ impl App {
         self.show_batch_results = false;
         let query = format!("{} {}", name, lang.search_suffix());
         self.workshop_search_query = query.clone();
-        self.status_message = tr!("Поиск в Workshop: {}...", "Searching the Workshop: {}...", query);
+        self.status_message = tr!(
+            "Поиск в Workshop: {}...",
+            "Searching the Workshop: {}...",
+            "正在搜索创意工坊：{}...",
+            query
+        );
 
         self.workshop_rx = Some(self.spawn_task(move || {
             let raw = search_steam_workshop(&query)?;
@@ -3514,6 +3641,7 @@ impl App {
             let status = tr!(
                 "Workshop: найдено {}, подходящих переводов «{}»: {}",
                 "Workshop: found {}, matching translations of \"{}\": {}",
+                "创意工坊：找到 {} 个，「{}」的匹配翻译：{}",
                 found,
                 name,
                 filtered.len()
@@ -3569,6 +3697,7 @@ impl App {
             self.status_message = tr!(
                 "Все активные моды уже переведены на {} — искать нечего",
                 "Every active mod already has {} — nothing to search",
+                "所有已启用的模组都已有 {} — 无需搜索",
                 lang.label()
             );
             return;
@@ -3576,6 +3705,7 @@ impl App {
         self.status_message = tr!(
             "Поиск переводов на {} для {} модов...",
             "Searching {} translations for {} mods...",
+            "正在为 {1} 个模组搜索 {0} 翻译...",
             lang.label(),
             candidates.len()
         );
@@ -3661,7 +3791,7 @@ impl App {
 
     pub fn stop_batch_translation_search(&mut self) {
         self.batch_stop.store(true, Ordering::Relaxed);
-        self.status_message = tr!("Останавливаю поиск...", "Stopping the search...").to_string();
+        self.status_message = tr!("Останавливаю поиск...", "Stopping the search...", "正在停止搜索...").to_string();
     }
 
     fn poll_batch_search(&mut self) {
@@ -3691,15 +3821,21 @@ impl App {
             let mut msg = tr!(
                 "Проверено модов: {} | с переводом на {}: {}",
                 "Mods checked: {} | with a {} translation: {}",
+                "已检查模组：{} | 有 {} 翻译的：{}",
                 searched,
                 self.batch_lang.label(),
                 self.batch_results.len()
             );
             if cancelled {
-                msg.push_str(tr!(" | остановлено", " | stopped"));
+                msg.push_str(tr!(" | остановлено", " | stopped", " | 已停止"));
             }
             if errors > 0 {
-                msg.push_str(&tr!(" | без ответа Steam: {}", " | no answer from Steam: {}", errors));
+                msg.push_str(&tr!(
+                    " | без ответа Steam: {}",
+                    " | no answer from Steam: {}",
+                    " | Steam 无响应：{}",
+                    errors
+                ));
             }
             self.status_message = msg;
         }
@@ -3719,7 +3855,8 @@ impl App {
         let Some(dll) = self.steam_paths.steam_dll_path.clone() else {
             self.status_message = tr!(
                 "steam_api64.dll не найден — проверьте папку игры в Настройках",
-                "steam_api64.dll not found — check the game folder in Settings"
+                "steam_api64.dll not found — check the game folder in Settings",
+                "找不到 steam_api64.dll — 请在设置中检查游戏文件夹"
             )
             .to_string();
             return;
@@ -3729,6 +3866,7 @@ impl App {
         self.status_message = tr!(
             "Подписка на переводы: {}...",
             "Subscribing to translations: {}...",
+            "正在订阅翻译：{}...",
             ids.len()
         );
         self.start_steam_client_download(dll, ids);
@@ -3741,12 +3879,18 @@ impl App {
         }
         self.show_batch_results = false;
         let query = self.workshop_search_query.clone();
-        self.status_message = tr!("Поиск в Workshop: {}...", "Searching the Workshop: {}...", query);
+        self.status_message = tr!(
+            "Поиск в Workshop: {}...",
+            "Searching the Workshop: {}...",
+            "正在搜索创意工坊：{}...",
+            query
+        );
         self.workshop_rx = Some(self.spawn_task(move || {
             let res = search_steam_workshop(&query)?;
             let status = tr!(
                 "Поиск в Workshop «{}»: результатов {}",
                 "Workshop search \"{}\": {} results",
+                "创意工坊搜索「{}」：{} 个结果",
                 query,
                 res.len()
             );
@@ -3762,19 +3906,31 @@ impl App {
         let Some(dll) = self.steam_paths.steam_dll_path.clone() else {
             self.status_message = tr!(
                 "steam_api64.dll не найден — проверьте папку игры",
-                "steam_api64.dll not found — check the game folder"
+                "steam_api64.dll not found — check the game folder",
+                "找不到 steam_api64.dll — 请检查游戏文件夹"
             )
             .to_string();
             return;
         };
-        self.status_message = tr!("Проверка Steam API...", "Checking the Steam API...").to_string();
+        self.status_message = tr!(
+            "Проверка Steam API...",
+            "Checking the Steam API...",
+            "正在检查 Steam API..."
+        )
+        .to_string();
         self.steam_rx = Some(self.spawn_task(move || match crate::steam::steam_api_check(&dll) {
             Ok(n) => tr!(
                 "Steam API работает: подписок на моды RimWorld — {}",
                 "Steam API works: RimWorld mod subscriptions — {}",
+                "Steam API 正常：RimWorld 模组订阅 — {}",
                 n
             ),
-            Err(e) => tr!("Steam API не работает: {}", "Steam API doesn't work: {}", e),
+            Err(e) => tr!(
+                "Steam API не работает: {}",
+                "Steam API doesn't work: {}",
+                "Steam API 不可用：{}",
+                e
+            ),
         }));
     }
 
@@ -3792,6 +3948,7 @@ impl App {
             self.status_message = tr!(
                 "Отправка запроса на подписку #{}...",
                 "Sending subscribe request #{}...",
+                "正在发送订阅请求 #{}...",
                 id
             );
             self.start_steam_client_download(dll, vec![id]);
@@ -3800,6 +3957,7 @@ impl App {
             self.status_message = tr!(
                 "Открыта страница Steam Workshop #{}",
                 "Opened Steam Workshop page #{}",
+                "已打开 Steam 创意工坊页面 #{}",
                 item_id
             );
         }
@@ -3831,7 +3989,8 @@ impl App {
         if dirs.is_empty() {
             self.status_message = tr!(
                 "Нет выбранных модов для оптимизации текстур",
-                "No mods selected for texture optimization"
+                "No mods selected for texture optimization",
+                "没有选择要优化纹理的模组"
             )
             .to_string();
             return;
@@ -3861,7 +4020,8 @@ impl App {
 
         self.status_message = tr!(
             "Запущена конвертация текстур (BC7 / BC1 с мипмапами)...",
-            "Converting textures (BC7 / BC1 with mipmaps)..."
+            "Converting textures (BC7 / BC1 with mipmaps)...",
+            "正在转换纹理（BC7 / BC1，含 mipmap）..."
         )
         .to_string();
     }
@@ -3872,20 +4032,34 @@ impl App {
         if self.cache_rx.is_some() {
             return;
         }
-        self.status_message = tr!("Очистка кэша игры...", "Clearing the game cache...").to_string();
+        self.status_message = tr!(
+            "Очистка кэша игры...",
+            "Clearing the game cache...",
+            "正在清除游戏缓存..."
+        )
+        .to_string();
         self.cache_rx = Some(self.spawn_task(|| {
             let size_mb = crate::game_install::game_cache_size() as f64 / (1024.0 * 1024.0);
             match crate::game_install::clear_game_caches() {
-                Ok(cleared) if cleared.is_empty() => {
-                    tr!("Кэш игры уже пуст", "The game cache is already empty").to_string()
-                }
+                Ok(cleared) if cleared.is_empty() => tr!(
+                    "Кэш игры уже пуст",
+                    "The game cache is already empty",
+                    "游戏缓存已经是空的"
+                )
+                .to_string(),
                 Ok(cleared) => tr!(
                     "Кэш игры перемещён в Корзину ({}, {:.0} МБ). Игра пересоберёт его при следующем запуске.",
                     "Game cache moved to the Recycle Bin ({}, {:.0} MB). The game rebuilds it on the next start.",
+                    "游戏缓存已移至回收站（{}，{:.0} MB）。游戏下次启动时会重新生成。",
                     cleared.join(", "),
                     size_mb
                 ),
-                Err(e) => tr!("Не удалось очистить кэш: {}", "Could not clear the cache: {}", e),
+                Err(e) => tr!(
+                    "Не удалось очистить кэш: {}",
+                    "Could not clear the cache: {}",
+                    "无法清除缓存：{}",
+                    e
+                ),
             }
         }));
     }
@@ -3945,7 +4119,7 @@ impl App {
 
     pub fn cancel_texture_optimization(&mut self) {
         self.opt_stop_flag.store(true, Ordering::Relaxed);
-        self.status_message = tr!("Отмена оптимизации...", "Cancelling optimization...").to_string();
+        self.status_message = tr!("Отмена оптимизации...", "Cancelling optimization...", "正在取消优化...").to_string();
     }
 
     /// Mods the optimizer may touch for "All mods": no Core/DLC, no blacklist, no user ignore list.
@@ -3973,7 +4147,7 @@ impl App {
             tx,
         );
         self.opt_scan_rx = Some(rx);
-        self.status_message = tr!("Подсчёт текстур...", "Counting textures...").to_string();
+        self.status_message = tr!("Подсчёт текстур...", "Counting textures...", "正在统计纹理...").to_string();
     }
 
     /// Rolls back every mod except Core/DLC — including ignored/blacklisted ones,
@@ -3988,7 +4162,7 @@ impl App {
         let (tx, rx) = channel();
         rollback_dds_async(dirs_from_mods(&mods), false, tx);
         self.opt_rollback_rx = Some(rx);
-        self.status_message = tr!("Откат текстур...", "Rolling back textures...").to_string();
+        self.status_message = tr!("Откат текстур...", "Rolling back textures...", "正在回滚纹理...").to_string();
     }
 
     /// O1: rolls back only the mod selected on the Mods tab; other mods' DDS stay.
@@ -4026,6 +4200,7 @@ impl App {
                 self.status_message = tr!(
                     "Будет сконвертировано: {} | уже готово: {} | чужих DDS (не трогаются): {}",
                     "To convert: {} | already done: {} | author DDS (left alone): {}",
+                    "待转换：{} | 已完成：{} | 作者自带 DDS（不处理）：{}",
                     s.to_convert,
                     s.up_to_date,
                     s.foreign_dds
@@ -4061,6 +4236,7 @@ impl App {
                 self.status_message = tr!(
                     "Откат: удалено .dds: {} | восстановлено исходников из бэкапа: {} | ошибок: {}",
                     "Rollback: .dds removed: {} | sources restored from backup: {} | errors: {}",
+                    "回滚：已删除 .dds：{} | 已从备份恢复源文件：{} | 错误：{}",
                     res.removed,
                     res.restored,
                     res.errors
@@ -4079,12 +4255,13 @@ impl App {
 
     /// Deletes the DDS files the user agreed to remove after a rollback (background).
     fn delete_unlogged_dds(&mut self, paths: Vec<PathBuf>) {
-        self.status_message = tr!("Удаление DDS...", "Deleting DDS...").to_string();
+        self.status_message = tr!("Удаление DDS...", "Deleting DDS...", "正在删除 DDS...").to_string();
         self.legacy_rx = Some(self.spawn_task(move || {
             let (removed, errors) = crate::optimizer::delete_files(&paths);
             tr!(
                 "Удалено DDS не из журнала: {} | ошибок: {}",
                 "Unlogged DDS deleted: {} | errors: {}",
+                "已删除未记录的 DDS：{} | 错误：{}",
                 removed,
                 errors
             )
@@ -4105,7 +4282,12 @@ impl App {
             // Matching stack frames to mods walks every mod folder: done in the background (S5).
             let mods = self.all_mods.clone();
             self.log_silent = false;
-            self.status_message = tr!("Анализ лога {}...", "Analyzing log {}...", path.display());
+            self.status_message = tr!(
+                "Анализ лога {}...",
+                "Analyzing log {}...",
+                "正在分析日志 {}...",
+                path.display()
+            );
             self.log_rx = Some(self.spawn_task(move || analyze_rimworld_log(&path, &mods)));
         } else {
             self.status_message = self.i18n.get(TranslationKey::CrashFileNotFound).to_string();
@@ -4115,23 +4297,23 @@ impl App {
     /// Exports the current analysis report as text or standalone HTML (F13).
     pub fn save_log_report(&mut self) {
         let Some(report) = &self.log_report else { return };
+        let t = self.i18n;
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Text Report (*.txt)", &["txt"])
-            .add_filter("HTML Report (*.html)", &["html"])
+            .add_filter(t.get(TranslationKey::ReportFilterText), &["txt"])
+            .add_filter(t.get(TranslationKey::ReportFilterHtml), &["html"])
             .set_file_name("rimworld_mod_report.txt")
             .save_file()
         {
             let is_html = path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("html"));
             let content = if is_html {
-                crate::analyzer::generate_html_report(report, self.is_russian)
+                crate::analyzer::generate_html_report(report)
             } else {
-                crate::analyzer::generate_text_report(report, self.is_russian)
+                crate::analyzer::generate_text_report(report)
             };
-            if let Err(e) = std::fs::write(&path, content) {
-                self.status_message = tr!("Не удалось сохранить отчёт: {}", "Could not save the report: {}", e);
-            } else {
-                self.status_message = tr!("Отчёт сохранён: {}", "Report saved: {}", path.display());
-            }
+            self.status_message = match std::fs::write(&path, content) {
+                Err(e) => fmt(t.get(TranslationKey::ReportSaveFailed), &[&e.to_string()]),
+                Ok(()) => fmt(t.get(TranslationKey::ReportSaved), &[&path.display().to_string()]),
+            };
         }
     }
 
@@ -4215,11 +4397,11 @@ impl App {
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     self.launch_after_vram_check = true;
-                    self.status_message =
-                        tr!("Оценка VRAM перед запуском...", "Checking VRAM usage before launch...").to_string();
+                    self.status_message = self.i18n.get(TranslationKey::VramCheckingBeforeLaunch).to_string();
                     return;
                 }
                 Ok(Err(())) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    self.launch_after_vram_check = true;
                     self.fail_vram_check();
                     return;
                 }
@@ -4228,16 +4410,14 @@ impl App {
         self.finish_vram_check_and_launch();
     }
 
+    /// The VRAM check broke down: it is only a warning, so a waiting "Play" goes ahead.
     fn fail_vram_check(&mut self) {
         self.vram_rx = None;
         self.vram_recheck = false;
-        self.launch_after_vram_check = false;
         self.vram_report = None;
-        self.status_message = tr!(
-            "Не удалось проверить использование VRAM; запуск отменён. Попробуйте снова.",
-            "Could not check VRAM usage; launch cancelled. Please try again."
-        )
-        .to_string();
+        if std::mem::take(&mut self.launch_after_vram_check) {
+            self.launch_game_now();
+        }
     }
 
     fn finish_vram_check_and_launch(&mut self) {
@@ -4271,10 +4451,11 @@ impl App {
             .collect();
 
         let engine = self.steam_paths.engine;
+        let version = self.steam_paths.game_version.clone();
         let cache = self.vram_cache.clone();
         self.vram_rx = Some(self.spawn_task(move || {
             let (tx, rx) = channel();
-            crate::optimizer::check_vram_async(active_mods, engine, cache, tx);
+            crate::optimizer::check_vram_async(active_mods, engine, version, cache, tx);
             rx.recv().map_err(|_| ())
         }));
     }
@@ -4313,7 +4494,23 @@ impl App {
         let Some(saves_dir) = self.saves_folder() else {
             return;
         };
-        let _ = crate::saves::backup_latest_save(&saves_dir, self.save_backups_to_keep);
+        // In the background: a save can be 100+ MB. The game does not write saves while it loads.
+        let keep = self.save_backups_to_keep;
+        self.save_backup_rx = Some(self.spawn_task(move || {
+            crate::saves::backup_latest_save(&saves_dir, keep)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        }));
+    }
+
+    fn poll_save_backup(&mut self) {
+        let Some(rx) = &self.save_backup_rx else { return };
+        if let Ok(res) = rx.try_recv() {
+            self.save_backup_rx = None;
+            if let Err(e) = res {
+                self.status_message = fmt(self.i18n.get(TranslationKey::SaveBackupFailed), &[&e]);
+            }
+        }
     }
 
     fn launch_game_now(&mut self) {
@@ -4334,10 +4531,15 @@ impl App {
                 if self.bisect.is_none() {
                     self.start_launch_game_watch();
                 }
-                self.status_message = tr!("RimWorld запущен", "RimWorld started").to_string();
+                self.status_message = tr!("RimWorld запущен", "RimWorld started", "RimWorld 已启动").to_string();
             }
             Err(e) => {
-                self.status_message = tr!("Ошибка запуска игры: {}", "Could not start the game: {}", e);
+                self.status_message = tr!(
+                    "Ошибка запуска игры: {}",
+                    "Could not start the game: {}",
+                    "无法启动游戏：{}",
+                    e
+                );
             }
         }
     }
@@ -4349,7 +4551,8 @@ impl App {
         }
         self.status_message = tr!(
             "Загрузка базы правил RimSort с GitHub...",
-            "Downloading RimSort rules from GitHub..."
+            "Downloading RimSort rules from GitHub...",
+            "正在从 GitHub 下载 RimSort 规则..."
         )
         .to_string();
         self.rules_rx = Some(self.spawn_task(crate::community_rules::download_rules));
@@ -4369,6 +4572,7 @@ impl App {
                 self.status_message = tr!(
                     "База правил обновлена: правил сообщества {}, всего с встроенными {}",
                     "Rules updated: {} community rules, {} including built-in ones",
+                    "规则已更新：社区规则 {} 条，含内置规则共 {} 条",
                     imported,
                     self.community_db_rules_count
                 );
@@ -4377,6 +4581,7 @@ impl App {
                 self.status_message = tr!(
                     "Не удалось обновить базу правил: {}",
                     "Could not update the rules: {}",
+                    "无法更新规则：{}",
                     e
                 )
             }
@@ -4421,6 +4626,7 @@ impl eframe::App for App {
                         let mut msg = tr!(
                             "Готово: BC7 {}, BC1 {} | оставлено PNG (размер): {} | уже актуально: {} | ошибок: {}",
                             "Done: BC7 {}, BC1 {} | kept as PNG (size): {} | up to date: {} | errors: {}",
+                            "完成：BC7 {}，BC1 {} | 保留为 PNG（尺寸原因）：{} | 已是最新：{} | 错误：{}",
                             s.bc7,
                             s.bc1,
                             s.skipped,
@@ -4431,6 +4637,7 @@ impl eframe::App for App {
                             msg.push_str(&tr!(
                                 " | исходников в бэкапе: {}",
                                 " | sources backed up: {}",
+                                " | 已备份源文件：{}",
                                 s.sources_backed_up
                             ));
                         }
@@ -4438,6 +4645,7 @@ impl eframe::App for App {
                             msg.push_str(&tr!(
                                 " | чужих DDS не тронуто: {}",
                                 " | author DDS left alone: {}",
+                                " | 未处理作者自带 DDS：{}",
                                 s.foreign_dds
                             ));
                         }
@@ -4446,7 +4654,8 @@ impl eframe::App for App {
                     }
                     OptimizationMsg::Cancelled => {
                         self.opt_is_running = false;
-                        self.status_message = tr!("Оптимизация остановлена", "Optimization stopped").to_string();
+                        self.status_message =
+                            tr!("Оптимизация остановлена", "Optimization stopped", "优化已停止").to_string();
                     }
                 }
             }
@@ -4471,7 +4680,7 @@ impl eframe::App for App {
                 let update_text = self
                     .update_available
                     .as_ref()
-                    .map(|l| tr!("Вышла {} →", "{} is out →", l.tag));
+                    .map(|l| tr!("Вышла {} →", "{} is out →", "{} 已发布 →", l.tag));
                 let bisect_text = (self.bisect.is_some() && !self.bisect_open).then(|| {
                     let step = self.bisect.as_ref().map_or(1, |s| s.stage.answers + 1);
                     fmt(t.get(TranslationKey::BisectHeaderTag), &[&step.to_string()])
@@ -4562,7 +4771,8 @@ impl eframe::App for App {
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .on_hover_text(tr!(
                             "Открыть страницу новой версии на GitHub",
-                            "Open the new version's page on GitHub"
+                            "Open the new version's page on GitHub",
+                            "在 GitHub 上打开新版本页面"
                         ))
                         .clicked()
                     {
@@ -4774,6 +4984,7 @@ impl App {
         let Some(question) = self.pending_question.clone() else {
             return;
         };
+        let vram_waylith = crate::optimizer::engine_wants_flipped(self.steam_paths.engine);
         #[derive(PartialEq)]
         enum Answer {
             None,
@@ -4789,34 +5000,34 @@ impl App {
 
         let (title, body, primary, secondary): (&str, String, &str, &str) = match &question {
             PendingQuestion::LaunchUnsaved => (
-                tr!("Порядок модов не сохранён", "Load order not saved"),
+                tr!("Порядок модов не сохранён", "Load order not saved", "加载顺序未保存"),
                 tr!(
                     "Игра загрузит порядок из ModsConfig.xml, а ваши изменения ещё не сохранены.",
-                    "The game loads the order from ModsConfig.xml, and your changes are not saved yet."
+                    "The game loads the order from ModsConfig.xml, and your changes are not saved yet.", "游戏从 ModsConfig.xml 读取加载顺序，而你的修改还没有保存。"
                 )
                 .to_string(),
-                tr!("Сохранить и играть", "Save and play"),
-                tr!("Играть без сохранения", "Play without saving"),
+                tr!("Сохранить и играть", "Save and play", "保存并运行游戏"),
+                tr!("Играть без сохранения", "Play without saving", "不保存直接运行"),
             ),
             PendingQuestion::CloseUnsaved => (
-                tr!("Порядок модов не сохранён", "Load order not saved"),
+                tr!("Порядок модов не сохранён", "Load order not saved", "加载顺序未保存"),
                 tr!(
                     "Если закрыть программу сейчас, изменения порядка модов пропадут.",
-                    "If you close the app now, your load order changes are lost."
+                    "If you close the app now, your load order changes are lost.", "如果现在关闭程序，加载顺序的修改将会丢失。"
                 )
                 .to_string(),
-                tr!("Сохранить и выйти", "Save and exit"),
-                tr!("Выйти без сохранения", "Exit without saving"),
+                tr!("Сохранить и выйти", "Save and exit", "保存并退出"),
+                tr!("Выйти без сохранения", "Exit without saving", "不保存直接退出"),
             ),
             PendingQuestion::LegacyDds(paths) => (
-                tr!("DDS не из журнала программы", "DDS files not in the manager's log"),
+                tr!("DDS не из журнала программы", "DDS files not in the manager's log", "不在程序记录中的 DDS 文件"),
                 tr!(
                     "Откат удалил все DDS, которые создала эта программа. Найдено ещё {}: их сделала старая версия оптимизатора, RimPy или автор мода. У каждого рядом лежит PNG/JPG, поэтому моды будут работать и без них. Авторские DDS лучше оставить.",
-                    "Rollback removed every DDS this manager created. {} more were found: made by an older optimizer version, RimPy or the mod author. Each has a PNG/JPG next to it, so mods work without them. Better keep the author's DDS.",
+                    "Rollback removed every DDS this manager created. {} more were found: made by an older optimizer version, RimPy or the mod author. Each has a PNG/JPG next to it, so mods work without them. Better keep the author's DDS.", "回滚已删除本程序创建的所有 DDS。另外还找到 {} 个：来自旧版优化器、RimPy 或模组作者。它们旁边都有 PNG/JPG，所以没有它们模组也能正常工作。作者自带的 DDS 最好保留。",
                     paths.len()
                 ),
-                tr!("Оставить", "Keep them"),
-                tr!("Удалить их тоже", "Delete them too"),
+                tr!("Оставить", "Keep them", "保留"),
+                tr!("Удалить их тоже", "Delete them too", "也一起删除"),
             ),
             PendingQuestion::VramWarning {
                 estimated_bytes,
@@ -4826,14 +5037,28 @@ impl App {
                 let est_gb = (*estimated_bytes as f64) / 1_073_741_824.0;
                 let tot_gb = (*total_vram_bytes as f64) / 1_073_741_824.0;
                 let pct = ((*estimated_bytes as f64 / *total_vram_bytes as f64) * 100.0).round() as u64;
+                // On 1.7 the optimizer is off (the game compresses textures itself).
+                let (body, primary, secondary) = if vram_waylith {
+                    (
+                        TranslationKey::VramWarningBodyWaylith,
+                        TranslationKey::VramBtnLaunchAnyway,
+                        TranslationKey::BtnCancel,
+                    )
+                } else {
+                    (
+                        TranslationKey::VramWarningBody,
+                        TranslationKey::VramBtnOptimize,
+                        TranslationKey::VramBtnLaunchAnyway,
+                    )
+                };
                 (
                     self.i18n.get(TranslationKey::VramWarningTitle),
                     fmt(
-                        self.i18n.get(TranslationKey::VramWarningBody),
+                        self.i18n.get(body),
                         &[&format!("{:.1}", est_gb), &format!("{:.1}", tot_gb), &pct.to_string()],
                     ),
-                    self.i18n.get(TranslationKey::VramBtnOptimize),
-                    self.i18n.get(TranslationKey::VramBtnLaunchAnyway),
+                    self.i18n.get(primary),
+                    self.i18n.get(secondary),
                 )
             }
         };
@@ -4881,9 +5106,12 @@ impl App {
                                     ui.horizontal(|ui| {
                                         ui.label(egui::RichText::new(format!("• {}", name)).color(THEME.text_primary));
                                         ui.label(
-                                            egui::RichText::new(tr!("(~{} МБ)", "(~{} MB)", mb))
-                                                .color(THEME.text_muted)
-                                                .size(11.0),
+                                            egui::RichText::new(fmt(
+                                                self.i18n.get(TranslationKey::VramModMb),
+                                                &[&mb.to_string()],
+                                            ))
+                                            .color(THEME.text_muted)
+                                            .size(11.0),
                                         );
                                     });
                                 }
@@ -4898,7 +5126,9 @@ impl App {
                     if crate::ui::components::secondary_button(ui, secondary).clicked() {
                         answer = Answer::Secondary;
                     }
-                    if !matches!(question, PendingQuestion::LegacyDds(_))
+                    let own_cancel = matches!(question, PendingQuestion::LegacyDds(_))
+                        || (vram_waylith && matches!(question, PendingQuestion::VramWarning { .. }));
+                    if !own_cancel
                         && crate::ui::components::secondary_button(ui, self.i18n.get(TranslationKey::BtnCancel))
                             .clicked()
                     {
@@ -4929,10 +5159,11 @@ impl App {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
             (PendingQuestion::LegacyDds(paths), Answer::Secondary) => self.delete_unlogged_dds(paths),
+            (PendingQuestion::VramWarning { .. }, Answer::Primary) if vram_waylith => self.launch_game_now(),
             (PendingQuestion::VramWarning { .. }, Answer::Primary) => {
                 self.current_tab = AppTab::Optimizer;
             }
-            (PendingQuestion::VramWarning { .. }, Answer::Secondary) => {
+            (PendingQuestion::VramWarning { .. }, Answer::Secondary) if !vram_waylith => {
                 self.launch_game_now();
             }
             _ => {}
@@ -5158,7 +5389,7 @@ impl App {
         let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
 
         let (width, max_height) = crate::ui::components::dialog_size(ctx, 560.0);
-        egui::Window::new(tr!("История порядка модов", "Load order history"))
+        egui::Window::new(tr!("История порядка модов", "Load order history", "加载顺序历史"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -5169,7 +5400,7 @@ impl App {
                 ui.label(
                     egui::RichText::new(tr!(
                         "Перед каждым сохранением программа делает копию ModsConfig.xml (хранятся последние 30). Восстановленный список появится как несохранённый: файл изменится, только когда вы нажмёте «Сохранить порядок».",
-                        "Before every save the manager copies ModsConfig.xml (the last 30 are kept). A restored list shows up as unsaved: the file changes only when you press \"Save Order\"."
+                        "Before every save the manager copies ModsConfig.xml (the last 30 are kept). A restored list shows up as unsaved: the file changes only when you press \"Save Order\".", "每次保存前程序都会复制一份 ModsConfig.xml（保留最近 30 份）。恢复的列表会显示为未保存：只有点击「保存排序」后文件才会改变。"
                     ))
                     .color(THEME.text_secondary)
                     .size(12.0),
@@ -5180,7 +5411,7 @@ impl App {
                     ui.label(
                         egui::RichText::new(tr!(
                             "Копий пока нет: они появятся после первого сохранения порядка в программе.",
-                            "No copies yet: they appear after the first time you save the order here."
+                            "No copies yet: they appear after the first time you save the order here.", "还没有副本：在这里第一次保存排序后就会出现。"
                         ))
                         .color(THEME.text_muted),
                     );
@@ -5209,9 +5440,9 @@ impl App {
                                     );
                                     ui.label(
                                         egui::RichText::new(if b.mods.len() == 1 {
-                                            tr!("модов: 1", "1 mod").to_string()
+                                            tr!("модов: 1", "1 mod", "1 个模组").to_string()
                                         } else {
-                                            tr!("модов: {}", "{} mods", b.mods.len())
+                                            tr!("модов: {}", "{} mods", "{} 个模组", b.mods.len())
                                         })
                                             .color(THEME.text_secondary)
                                             .size(12.0),
@@ -5221,7 +5452,7 @@ impl App {
                                         ui.add_enabled_ui(!diff.is_same(), |ui| {
                                             if crate::ui::components::small_button(
                                                 ui,
-                                                tr!("Восстановить", "Restore"),
+                                                tr!("Восстановить", "Restore", "恢复"),
                                                 crate::ui::components::ButtonStyle::Secondary,
                                             )
                                             .clicked()
@@ -5237,14 +5468,14 @@ impl App {
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if crate::ui::components::secondary_button_icon(ui, ICON_FOLDER, tr!("Открыть папку", "Open folder"))
+                    if crate::ui::components::secondary_button_icon(ui, ICON_FOLDER, tr!("Открыть папку", "Open folder", "打开文件夹"))
                         .clicked()
                     {
                         let dir = crate::mods_config::backups_dir();
                         let _ = std::fs::create_dir_all(&dir);
                         crate::ui::components::open_external(dir);
                     }
-                    if crate::ui::components::secondary_button(ui, tr!("Закрыть", "Close")).clicked() {
+                    if crate::ui::components::secondary_button(ui, tr!("Закрыть", "Close", "关闭")).clicked() {
                         close = true;
                     }
                 });
@@ -5264,7 +5495,7 @@ impl App {
 fn history_diff_label(ui: &mut egui::Ui, diff: crate::mods_config::ListDiff) {
     if diff.is_same() {
         ui.label(
-            egui::RichText::new(tr!("как сейчас", "same as now"))
+            egui::RichText::new(tr!("как сейчас", "same as now", "与当前相同"))
                 .color(THEME.text_muted)
                 .size(12.0),
         );
@@ -5278,7 +5509,7 @@ fn history_diff_label(ui: &mut egui::Ui, diff: crate::mods_config::ListDiff) {
         parts.push(format!("−{}", diff.removed));
     }
     if diff.reordered {
-        parts.push(tr!("другой порядок", "different order").to_string());
+        parts.push(tr!("другой порядок", "different order", "顺序不同").to_string());
     }
     ui.label(
         egui::RichText::new(parts.join(" · "))
@@ -5287,8 +5518,20 @@ fn history_diff_label(ui: &mut egui::Ui, diff: crate::mods_config::ListDiff) {
     )
     .on_hover_text(tr!(
         "По сравнению с текущим списком: + моды, которые вернутся, − моды, которые уберутся",
-        "Compared with the current list: + mods that come back, − mods that go away"
+        "Compared with the current list: + mods that come back, − mods that go away",
+        "与当前列表对比：+ 将恢复的模组，− 将移除的模组"
     ));
+}
+
+/// A run good enough to be the "last working" one (F9): no crash, no graphics card or memory
+/// failure, no broken Prepatcher / Harmony patch. Ordinary errors are allowed.
+pub fn is_working_run(report: &LogReport) -> bool {
+    !report.has_hard_crash
+        && report.system_issue.is_none()
+        && report
+            .culprits
+            .iter()
+            .all(|c| c.severity < crate::analyzer::ErrorSeverity::PrepatcherHarmonyError)
 }
 
 /// Returns whether `log_path` belongs to a RimWorld run launched during this session.
