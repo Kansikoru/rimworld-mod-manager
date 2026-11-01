@@ -495,6 +495,8 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
     };
 
     report.raw_content = content.clone();
+    // Exact, when the companion mod was on; otherwise the launch watcher's measurement.
+    report.load_time_secs = crate::companion::load_time_from_log(&content);
     let lines: Vec<&str> = content.lines().collect();
     report.total_lines = lines.len();
 

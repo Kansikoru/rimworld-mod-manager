@@ -1460,6 +1460,7 @@ impl App {
             self.remember_saved_order(&on_disk);
         }
 
+        self.update_companion_if_outdated();
         self.validate_deps();
         if std::mem::take(&mut self.batch_search_after_scan) {
             self.start_batch_translation_search();
@@ -1731,11 +1732,81 @@ impl App {
     }
 
     /// The game's Mods folder, where links to downloaded mods go.
-    fn game_mods_dir(&self) -> Option<PathBuf> {
+    pub fn game_mods_dir(&self) -> Option<PathBuf> {
         self.steam_paths
             .local_mods_path
             .clone()
             .or_else(|| self.steam_paths.game_path.as_ref().map(|g| g.join("Mods")))
+    }
+
+    // ----- Companion mod (F11) -----
+
+    /// The companion mod is built for RimWorld 1.6 (Unity) only.
+    pub fn companion_supported(&self) -> bool {
+        self.steam_paths.engine == crate::game_install::GameEngine::Unity
+    }
+
+    /// The companion mod in the game's Mods folder (`None`: the Mods folder is unknown).
+    pub fn companion_state(&self) -> Option<crate::companion::State> {
+        self.game_mods_dir().map(|d| crate::companion::state(&d))
+    }
+
+    /// Puts the companion mod into the game's Mods folder and turns it on (at the end of the
+    /// list). Saved right away when the list had no unsaved changes of its own.
+    pub fn install_companion(&mut self) {
+        let t = self.i18n;
+        let Some(mods_dir) = self.game_mods_dir() else {
+            self.status_message = t.get(TranslationKey::SteamCmdNoMods).to_string();
+            return;
+        };
+        if crate::game_install::is_game_running() {
+            self.status_message = t.get(TranslationKey::CompanionCloseGame).to_string();
+            return;
+        }
+        if let Err(e) = crate::companion::install(&mods_dir) {
+            self.status_message = fmt(t.get(TranslationKey::CompanionError), &[&e.to_string()]);
+            return;
+        }
+        let had_unsaved = self.has_unsaved_changes();
+        add_active_id(&mut self.active_mods, crate::companion::PACKAGE_ID);
+        if had_unsaved {
+            self.status_message = t.get(TranslationKey::CompanionInstalledUnsaved).to_string();
+        } else if self.save_config() {
+            self.status_message = t.get(TranslationKey::CompanionInstalled).to_string();
+        }
+        self.rescan_mods_keep_status();
+    }
+
+    /// Turns the companion mod off and moves it to the Recycle Bin.
+    pub fn remove_companion(&mut self) {
+        let t = self.i18n;
+        let Some(mods_dir) = self.game_mods_dir() else { return };
+        if crate::game_install::is_game_running() {
+            self.status_message = t.get(TranslationKey::CompanionCloseGame).to_string();
+            return;
+        }
+        let had_unsaved = self.has_unsaved_changes();
+        self.active_mods
+            .retain(|id| !id.eq_ignore_ascii_case(crate::companion::PACKAGE_ID));
+        if !had_unsaved {
+            self.save_config();
+        }
+        self.status_message = match crate::companion::remove(&mods_dir) {
+            Ok(()) => t.get(TranslationKey::CompanionRemoved).to_string(),
+            Err(e) => fmt(t.get(TranslationKey::CompanionError), &[&e]),
+        };
+        self.rescan_mods_keep_status();
+    }
+
+    /// A newer companion mod comes with the manager: update the installed one (not while the
+    /// game runs, it keeps the dll open).
+    fn update_companion_if_outdated(&mut self) {
+        let Some(mods_dir) = self.game_mods_dir() else { return };
+        if crate::companion::state(&mods_dir) == crate::companion::State::Outdated
+            && !crate::game_install::is_game_running()
+        {
+            let _ = crate::companion::install(&mods_dir);
+        }
     }
 
     /// Installs or updates SteamCMD (nothing to download).
@@ -2828,6 +2899,7 @@ impl App {
                     || lower.starts_with("ludeon.rimworld.")
                     || lower == "brrainz.harmony"
                     || lower == "zetrith.prepatcher"
+                    || lower == crate::companion::PACKAGE_ID
                     || self
                         .find_mod(id)
                         .is_some_and(|m| self.is_official_mod(m) || m.categories.contains(&ModCategory::Framework))
@@ -3034,7 +3106,8 @@ impl App {
                 return None;
             }
             let mut report = analyze_rimworld_log(&path, &mods);
-            report.load_time_secs = probe.result();
+            // The companion mod's own time (from the log) beats the guess from outside.
+            report.load_time_secs = report.load_time_secs.or(probe.result());
             Some(report)
         }))
     }

@@ -113,6 +113,67 @@ fn render_steamcmd_card(app: &mut App, ui: &mut Ui) {
     });
 }
 
+/// The companion mod (F11): what it is, whether it is in the game, install / remove.
+fn render_companion_card(app: &mut App, ui: &mut Ui) {
+    use crate::companion::State;
+    let t = app.i18n;
+    let state = app.companion_state();
+    let enabled = app
+        .active_mods
+        .iter()
+        .any(|id| id.eq_ignore_ascii_case(crate::companion::PACKAGE_ID));
+    card_container(ui, |ui| {
+        ui.vertical(|ui| {
+            ui.heading(
+                egui::RichText::new(t.get(TranslationKey::CompanionTitle))
+                    .color(THEME.accent_cyan)
+                    .size(15.0),
+            );
+            ui.add_space(4.0);
+            hint(ui, t.get(TranslationKey::CompanionHint));
+            ui.add_space(6.0);
+            if !app.companion_supported() {
+                hint(ui, t.get(TranslationKey::CompanionOnly16));
+                return;
+            }
+            let (status, color) = match (state, enabled) {
+                (None, _) => (t.get(TranslationKey::SteamCmdNoMods), THEME.accent_amber),
+                (Some(State::Missing), _) => (t.get(TranslationKey::CompanionStatusMissing), THEME.text_muted),
+                (Some(_), false) => (t.get(TranslationKey::CompanionStatusOff), THEME.accent_amber),
+                (Some(State::Outdated), true) => (t.get(TranslationKey::CompanionStatusOutdated), THEME.accent_amber),
+                (Some(State::Current), true) => (t.get(TranslationKey::CompanionStatusOn), THEME.accent_emerald),
+            };
+            ui.add(egui::Label::new(egui::RichText::new(status).color(color).size(12.0)).wrap());
+            let Some(state) = state else { return };
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::Vec2::new(8.0, 8.0);
+                let install_label = match state {
+                    State::Missing => Some(TranslationKey::CompanionBtnInstall),
+                    State::Outdated => Some(TranslationKey::CompanionBtnUpdate),
+                    State::Current if !enabled => Some(TranslationKey::CompanionBtnEnable),
+                    State::Current => None,
+                };
+                if let Some(key) = install_label {
+                    if primary_button(ui, t.get(key)).clicked() {
+                        app.install_companion();
+                    }
+                }
+                if state != State::Missing {
+                    if let Some(mods_dir) = app.game_mods_dir() {
+                        if secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::SteamCmdBtnFolder)).clicked() {
+                            open_external(crate::companion::install_dir(&mods_dir));
+                        }
+                    }
+                    if danger_button_icon(ui, ICON_TRASH, t.get(TranslationKey::CompanionBtnRemove)).clicked() {
+                        app.remove_companion();
+                    }
+                }
+            });
+        });
+    });
+}
+
 /// Which tabs the top bar shows (U1): four can be hidden, the Log Analyzer can get a
 /// short label or an icon, Settings an icon. Mods and Settings always stay.
 fn render_tabs_card(app: &mut App, ui: &mut Ui) {
@@ -402,6 +463,8 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
 
     ui.add_space(8.0);
     render_steamcmd_card(app, ui);
+    ui.add_space(8.0);
+    render_companion_card(app, ui);
     ui.add_space(8.0);
 
     // Launch Game Parameters Card
