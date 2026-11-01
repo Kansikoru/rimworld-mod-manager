@@ -1,0 +1,45 @@
+name: Помощь с переводом / Help with a translation / 帮助翻译
+description: Проверить китайский или перевести на свой язык / Check the Chinese or translate into your language / 校对中文或翻译成你的语言
+labels: ["translation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо! Вы получите таблицу со всеми текстами программы (английский, русский и китайский рядом) и впишете свой язык — программировать не нужно.
+        Thank you! You get a table with every text of the program (English, Russian and Chinese side by side) and fill in your language — no programming needed.
+        谢谢！你会收到一张包含程序全部文字的表格（英文、俄文和中文并列），只需填写你的语言，无需编程。
+
+  - type: dropdown
+    id: task
+    attributes:
+      label: Что хотите сделать / What would you like to do / 你想做什么
+      options:
+        - Проверить китайский перевод / Check the Chinese translation / 校对中文翻译
+        - Перевести на новый язык / Translate into a new language / 翻译成新语言
+        - Исправить отдельные фразы / Fix some phrases / 修正个别语句
+    validations:
+      required: true
+
+  - type: input
+    id: language
+    attributes:
+      label: Язык / Language / 语言
+      placeholder: Deutsch, Polski, Українська, 简体中文…
+    validations:
+      required: true
+
+  - type: dropdown
+    id: native
+    attributes:
+      label: Это ваш родной язык? / Is it your native language? / 这是你的母语吗？
+      options:
+        - Да / Yes / 是
+        - Нет, но владею свободно / No, but I'm fluent / 不是，但很流利
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Замечания или вопросы / Notes or questions / 备注或问题
+      description: Например, фразы, которые звучат неправильно, со скриншотами. / For example phrases that sound wrong, with screenshots. / 例如听起来不对的语句，可附截图。
