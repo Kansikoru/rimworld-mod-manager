@@ -186,13 +186,13 @@ pub fn format_duration_in(secs: f32, lang: Language) -> String {
 /// 2: also the window answering, disk reads and memory.
 pub const PROBE_VERSION: u32 = 2;
 
-/// Seconds of quiet that end the loading.
-const QUIET_WINDOW_SECS: f32 = 10.0;
+/// Quiet stretches that end the loading: (seconds, average CPU use in cores the game stays
+/// under). Early in the loading the game can look calm for 10-15 s while it works 0.6-1.3
+/// cores, so a short stretch needs an idle CPU. The menu often keeps 0.4-0.8 cores busy; a
+/// longer stretch takes that, the loading never stays calm for 20 s.
+const QUIET_RULES: [(f32, f64); 2] = [(10.0, 0.35), (20.0, 1.0)];
 /// Loading takes at least this long: the process starting up is no "quiet".
 const MIN_LOAD_SECS: f32 = 15.0;
-/// Average CPU use (in cores) below which the game is idle. The main menu needs a fraction
-/// of one core.
-const IDLE_CORES: f64 = 0.5;
 /// Disk reads allowed in a quiet window (menu music streams a little). Loading reads mods.
 const QUIET_READ_BYTES: u64 = 8 * 1024 * 1024;
 /// Memory growth allowed in a quiet window. Loading keeps filling memory with textures and
@@ -245,8 +245,8 @@ impl ProbeSample {
     }
 }
 
-/// Measures the loading time: it is over when, for a whole quiet window, the game window
-/// answers and the game neither works the CPU, nor reads the disk, nor fills memory, nor
+/// Measures the loading time: it is over when, for a whole quiet stretch, the game window
+/// answers and the game neither works the CPU hard, nor reads the disk, nor fills memory, nor
 /// writes the log. A load that freezes the window, or that waits for the disk with an idle
 /// CPU, does not look quiet.
 #[derive(Debug, Default)]
@@ -268,22 +268,28 @@ impl LoadProbe {
             return None;
         }
         self.samples.push((secs, sample));
-        let start = self.samples.iter().rposition(|(t, _)| *t <= secs - QUIET_WINDOW_SECS)?;
+        self.result = QUIET_RULES
+            .iter()
+            .filter_map(|&(window, max_cores)| self.quiet_since(secs, sample, window, max_cores))
+            .reduce(f32::min);
+        self.result
+    }
+
+    /// When the game went quiet, if it stayed quiet for the last `window` seconds.
+    fn quiet_since(&self, secs: f32, now: ProbeSample, window: f32, max_cores: f64) -> Option<f32> {
+        let start = self.samples.iter().rposition(|(t, _)| *t <= secs - window)?;
         let (start_t, first) = self.samples[start];
         if start_t < MIN_LOAD_SECS {
             return None;
         }
         let window_answers = self.samples[start..].iter().all(|(_, s)| s.responsive == Some(true));
-        let cores = (sample.cpu_secs - first.cpu_secs) / f64::from(secs - start_t);
+        let cores = (now.cpu_secs - first.cpu_secs) / f64::from(secs - start_t);
         let quiet = window_answers
-            && cores < IDLE_CORES
-            && sample.read_bytes.saturating_sub(first.read_bytes) <= QUIET_READ_BYTES
-            && sample.private_bytes.saturating_sub(first.private_bytes) <= QUIET_MEMORY_BYTES
-            && sample.log_len.saturating_sub(first.log_len) <= QUIET_LOG_BYTES;
-        if quiet {
-            self.result = Some(start_t);
-        }
-        self.result
+            && cores < max_cores
+            && now.read_bytes.saturating_sub(first.read_bytes) <= QUIET_READ_BYTES
+            && now.private_bytes.saturating_sub(first.private_bytes) <= QUIET_MEMORY_BYTES
+            && now.log_len.saturating_sub(first.log_len) <= QUIET_LOG_BYTES;
+        quiet.then_some(start_t)
     }
 
     pub fn result(&self) -> Option<f32> {
@@ -400,9 +406,76 @@ mod tests {
 
     #[test]
     fn probe_needs_the_game_to_go_quiet() {
-        // Busy menu (more than half a core) or a log still pouring: no measurement yet.
-        assert_eq!(run(&[(95, LOADING), (60, Second { cores: 0.9, ..MENU })]), None);
+        // A log still pouring, or the CPU working as hard as during the loading: no measurement.
         assert_eq!(run(&[(95, LOADING), (60, Second { log: 50_000, ..MENU })]), None);
+        assert_eq!(run(&[(95, LOADING), (60, Second { cores: 1.2, ..MENU })]), None);
+        // A menu keeping most of a core busy counts once it stayed calm for 20 s.
+        let busy_menu = Second { cores: 0.9, ..MENU };
+        assert_eq!(run(&[(95, LOADING), (15, busy_menu)]), None);
+        let t = run(&[(95, LOADING), (30, busy_menu)]).unwrap();
+        assert!((94.0..=96.0).contains(&t), "loading ended at {t}");
+    }
+
+    /// Replays a `load_probe.csv`, then keeps the game at the menu for `menu_secs` more seconds;
+    /// returns the measured loading time.
+    fn replay(csv: &str, menu: Second, menu_secs: u32) -> Option<f32> {
+        let mut probe = LoadProbe::default();
+        let (mut t, mut s) = (0.0, ProbeSample::default());
+        for line in csv.lines().skip(1) {
+            let f: Vec<&str> = line.split(',').collect();
+            let num = |i: usize| f[i].parse::<f64>().unwrap();
+            t = num(0) as f32;
+            s = ProbeSample {
+                cpu_secs: num(1),
+                read_bytes: (num(2) * 1_048_576.0) as u64,
+                private_bytes: (num(3) * 1_048_576.0) as u64,
+                log_len: (num(4) * 1024.0) as u64,
+                responsive: match f[5] {
+                    "yes" => Some(true),
+                    "hung" => Some(false),
+                    _ => None,
+                },
+            };
+            if let Some(r) = probe.push(t, s) {
+                return Some(r);
+            }
+        }
+        for _ in 0..menu_secs {
+            t += 1.0;
+            s.cpu_secs += menu.cores;
+            s.read_bytes += menu.read;
+            s.private_bytes += menu.memory;
+            s.log_len += menu.log;
+            s.responsive = menu.responsive;
+            if let Some(r) = probe.push(t, s) {
+                return Some(r);
+            }
+        }
+        probe.result()
+    }
+
+    /// Real runs of 132-133 mods (01.11.2026).
+    #[test]
+    fn real_runs_are_measured() {
+        // The companion mod wrote 232.88 s; the window answers again at 234.5 s. The game
+        // looked calm at 15-56 s too, at 0.57-1.3 cores. The menu took 0.42 cores; the file
+        // ends where the probe of 2.1.4 stopped, the game stayed at the menu for a minute.
+        let csv = include_str!("../tests/data/load_probe_2026-11-01_2244.csv");
+        let menu = Second {
+            cores: 0.42,
+            read: 0,
+            memory: 0,
+            log: 0,
+            responsive: Some(true),
+        };
+        let t = replay(csv, menu, 60).unwrap();
+        assert!((230.0..=240.0).contains(&t), "loading ended at {t}");
+
+        // Every 8th sample of a run 2.1.4 measured nothing in: the menu kept 0.6 cores busy.
+        // The window answers again between 268 and 280 s, the log stops at 292 s.
+        let csv = include_str!("../tests/data/load_probe_2026-11-01_1944_every8th.csv");
+        let t = replay(csv, MENU, 0).unwrap();
+        assert!((268.0..=292.0).contains(&t), "loading ended at {t}");
     }
 
     #[test]
