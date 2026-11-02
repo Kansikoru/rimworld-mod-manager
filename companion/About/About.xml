@@ -6,8 +6,9 @@
   <url>https://github.com/Kansikoru/rimworld-mod-manager</url>
   <supportedVersions>
     <li>1.6</li>
+    <li>1.7</li>
   </supportedVersions>
-  <description>Helper for RimWorld Mod Manager. When the game has finished loading it writes one line to Player.log with the loading time, so the manager can show the exact time and how it changes with your mods.
+  <description>Helper for RimWorld Mod Manager. When the game has finished loading it writes one line to Player.log with the loading time, so the manager can show the exact time and how it changes with your mods. It also writes a small report for the manager: video memory of each mod's textures (1.6), defs one mod replaced in another, and game methods several mods patch.
 
 Changes nothing in the game, needs no other mods, safe to add or remove at any time. Installed and updated by RimWorld Mod Manager (Settings).</description>
 </ModMetaData>

@@ -105,174 +105,184 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
         return;
     }
 
-    super::view_bisect::render_bisect_card(app, ui);
-    ui.add_space(8.0);
-    render_last_good_card(app, ui);
-    ui.add_space(8.0);
-    render_load_time_card(app, ui);
-    ui.add_space(8.0);
-
-    // Report Results
+    // The page scrolls as a whole (like Optimizer and Settings): nothing below the window
+    // edge is cut off.
     let mut switch_to_optimizer = false;
-    if let Some(ref report) = app.log_report {
-        // Summary Card
-        card_container(ui, |ui| {
-            ui.horizontal(|ui| {
-                let (icon, color) = if report.has_hard_crash {
-                    (ICON_STATUS_CRASH, THEME.accent_rose)
-                } else if !report.culprits.is_empty() {
-                    (ICON_STATUS_WARNING, THEME.accent_amber)
-                } else if report.total_errors > 0 {
-                    (ICON_STATUS_ERROR, THEME.accent_amber)
-                } else {
-                    (ICON_STATUS_OK, THEME.accent_emerald)
-                };
-
-                let summary_text = if let Some(issue) = report.system_issue {
-                    match issue {
-                        crate::analyzer::SystemCrashIssue::GpuReset => {
-                            t.get(TranslationKey::CrashGpuResetTitle).to_string()
-                        }
-                        crate::analyzer::SystemCrashIssue::OutOfMemory => {
-                            t.get(TranslationKey::CrashOomTitle).to_string()
-                        }
-                    }
-                } else if report.has_hard_crash {
-                    t.get(TranslationKey::CrashSummaryHardCrash)
-                        .replace("{}", &report.culprits.len().to_string())
-                } else if !report.culprits.is_empty() {
-                    t.get(TranslationKey::CrashSummaryCulprits)
-                        .replace("{}", &report.culprits.len().to_string())
-                } else if report.total_errors > 0 {
-                    t.get(TranslationKey::CrashSummaryErrorsOnly)
-                        .replace("{}", &report.total_errors.to_string())
-                } else {
-                    t.get(TranslationKey::CrashSummaryClean).to_string()
-                };
-
-                let mut file_stats = crate::i18n::fmt(
-                    t.get(TranslationKey::CrashFileStats),
-                    &[
-                        &report.log_file_name,
-                        &report.total_lines.to_string(),
-                        &report.total_errors.to_string(),
-                    ],
-                );
-                if let Some(load_time) = report.load_time_secs {
-                    let dur_str = crate::load_time::format_duration(load_time);
-                    file_stats.push_str(&format!(" • {}: {}", t.get(TranslationKey::LoadTimeTitle), dur_str));
-                }
-
-                ui.add(svg_icon(icon, egui::Vec2::splat(22.0), color));
-                ui.vertical(|ui| {
-                    ui.label(egui::RichText::new(summary_text).color(color).size(14.0).strong());
-                    ui.label(egui::RichText::new(file_stats).color(THEME.text_muted).size(12.0));
-                });
-            });
-        });
-
-        ui.add_space(8.0);
-
-        if let Some(issue) = report.system_issue {
-            // On 1.7 the game compresses textures itself: no optimizer to send to.
-            if render_system_issue_card(ui, t, issue, !report.is_waylith) {
-                switch_to_optimizer = true;
-            }
+    egui::ScrollArea::vertical()
+        .id_salt("analyzer_page_scroll")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            super::view_bisect::render_bisect_card(app, ui);
             ui.add_space(8.0);
-        }
+            render_last_good_card(app, ui);
+            ui.add_space(8.0);
+            render_load_time_card(app, ui);
+            ui.add_space(8.0);
 
-        // Culprits List
-        egui::ScrollArea::vertical()
-            .id_salt("log_culprits_scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                if report.culprits.is_empty() {
-                    if report.system_issue.is_none() && !report.has_hard_crash && report.total_errors == 0 {
-                        card_container(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new(t.get(TranslationKey::CrashNoErrors))
-                                    .color(THEME.accent_emerald)
-                                    .size(13.0),
-                            );
-                        });
-                    }
-                    ui.add_space(8.0);
-                    render_perf_tips_card(ui, t);
-                    return;
-                }
+            // Report Results
+            if let Some(ref report) = app.log_report {
+                // Summary Card
+                card_container(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let (icon, color) = if report.has_hard_crash {
+                            (ICON_STATUS_CRASH, THEME.accent_rose)
+                        } else if !report.culprits.is_empty() {
+                            (ICON_STATUS_WARNING, THEME.accent_amber)
+                        } else if report.total_errors > 0 {
+                            (ICON_STATUS_ERROR, THEME.accent_amber)
+                        } else {
+                            (ICON_STATUS_OK, THEME.accent_emerald)
+                        };
 
-                for culprit in &report.culprits {
-                    let (badge_bg, badge_fg) = culprit.severity.badge_colors();
-
-                    card_container(ui, |ui| {
-                        ui.vertical(|ui| {
-                            ui.horizontal(|ui| {
-                                ui.heading(
-                                    egui::RichText::new(&culprit.mod_name)
-                                        .color(THEME.text_primary)
-                                        .size(15.0)
-                                        .strong(),
-                                );
-                                if let Some(ref pkg_id) = culprit.package_id {
-                                    ui.label(
-                                        egui::RichText::new(format!("({})", pkg_id))
-                                            .color(THEME.text_muted)
-                                            .size(12.0),
-                                    );
+                        let summary_text = if let Some(issue) = report.system_issue {
+                            match issue {
+                                crate::analyzer::SystemCrashIssue::GpuReset => {
+                                    t.get(TranslationKey::CrashGpuResetTitle).to_string()
                                 }
-                                badge(
-                                    ui,
-                                    culprit.severity.badge_text(t.language()),
-                                    Color32::from_rgb(badge_bg[0], badge_bg[1], badge_bg[2]),
-                                    Color32::from_rgb(badge_fg[0], badge_fg[1], badge_fg[2]),
-                                );
-                            });
-
-                            ui.add_space(4.0);
-
-                            ui.label(
-                                egui::RichText::new(&culprit.headline)
-                                    .color(THEME.text_secondary)
-                                    .strong(),
-                            );
-                            ui.label(
-                                egui::RichText::new(&culprit.explanation)
-                                    .color(THEME.text_muted)
-                                    .size(12.0),
-                            );
-
-                            if !culprit.stack_trace_excerpt.is_empty() {
-                                ui.add_space(6.0);
-                                let code_frame = egui::Frame {
-                                    inner_margin: egui::Margin::same(8.0),
-                                    rounding: Rounding::same(4.0),
-                                    fill: Color32::from_rgb(15, 17, 23),
-                                    stroke: Stroke::new(1.0_f32, THEME.border_subtle),
-                                    shadow: egui::epaint::Shadow::NONE,
-                                    outer_margin: egui::Margin::ZERO,
-                                };
-                                code_frame.show(ui, |ui| {
-                                    ui.label(
-                                        egui::RichText::new(&culprit.stack_trace_excerpt)
-                                            .color(Color32::from_rgb(252, 165, 165))
-                                            .monospace()
-                                            .size(12.0),
-                                    );
-                                });
+                                crate::analyzer::SystemCrashIssue::OutOfMemory => {
+                                    t.get(TranslationKey::CrashOomTitle).to_string()
+                                }
                             }
+                        } else if report.has_hard_crash {
+                            t.get(TranslationKey::CrashSummaryHardCrash)
+                                .replace("{}", &report.culprits.len().to_string())
+                        } else if !report.culprits.is_empty() {
+                            t.get(TranslationKey::CrashSummaryCulprits)
+                                .replace("{}", &report.culprits.len().to_string())
+                        } else if report.total_errors > 0 {
+                            t.get(TranslationKey::CrashSummaryErrorsOnly)
+                                .replace("{}", &report.total_errors.to_string())
+                        } else {
+                            t.get(TranslationKey::CrashSummaryClean).to_string()
+                        };
+
+                        let mut file_stats = crate::i18n::fmt(
+                            t.get(TranslationKey::CrashFileStats),
+                            &[
+                                &report.log_file_name,
+                                &report.total_lines.to_string(),
+                                &report.total_errors.to_string(),
+                            ],
+                        );
+                        if let Some(load_time) = report.load_time_secs {
+                            let dur_str = crate::load_time::format_duration(load_time);
+                            file_stats.push_str(&format!(" • {}: {}", t.get(TranslationKey::LoadTimeTitle), dur_str));
+                        }
+
+                        ui.add(svg_icon(icon, egui::Vec2::splat(22.0), color));
+                        ui.vertical(|ui| {
+                            ui.label(egui::RichText::new(summary_text).color(color).size(14.0).strong());
+                            ui.label(egui::RichText::new(file_stats).color(THEME.text_muted).size(12.0));
                         });
                     });
-                    ui.add_space(6.0);
+                });
+
+                ui.add_space(8.0);
+
+                if let Some(issue) = report.system_issue {
+                    // On 1.7 the game compresses textures itself: no optimizer to send to.
+                    if render_system_issue_card(ui, t, issue, !report.is_waylith) {
+                        switch_to_optimizer = true;
+                    }
+                    ui.add_space(8.0);
                 }
 
-                ui.add_space(6.0);
-                render_perf_tips_card(ui, t);
-            });
-    }
+                render_culprits(ui, t, report);
+                ui.add_space(8.0);
+            }
+            if app.companion_report.is_some() {
+                render_companion_report_card(app, ui);
+            }
+        });
 
     if switch_to_optimizer {
         app.current_tab = crate::app::AppTab::Optimizer;
     }
+}
+
+/// The mods the log points at, then performance tips.
+fn render_culprits(ui: &mut Ui, t: crate::i18n::I18n, report: &crate::analyzer::LogReport) {
+    if report.culprits.is_empty() {
+        if report.system_issue.is_none() && !report.has_hard_crash && report.total_errors == 0 {
+            card_container(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(t.get(TranslationKey::CrashNoErrors))
+                        .color(THEME.accent_emerald)
+                        .size(13.0),
+                );
+            });
+        }
+        ui.add_space(8.0);
+        render_perf_tips_card(ui, t);
+        return;
+    }
+
+    for culprit in &report.culprits {
+        let (badge_bg, badge_fg) = culprit.severity.badge_colors();
+
+        card_container(ui, |ui| {
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.heading(
+                        egui::RichText::new(&culprit.mod_name)
+                            .color(THEME.text_primary)
+                            .size(15.0)
+                            .strong(),
+                    );
+                    if let Some(ref pkg_id) = culprit.package_id {
+                        ui.label(
+                            egui::RichText::new(format!("({})", pkg_id))
+                                .color(THEME.text_muted)
+                                .size(12.0),
+                        );
+                    }
+                    badge(
+                        ui,
+                        culprit.severity.badge_text(t.language()),
+                        Color32::from_rgb(badge_bg[0], badge_bg[1], badge_bg[2]),
+                        Color32::from_rgb(badge_fg[0], badge_fg[1], badge_fg[2]),
+                    );
+                });
+
+                ui.add_space(4.0);
+
+                ui.label(
+                    egui::RichText::new(&culprit.headline)
+                        .color(THEME.text_secondary)
+                        .strong(),
+                );
+                ui.label(
+                    egui::RichText::new(&culprit.explanation)
+                        .color(THEME.text_muted)
+                        .size(12.0),
+                );
+
+                if !culprit.stack_trace_excerpt.is_empty() {
+                    ui.add_space(6.0);
+                    let code_frame = egui::Frame {
+                        inner_margin: egui::Margin::same(8.0),
+                        rounding: Rounding::same(4.0),
+                        fill: Color32::from_rgb(15, 17, 23),
+                        stroke: Stroke::new(1.0_f32, THEME.border_subtle),
+                        shadow: egui::epaint::Shadow::NONE,
+                        outer_margin: egui::Margin::ZERO,
+                    };
+                    code_frame.show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(&culprit.stack_trace_excerpt)
+                                .color(Color32::from_rgb(252, 165, 165))
+                                .monospace()
+                                .size(12.0),
+                        );
+                    });
+                }
+            });
+        });
+        ui.add_space(6.0);
+    }
+
+    ui.add_space(6.0);
+    render_perf_tips_card(ui, t);
 }
 
 fn render_system_issue_card(
@@ -539,6 +549,282 @@ pub fn render_load_time_card(app: &mut App, ui: &mut Ui) {
                     });
                 }
             }
+        });
+    });
+}
+
+/// Rows shown before the rest folds under "Show all".
+const REPORT_ROWS: usize = 10;
+
+/// What the companion mod wrote after loading: texture memory per mod, replaced defs and
+/// methods several mods patch.
+fn render_companion_report_card(app: &App, ui: &mut Ui) {
+    let Some(report) = app.companion_report.as_ref() else {
+        return;
+    };
+    let t = app.i18n;
+    card_container(ui, |ui| {
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.add(svg_icon(ICON_SHIELD, egui::Vec2::splat(18.0), THEME.accent_cyan));
+                ui.heading(
+                    egui::RichText::new(t.get(TranslationKey::CompanionReportTitle))
+                        .color(THEME.text_primary)
+                        .size(15.0)
+                        .strong(),
+                )
+                .on_hover_text(t.get(TranslationKey::CompanionReportHint));
+            });
+            let when = local_date_time(u64::try_from(report.written_unix).unwrap_or(0));
+            let game = report.game.as_deref().unwrap_or("?");
+            report_note(
+                ui,
+                &crate::i18n::fmt(t.get(TranslationKey::CompanionReportRun), &[&when, game]),
+                THEME.text_muted,
+            );
+            if report.mods_differ(&app.active_mods) {
+                report_note(
+                    ui,
+                    t.get(TranslationKey::CompanionReportModsChanged),
+                    THEME.accent_amber,
+                );
+            }
+            for error in &report.errors {
+                report_note(
+                    ui,
+                    &crate::i18n::fmt(t.get(TranslationKey::CompanionReportPartFailed), &[error]),
+                    THEME.accent_rose,
+                );
+            }
+            ui.add_space(6.0);
+            render_report_textures(ui, t, report);
+            ui.add_space(8.0);
+            render_report_defs(ui, t, report);
+            ui.add_space(8.0);
+            render_report_patches(ui, t, report);
+        });
+    });
+}
+
+fn report_note(ui: &mut Ui, text: &str, color: Color32) -> egui::Response {
+    ui.add(egui::Label::new(egui::RichText::new(text).color(color).size(11.5)).wrap())
+}
+
+fn report_subheading(ui: &mut Ui, text: &str) -> egui::Response {
+    ui.label(egui::RichText::new(text).color(THEME.text_primary).size(13.0).strong())
+}
+
+/// The first rows, then the rest under "Show all (N)".
+fn report_rows<T>(ui: &mut Ui, t: crate::i18n::I18n, id: &str, rows: &[T], mut row: impl FnMut(&mut Ui, &T)) {
+    for r in rows.iter().take(REPORT_ROWS) {
+        row(ui, r);
+    }
+    if rows.len() > REPORT_ROWS {
+        egui::CollapsingHeader::new(
+            egui::RichText::new(crate::i18n::fmt(
+                t.get(TranslationKey::CompanionShowAll),
+                &[&rows.len().to_string()],
+            ))
+            .color(THEME.text_secondary)
+            .size(12.0),
+        )
+        .id_salt(id)
+        .show(ui, |ui| {
+            for r in &rows[REPORT_ROWS..] {
+                row(ui, r);
+            }
+        });
+    }
+}
+
+fn size_text(t: crate::i18n::I18n, bytes: u64) -> String {
+    let mb = bytes as f64 / (1024.0 * 1024.0);
+    if mb >= 1024.0 {
+        crate::i18n::fmt(t.get(TranslationKey::CompanionGb), &[&format!("{:.1}", mb / 1024.0)])
+    } else {
+        crate::i18n::fmt(t.get(TranslationKey::CompanionMb), &[&format!("{mb:.0}")])
+    }
+}
+
+fn render_report_textures(ui: &mut Ui, t: crate::i18n::I18n, report: &crate::companion_report::CompanionReport) {
+    report_subheading(ui, t.get(TranslationKey::CompanionVramTitle));
+    let Some(textures) = &report.textures else {
+        // A failed part is already among the errors; otherwise it is 1.7.
+        if !report.errors.iter().any(|e| e.starts_with("textures")) {
+            report_note(ui, t.get(TranslationKey::CompanionVramNotOn17), THEME.text_muted);
+        }
+        return;
+    };
+    let mut total = crate::i18n::fmt(
+        t.get(TranslationKey::CompanionVramTotal),
+        &[
+            &size_text(t, textures.all_bytes),
+            &textures.all_count.to_string(),
+            &size_text(t, textures.vram_mb * 1024 * 1024),
+        ],
+    );
+    // Unity counts it only with texture streaming on; RimWorld 1.6 gives 0.
+    if textures.engine_bytes > 0 {
+        total.push_str(" · ");
+        total.push_str(&crate::i18n::fmt(
+            t.get(TranslationKey::CompanionVramEngine),
+            &[&size_text(t, textures.engine_bytes)],
+        ));
+    }
+    report_note(ui, &total, THEME.text_secondary);
+    let heaviest = report.heaviest_mods();
+    report_rows(ui, t, "companion_vram_all", &heaviest, |ui, m| {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                egui::RichText::new(crate::i18n::fmt(
+                    t.get(TranslationKey::CompanionVramModLine),
+                    &[
+                        report.mod_name(m.mod_index),
+                        &size_text(t, m.bytes),
+                        &m.count.to_string(),
+                    ],
+                ))
+                .color(THEME.text_primary)
+                .size(12.0),
+            );
+            if m.uncompressed > 0 {
+                ui.label(
+                    egui::RichText::new(crate::i18n::fmt(
+                        t.get(TranslationKey::CompanionVramUncompressed),
+                        &[&m.uncompressed.to_string(), &size_text(t, m.uncompressed_bytes)],
+                    ))
+                    .color(THEME.accent_amber)
+                    .size(11.5),
+                )
+                .on_hover_text(t.get(TranslationKey::CompanionVramUncompressedHint));
+            }
+        });
+    });
+}
+
+fn render_report_defs(ui: &mut Ui, t: crate::i18n::I18n, report: &crate::companion_report::CompanionReport) {
+    if report.def_overrides.is_none() {
+        return;
+    }
+    report_subheading(ui, t.get(TranslationKey::CompanionDefsTitle))
+        .on_hover_text(t.get(TranslationKey::CompanionDefsHint));
+    let (between, over_game) = report.override_pairs();
+    let pair_row = |ui: &mut Ui, p: &crate::companion_report::OverridePair| {
+        let examples: Vec<&str> = p.defs.iter().take(3).map(String::as_str).collect();
+        let more = if p.defs.len() > 3 { ", …" } else { "" };
+        let all: Vec<&str> = p.defs.iter().take(40).map(String::as_str).collect();
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                egui::RichText::new(crate::i18n::fmt(
+                    t.get(TranslationKey::CompanionDefsPair),
+                    &[
+                        report.mod_name(p.winner),
+                        report.mod_name(p.loser),
+                        &p.defs.len().to_string(),
+                    ],
+                ))
+                .color(THEME.text_primary)
+                .size(12.0),
+            );
+            ui.label(
+                egui::RichText::new(format!("{}{more}", examples.join(", ")))
+                    .color(THEME.text_muted)
+                    .size(11.5),
+            )
+            .on_hover_text(all.join("\n"));
+        });
+    };
+    if between.is_empty() {
+        report_note(ui, t.get(TranslationKey::CompanionDefsNone), THEME.accent_emerald);
+    } else {
+        report_note(
+            ui,
+            &crate::i18n::fmt(
+                t.get(TranslationKey::CompanionDefsBetween),
+                &[&between.len().to_string()],
+            ),
+            THEME.accent_amber,
+        );
+        report_rows(ui, t, "companion_defs_between", &between, pair_row);
+    }
+    if !over_game.is_empty() {
+        egui::CollapsingHeader::new(
+            egui::RichText::new(crate::i18n::fmt(
+                t.get(TranslationKey::CompanionDefsOverGame),
+                &[&over_game.len().to_string()],
+            ))
+            .color(THEME.text_secondary)
+            .size(12.0),
+        )
+        .id_salt("companion_defs_game")
+        .show(ui, |ui| {
+            report_rows(ui, t, "companion_defs_game_all", &over_game, pair_row)
+        });
+    }
+}
+
+fn render_report_patches(ui: &mut Ui, t: crate::i18n::I18n, report: &crate::companion_report::CompanionReport) {
+    report_subheading(ui, t.get(TranslationKey::CompanionPatchesTitle))
+        .on_hover_text(t.get(TranslationKey::CompanionPatchesHint));
+    let Some(harmony) = &report.harmony else {
+        if !report.errors.iter().any(|e| e.starts_with("harmony")) {
+            report_note(ui, t.get(TranslationKey::CompanionPatchesNoHarmony), THEME.text_muted);
+        }
+        return;
+    };
+    use crate::companion_report::PatchRisk;
+    let methods = report.shared_methods();
+    let count = |risk: PatchRisk| methods.iter().filter(|m| m.risk == risk).count().to_string();
+    report_note(
+        ui,
+        &crate::i18n::fmt(
+            t.get(TranslationKey::CompanionPatchesSummary),
+            &[
+                harmony.version.as_deref().unwrap_or("?"),
+                &harmony.patched_methods.to_string(),
+                &methods.len().to_string(),
+                &count(PatchRisk::High),
+                &count(PatchRisk::Some),
+            ],
+        ),
+        THEME.text_secondary,
+    );
+    if methods.is_empty() {
+        report_note(ui, t.get(TranslationKey::CompanionPatchesNone), THEME.accent_emerald);
+        return;
+    }
+    let can_cancel = t.get(TranslationKey::CompanionPatchCanCancel);
+    report_rows(ui, t, "companion_patches_all", &methods, |ui, m| {
+        let patchers: Vec<String> = m
+            .patchers
+            .iter()
+            .map(|p| {
+                let mut kinds = p.kinds.join(", ");
+                if p.skips {
+                    kinds.push_str(" · ");
+                    kinds.push_str(can_cancel);
+                }
+                format!("{} ({kinds})", p.name)
+            })
+            .collect();
+        ui.horizontal_wrapped(|ui| {
+            let color = match m.risk {
+                PatchRisk::High => THEME.accent_rose,
+                PatchRisk::Some => THEME.accent_amber,
+                PatchRisk::Low => THEME.text_primary,
+            };
+            ui.label(
+                egui::RichText::new(crate::companion_report::short_method(&m.method))
+                    .color(color)
+                    .size(12.0)
+                    .strong(),
+            )
+            .on_hover_text(m.method.as_str());
+            ui.label(
+                egui::RichText::new(patchers.join("; "))
+                    .color(THEME.text_muted)
+                    .size(11.5),
+            );
         });
     });
 }

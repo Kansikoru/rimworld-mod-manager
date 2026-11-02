@@ -5,6 +5,7 @@ pub mod categories;
 pub mod cleaner;
 pub mod community_rules;
 pub mod companion;
+pub mod companion_report;
 pub mod dependencies;
 pub mod fonts;
 pub mod game_install;

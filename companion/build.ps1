@@ -1,5 +1,7 @@
-# Builds the companion mod into companion\Assemblies (that dll is committed: CI has no game).
-# Needs the .NET SDK and RimWorld 1.6 installed. Usage: .\companion\build.ps1 [-GameDir <RimWorld folder>]
+# Builds the companion mod into companion\1.6\Assemblies and companion\1.7\Assemblies (those
+# dlls are committed: CI has no game). 1.6 is built against the installed game, 1.7 against the
+# reference assemblies from NuGet. Needs the .NET SDK and RimWorld 1.6 installed.
+# Usage: .\companion\build.ps1 [-GameDir <RimWorld 1.6 folder>]
 param([string]$GameDir)
 $ErrorActionPreference = "Stop"
 
@@ -30,4 +32,4 @@ $project = Join-Path $PSScriptRoot "Source\Companion.csproj"
 dotnet build $project -c Release -nologo "-p:RimWorldManaged=$managed"
 if ($LASTEXITCODE -ne 0) { throw "build failed" }
 Remove-Item (Join-Path $PSScriptRoot "Source\obj") -Recurse -Force -ErrorAction SilentlyContinue
-Get-Item (Join-Path $PSScriptRoot "Assemblies\RimWorldModManagerCompanion.dll")
+Get-Item (Join-Path $PSScriptRoot "1.*\Assemblies\RimWorldModManagerCompanion.dll")

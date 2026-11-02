@@ -293,6 +293,8 @@ pub struct App {
 
     // Analyzer State
     pub log_report: Option<LogReport>,
+    /// What the companion mod wrote after the last loading with it (textures, conflicts).
+    pub companion_report: Option<crate::companion_report::CompanionReport>,
     pub custom_log_path: Option<PathBuf>,
     /// F9: Snapshot of the last known working run and diff with current configuration.
     pub last_good: Option<crate::last_good::LastGoodSnapshot>,
@@ -685,6 +687,7 @@ impl App {
             steam_progress_rx: None,
             steam_stop_flag: Arc::new(AtomicBool::new(false)),
             load_time_history: crate::load_time::LoadTimeHistory::load(),
+            companion_report: crate::companion_report::load(),
             game_launch_time: None,
             game_launch_active_mods: Vec::new(),
             launch_watch_rx: None,
@@ -956,6 +959,7 @@ impl App {
                     self.status_message = self.crash_summary_text(&report);
                 }
                 self.log_report = Some(report);
+                self.companion_report = crate::companion_report::load();
             }
         }
         if let Some(rx) = &self.launch_watch_rx {
@@ -965,6 +969,7 @@ impl App {
                     self.handle_verified_launch_report(&report);
                     self.status_message = self.crash_summary_text(&report);
                     self.log_report = Some(report);
+                    self.companion_report = crate::companion_report::load();
                 }
             }
         }
@@ -985,6 +990,7 @@ impl App {
                     };
                     let errors = report.total_errors;
                     self.log_report = Some(report);
+                    self.companion_report = crate::companion_report::load();
                     if self.bisect.as_ref().is_some_and(|s| s.applied && s.outcome().is_none()) {
                         let note = match answer {
                             Some(problem) => {
@@ -1740,11 +1746,6 @@ impl App {
     }
 
     // ----- Companion mod (F11) -----
-
-    /// The companion mod is built for RimWorld 1.6 (Unity) only.
-    pub fn companion_supported(&self) -> bool {
-        self.steam_paths.engine == crate::game_install::GameEngine::Unity
-    }
 
     /// The companion mod in the game's Mods folder (`None`: the Mods folder is unknown).
     pub fn companion_state(&self) -> Option<crate::companion::State> {

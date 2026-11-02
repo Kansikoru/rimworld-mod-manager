@@ -132,10 +132,6 @@ fn render_companion_card(app: &mut App, ui: &mut Ui) {
             ui.add_space(4.0);
             hint(ui, t.get(TranslationKey::CompanionHint));
             ui.add_space(6.0);
-            if !app.companion_supported() {
-                hint(ui, t.get(TranslationKey::CompanionOnly16));
-                return;
-            }
             let (status, color) = match (state, enabled) {
                 (None, _) => (t.get(TranslationKey::SteamCmdNoMods), THEME.accent_amber),
                 (Some(State::Missing), _) => (t.get(TranslationKey::CompanionStatusMissing), THEME.text_muted),

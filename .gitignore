@@ -7,6 +7,6 @@ crash_log.txt
 # Local notes, not part of the project
 PLAN.md
 
-# Companion mod build leftovers (its dll in companion/Assemblies is committed)
+# Companion mod build leftovers (its dlls in companion/1.6 and companion/1.7 are committed)
 companion/Source/obj/
 companion/Source/bin/
