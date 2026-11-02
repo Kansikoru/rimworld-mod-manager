@@ -1374,10 +1374,49 @@ fn mod_texture_files(mod_dir: &Path, game_version: Option<&str>) -> Vec<(PathBuf
     out
 }
 
-/// Changes when a texture is added, removed or rewritten anywhere in the mod's texture folders.
-fn texture_fingerprint(files: &[(PathBuf, std::fs::Metadata)]) -> u64 {
+/// Whether the game compresses PNG/JPG textures itself: its "Texture compression" option
+/// (`<textureCompression>` in `Prefs.xml`, in the folder of ModsConfig.xml). The game writes
+/// every option there, so no file or no line means a fresh install, where the option is on.
+pub fn game_compresses_textures(config_dir: Option<&Path>) -> bool {
+    config_dir
+        .and_then(|d| std::fs::read_to_string(d.join("Prefs.xml")).ok())
+        .and_then(|xml| prefs_texture_compression(&xml))
+        .unwrap_or(true)
+}
+
+/// `<textureCompression>` of a Prefs.xml: `None` when it isn't there.
+fn prefs_texture_compression(xml: &str) -> Option<bool> {
+    const TAG: &str = "<textureCompression>";
+    let start = xml.find(TAG)? + TAG.len();
+    let len = xml[start..].find('<')?;
+    Some(!xml[start..start + len].trim().eq_ignore_ascii_case("false"))
+}
+
+/// Video memory per pixel of a PNG/JPG, before mipmaps. RimWorld 1.6 compresses it to DXT
+/// itself when its "Texture compression" option is on and both sides divide by 4 (else it
+/// stays plain RGBA); 1.7 (Waylith) always compresses to BC7. The DXT/BC7 upper bound is
+/// 1 byte (opaque DXT1 is half that).
+fn image_bytes_per_px(w: u32, h: u32, engine: crate::game_install::GameEngine, game_compresses: bool) -> u64 {
+    let compressed = engine == crate::game_install::GameEngine::Waylith
+        || (game_compresses && w.is_multiple_of(4) && h.is_multiple_of(4));
+    if compressed {
+        1
+    } else {
+        4
+    }
+}
+
+/// Changes when a texture is added, removed or rewritten anywhere in the mod's texture folders,
+/// or when the way the game stores PNG/JPG in video memory changes.
+fn texture_fingerprint(
+    files: &[(PathBuf, std::fs::Metadata)],
+    engine: crate::game_install::GameEngine,
+    game_compresses: bool,
+) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
+    (engine == crate::game_install::GameEngine::Waylith).hash(&mut h);
+    game_compresses.hash(&mut h);
     files.len().hash(&mut h);
     for (path, meta) in files {
         path_key(path).hash(&mut h);
@@ -1393,14 +1432,13 @@ fn texture_fingerprint(files: &[(PathBuf, std::fs::Metadata)]) -> u64 {
 
 /// Estimated VRAM used by textures of one mod in bytes (V2).
 /// DDS files are counted at their file length (compressed data + mipmaps); a PNG/JPG next to
-/// a DDS is not loaded. PNG/JPG: uncompressed RGBA on 1.6 (Unity), BC7 on 1.7 (Waylith).
-fn estimate_texture_bytes(files: &[(PathBuf, std::fs::Metadata)], engine: crate::game_install::GameEngine) -> u64 {
+/// a DDS is not loaded. PNG/JPG: see `image_bytes_per_px`.
+fn estimate_texture_bytes(
+    files: &[(PathBuf, std::fs::Metadata)],
+    engine: crate::game_install::GameEngine,
+    game_compresses: bool,
+) -> u64 {
     let with_mips = |b: u64| b + b / 3;
-    let bytes_per_px = if engine == crate::game_install::GameEngine::Waylith {
-        1
-    } else {
-        4
-    };
     let dds: std::collections::HashSet<String> = files
         .iter()
         .filter(|(p, _)| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("dds")))
@@ -1416,7 +1454,9 @@ fn estimate_texture_bytes(files: &[(PathBuf, std::fs::Metadata)], engine: crate:
                 0
             } else {
                 image::image_dimensions(path)
-                    .map(|(w, h)| with_mips(u64::from(w) * u64::from(h) * bytes_per_px))
+                    .map(|(w, h)| {
+                        with_mips(u64::from(w) * u64::from(h) * image_bytes_per_px(w, h, engine, game_compresses))
+                    })
                     .unwrap_or(0)
             }
         })
@@ -1424,17 +1464,24 @@ fn estimate_texture_bytes(files: &[(PathBuf, std::fs::Metadata)], engine: crate:
 }
 
 /// Estimated VRAM used by textures of one mod in bytes (V2).
-pub fn estimate_mod_vram(mod_dir: &Path, engine: crate::game_install::GameEngine, game_version: Option<&str>) -> u64 {
-    estimate_texture_bytes(&mod_texture_files(mod_dir, game_version), engine)
+pub fn estimate_mod_vram(
+    mod_dir: &Path,
+    engine: crate::game_install::GameEngine,
+    game_version: Option<&str>,
+    game_compresses: bool,
+) -> u64 {
+    estimate_texture_bytes(&mod_texture_files(mod_dir, game_version), engine, game_compresses)
 }
 
 /// Evaluates active mod texture memory against dedicated video memory (V2).
+/// `game_compresses`: the game's own texture compression is on (`game_compresses_textures`).
 /// A mod's estimate is reused while its texture files stay the same (cache: dir ->
 /// (fingerprint, bytes)); returns the new cache entries too.
 pub fn check_vram_usage(
     active_mods: &[(String, PathBuf)],
     engine: crate::game_install::GameEngine,
     game_version: Option<&str>,
+    game_compresses: bool,
     cache: &HashMap<PathBuf, (u64, u64)>,
 ) -> (VramReport, Vec<(PathBuf, u64, u64)>) {
     let total_vram = detect_dedicated_vram();
@@ -1444,11 +1491,11 @@ pub fn check_vram_usage(
         .par_iter()
         .map(|(_, dir)| {
             let files = mod_texture_files(dir, game_version);
-            let fp = texture_fingerprint(&files);
+            let fp = texture_fingerprint(&files, engine, game_compresses);
             match cache.get(dir) {
                 Some(&(cached_fp, bytes)) if cached_fp == fp => (bytes, None),
                 _ => {
-                    let bytes = estimate_texture_bytes(&files, engine);
+                    let bytes = estimate_texture_bytes(&files, engine, game_compresses);
                     (bytes, Some((dir.clone(), fp, bytes)))
                 }
             }
@@ -1481,11 +1528,12 @@ pub fn check_vram_async(
     active_mods: Vec<(String, PathBuf)>,
     engine: crate::game_install::GameEngine,
     game_version: Option<String>,
+    game_compresses: bool,
     cache: HashMap<PathBuf, (u64, u64)>,
     tx: mpsc::Sender<VramCheckResult>,
 ) {
     std::thread::spawn(move || {
-        let res = check_vram_usage(&active_mods, engine, game_version.as_deref(), &cache);
+        let res = check_vram_usage(&active_mods, engine, game_version.as_deref(), game_compresses, &cache);
         let _ = tx.send(res);
     });
 }
@@ -2173,7 +2221,7 @@ mod tests {
         let mut cache = HashMap::new();
 
         // 1st pass: cache miss, calculates usage
-        let (report1, new_cache) = check_vram_usage(&mods, GameEngine::Unity, None, &cache);
+        let (report1, new_cache) = check_vram_usage(&mods, GameEngine::Unity, None, false, &cache);
         assert!(report1.estimated_used_bytes > 0);
         assert_eq!(new_cache.len(), 1);
 
@@ -2182,7 +2230,7 @@ mod tests {
         }
 
         // 2nd pass: cache hit, gives exact same used bytes
-        let (report2, new_cache2) = check_vram_usage(&mods, GameEngine::Unity, None, &cache);
+        let (report2, new_cache2) = check_vram_usage(&mods, GameEngine::Unity, None, false, &cache);
         assert_eq!(report1.estimated_used_bytes, report2.estimated_used_bytes);
         assert_eq!(new_cache2.len(), 0, "no new items should be cached on cache hit");
 
@@ -2190,10 +2238,73 @@ mod tests {
         let deep = tex_dir.join("Things").join("Item");
         std::fs::create_dir_all(&deep).unwrap();
         write_png(&deep.join("new.png"), 128, 128, 255);
-        let (report3, new_cache3) = check_vram_usage(&mods, GameEngine::Unity, None, &cache);
+        let (report3, new_cache3) = check_vram_usage(&mods, GameEngine::Unity, None, false, &cache);
         assert_eq!(new_cache3.len(), 1);
         assert!(report3.estimated_used_bytes > report2.estimated_used_bytes);
+        for (p, mtime, bytes) in new_cache3 {
+            cache.insert(p, (mtime, bytes));
+        }
 
+        // The game's texture compression turned on: the same files are estimated anew.
+        let (report4, new_cache4) = check_vram_usage(&mods, GameEngine::Unity, None, true, &cache);
+        assert_eq!(new_cache4.len(), 1);
+        assert!(report4.estimated_used_bytes < report3.estimated_used_bytes);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn png_the_game_compresses_counts_a_quarter() {
+        use crate::game_install::GameEngine;
+        let dir = temp_dir("vram_game_compression");
+        let tex = dir.join("Mod").join("Textures").join("Things").join("Pawn");
+        std::fs::create_dir_all(&tex).unwrap();
+        // Divisible by 4: compressed by the game. 130x130: not, it stays RGBA.
+        write_png(&tex.join("body.png"), 256, 128, 128);
+        write_png(&tex.join("odd.png"), 130, 130, 128);
+        let mips = |b: u64| b + b / 3;
+        let m = dir.join("Mod");
+        assert_eq!(
+            estimate_mod_vram(&m, GameEngine::Unity, None, false),
+            mips(256 * 128 * 4) + mips(130 * 130 * 4)
+        );
+        assert_eq!(
+            estimate_mod_vram(&m, GameEngine::Unity, None, true),
+            mips(256 * 128) + mips(130 * 130 * 4)
+        );
+        // 1.7 compresses everything, whatever the option.
+        assert_eq!(
+            estimate_mod_vram(&m, GameEngine::Waylith, None, false),
+            mips(256 * 128) + mips(130 * 130)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn texture_compression_option_is_read_from_prefs() {
+        assert_eq!(
+            prefs_texture_compression("<PrefsData>\n  <textureCompression>False</textureCompression>\n</PrefsData>"),
+            Some(false)
+        );
+        assert_eq!(
+            prefs_texture_compression("<PrefsData><textureCompression> True </textureCompression></PrefsData>"),
+            Some(true)
+        );
+        assert_eq!(
+            prefs_texture_compression("<PrefsData><uiScale>1</uiScale></PrefsData>"),
+            None
+        );
+
+        let dir = temp_dir("vram_prefs");
+        // No Prefs.xml yet: the game's default, on.
+        assert!(game_compresses_textures(Some(&dir)));
+        assert!(game_compresses_textures(None));
+        std::fs::write(
+            dir.join("Prefs.xml"),
+            "<PrefsData><textureCompression>False</textureCompression></PrefsData>",
+        )
+        .unwrap();
+        assert!(!game_compresses_textures(Some(&dir)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2215,12 +2326,12 @@ mod tests {
         let px = |s: u64| (s * s * 4) + (s * s * 4) / 3;
         // 1.6: root + 1.6, not 1.5.
         assert_eq!(
-            estimate_mod_vram(&m, GameEngine::Unity, Some("1.6.4633 rev1261")),
+            estimate_mod_vram(&m, GameEngine::Unity, Some("1.6.4633 rev1261"), false),
             px(128) + px(64)
         );
         // 1.5: root + 1.5.
         assert_eq!(
-            estimate_mod_vram(&m, GameEngine::Unity, Some("1.5.4409")),
+            estimate_mod_vram(&m, GameEngine::Unity, Some("1.5.4409"), false),
             px(256) + px(64)
         );
 
@@ -2231,10 +2342,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            estimate_mod_vram(&m, GameEngine::Unity, Some("1.6.1")),
+            estimate_mod_vram(&m, GameEngine::Unity, Some("1.6.1"), false),
             px(256) + px(64)
         );
-        assert_eq!(estimate_mod_vram(&m, GameEngine::Unity, Some("1.5.1")), px(64));
+        assert_eq!(estimate_mod_vram(&m, GameEngine::Unity, Some("1.5.1"), false), px(64));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

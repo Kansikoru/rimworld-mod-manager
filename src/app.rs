@@ -4526,9 +4526,16 @@ impl App {
         let engine = self.steam_paths.engine;
         let version = self.steam_paths.game_version.clone();
         let cache = self.vram_cache.clone();
+        // The game's Prefs.xml lives next to the ModsConfig.xml it reads.
+        let config_dir = self
+            .mods_config_path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf);
         self.vram_rx = Some(self.spawn_task(move || {
+            let game_compresses = crate::optimizer::game_compresses_textures(config_dir.as_deref());
             let (tx, rx) = channel();
-            crate::optimizer::check_vram_async(active_mods, engine, version, cache, tx);
+            crate::optimizer::check_vram_async(active_mods, engine, version, game_compresses, cache, tx);
             rx.recv().map_err(|_| ())
         }));
     }
