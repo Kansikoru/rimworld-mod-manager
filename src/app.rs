@@ -257,6 +257,9 @@ pub struct App {
     name_search_after_load: bool,
     /// RWMM_TAB=mods-updates: check the Workshop for updates once the mods are scanned (screenshots).
     updates_after_scan: bool,
+    /// RWMM_TAB=analyzer-companion: scroll the Log Analyzer to the companion's report once the
+    /// log is analyzed (screenshots).
+    pub scroll_to_companion_report: bool,
 
     // Optimizer State
     pub opt_scope: OptimizeScope,
@@ -580,8 +583,8 @@ impl App {
             }
         });
 
-        // RWMM_TAB=settings|optimizer|analyzer|translations|history opens that tab (or the
-        // History window) first, for screenshots.
+        // RWMM_TAB=settings|optimizer|analyzer|analyzer-companion|translations|history opens that
+        // tab (or the History window) first, for screenshots.
         let start_view = std::env::var("RWMM_TAB").unwrap_or_default().to_lowercase();
         let start_tab = match start_view.as_str() {
             "sets" => AppTab::Sets,
@@ -590,7 +593,7 @@ impl App {
             "translations" | "translations-batch" => AppTab::Translations,
             "bisect" => AppTab::Analyzer,
             "optimizer" => AppTab::Optimizer,
-            "analyzer" => AppTab::Analyzer,
+            "analyzer" | "analyzer-companion" => AppTab::Analyzer,
             "settings" => AppTab::Settings,
             _ => AppTab::Mods,
         };
@@ -631,6 +634,7 @@ impl App {
             show_batch_results: false,
             batch_search_after_scan: false,
             bisect_after_scan: false,
+            scroll_to_companion_report: false,
             name_search_after_load: false,
             updates_after_scan: false,
 
@@ -796,6 +800,7 @@ impl App {
         app.bisect_after_scan = start_view == "bisect";
         app.name_search_after_load = start_view == "saves-findname";
         app.updates_after_scan = start_view == "mods-updates";
+        app.scroll_to_companion_report = start_view == "analyzer-companion";
         // The Workshop ID index downloaded earlier (a few MB): read in the background.
         app.workshop_index_rx = Some(app.spawn_task(|| (false, crate::workshop_db::load().ok_or_else(String::new))));
         app

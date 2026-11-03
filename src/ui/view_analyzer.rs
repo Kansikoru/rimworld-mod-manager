@@ -191,6 +191,11 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
                 ui.add_space(8.0);
             }
             if app.companion_report.is_some() {
+                // RWMM_TAB=analyzer-companion (screenshots): the card at the top, once the
+                // analysis above it is in.
+                if app.log_report.is_some() && std::mem::take(&mut app.scroll_to_companion_report) {
+                    ui.scroll_to_cursor(Some(egui::Align::TOP));
+                }
                 render_companion_report_card(app, ui);
             }
         });

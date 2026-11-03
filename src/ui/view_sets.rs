@@ -291,20 +291,22 @@ fn set_card(app: &App, ui: &mut Ui, list: &ModList, selected: bool) -> egui::Res
         color,
     );
 
-    // Name (cut with "…" if long)
-    let name_galley = painter.layout(
+    // Name: at most two centred lines, cut with "…" (a third would run into the mod count)
+    let mut job = egui::text::LayoutJob::simple(
         list.name.clone(),
         egui::FontId::proportional(13.0),
         THEME.text_primary,
         rect.width() - 16.0,
     );
-    let name_pos = egui::pos2(
-        rect.center().x - name_galley.size().x.min(rect.width() - 16.0) / 2.0,
-        rect.top() + 64.0,
+    job.wrap.max_rows = 2;
+    job.wrap.overflow_character = Some('…');
+    job.halign = egui::Align::Center;
+    let name_galley = painter.layout_job(job);
+    painter.with_clip_rect(rect.shrink(6.0)).galley(
+        egui::pos2(rect.center().x, rect.top() + 61.0),
+        name_galley,
+        THEME.text_primary,
     );
-    painter
-        .with_clip_rect(rect.shrink(6.0))
-        .galley(name_pos, name_galley, THEME.text_primary);
 
     // Mod count and game version
     let version = list
