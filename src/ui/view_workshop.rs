@@ -545,7 +545,7 @@ fn render_details(
                             .on_hover_text(format!("#{dep_id}"))
                             .clicked()
                         {
-                            open_external(crate::steam::workshop_url(dep_id));
+                            open_in_workshop_tab(ui.ctx(), dep_id);
                         }
                     }
                 });

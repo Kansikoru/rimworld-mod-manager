@@ -10,7 +10,6 @@ use crate::dependencies::DependencyProblem;
 use crate::i18n::{fmt, tr, TranslationKey};
 use crate::models::{is_protected_package_id, ModInfo, ModOrigin};
 use crate::sorter::ModTier;
-use crate::steam::workshop_url;
 
 pub fn render_mods_view(app: &mut App, ui: &mut Ui) {
     // Any manual change to the active list (enable, disable, move) re-runs the dependency check,
@@ -217,6 +216,53 @@ fn clear_on_empty_click(app: &mut App, ui: &Ui, view: egui::Rect) {
         app.selected_mod_ids.clear();
         app.selected_mod_id = None;
         app.last_clicked_mod_id = None;
+    }
+}
+
+/// Workshop IDs of the selected mods: active ones in load order, then the available ones.
+/// Local mods have none.
+fn selected_workshop_ids(lists: &ModLists) -> Vec<String> {
+    let selected = |id: &str| lists.selected.iter().any(|s| s.eq_ignore_ascii_case(id));
+    let ids = lists
+        .active
+        .iter()
+        .map(String::as_str)
+        .chain(lists.all.iter().map(|m| m.package_id.as_str()));
+    let mut out: Vec<String> = Vec::new();
+    for id in ids.filter(|id| selected(id)) {
+        if let Some(ws) = lookup_mod(lists.index, lists.all, id).and_then(|m| m.steam_item_id.clone()) {
+            if !out.contains(&ws) {
+                out.push(ws);
+            }
+        }
+    }
+    out
+}
+
+/// The app's mod lists, borrowed field by field: a context menu inside a list row can't
+/// borrow the whole app while the row reads it.
+struct ModLists<'a> {
+    selected: &'a HashSet<String>,
+    active: &'a [String],
+    all: &'a [ModInfo],
+    index: &'a std::collections::HashMap<String, usize>,
+}
+
+/// Context menu item with several mods selected: all of them in the Workshop tab.
+fn open_selected_in_workshop_item(ui: &mut Ui, t: crate::i18n::I18n, lists: ModLists) {
+    if lists.selected.len() < 2 {
+        return;
+    }
+    let ids = selected_workshop_ids(&lists);
+    if ids.is_empty() {
+        return;
+    }
+    let label = t
+        .get(TranslationKey::ModsCtxOpenSelectedWorkshop)
+        .replace("{}", &ids.len().to_string());
+    if ui.button(label).clicked() {
+        open_many_in_workshop_tab(ui.ctx(), ids);
+        ui.close_menu();
     }
 }
 
@@ -1634,10 +1680,20 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                     }
                                     if let Some(ref steam_id) = steam_id_ctx {
                                         if ui.button(app.i18n.get(TranslationKey::ModsCtxOpenWorkshop)).clicked() {
-                                            open_external(workshop_url(steam_id));
+                                            open_in_workshop_tab(ui.ctx(), steam_id);
                                             ui.close_menu();
                                         }
                                     }
+                                    open_selected_in_workshop_item(
+                                        ui,
+                                        app.i18n,
+                                        ModLists {
+                                            selected: &app.selected_mod_ids,
+                                            active: &app.active_mods,
+                                            all: &app.all_mods,
+                                            index: &app.mod_index,
+                                        },
+                                    );
                                     if !is_protected_package_id(pkg_id)
                                         && !pkg_id.to_lowercase().starts_with("ludeon.rimworld")
                                     {
@@ -2177,10 +2233,20 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                                         }
                                         if let Some(ref steam_id) = steam_id_ctx {
                                             if ui.button(app.i18n.get(TranslationKey::ModsCtxOpenWorkshop)).clicked() {
-                                                open_external(workshop_url(steam_id));
+                                                open_in_workshop_tab(ui.ctx(), steam_id);
                                                 ui.close_menu();
                                             }
                                         }
+                                        open_selected_in_workshop_item(
+                                            ui,
+                                            app.i18n,
+                                            ModLists {
+                                                selected: &app.selected_mod_ids,
+                                                active: &app.active_mods,
+                                                all: &app.all_mods,
+                                                index: &app.mod_index,
+                                            },
+                                        );
 
                                         if !is_protected_package_id(&pkg_id_ctx)
                                             && !pkg_id_ctx.to_lowercase().starts_with("ludeon.rimworld")
@@ -2528,8 +2594,8 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui, side: bool) {
                     open_external(&m.dir_path);
                 }
                 if let Some(ref steam_id) = m.steam_item_id {
-                    if small_button(ui, "Steam", ButtonStyle::Secondary).clicked() {
-                        open_external(workshop_url(steam_id));
+                    if small_button(ui, "Workshop", ButtonStyle::Secondary).clicked() {
+                        open_in_workshop_tab(ui.ctx(), steam_id);
                     }
                 }
             });

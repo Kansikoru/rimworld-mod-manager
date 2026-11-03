@@ -213,7 +213,16 @@ pub fn fetch_page(q: &BrowseQuery) -> Result<Vec<WorkshopItem>, String> {
         .map_err(|e| e.to_string())?
         .into_string()
         .map_err(|e| e.to_string())?;
-    let ids = parse_browse_ids(&html);
+    fetch_details(&agent, &parse_browse_ids(&html))
+}
+
+/// Given items by their IDs (a mod opened from another tab).
+pub fn fetch_items(ids: &[String]) -> Result<Vec<WorkshopItem>, String> {
+    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).build();
+    fetch_details(&agent, ids)
+}
+
+fn fetch_details(agent: &ureq::Agent, ids: &[String]) -> Result<Vec<WorkshopItem>, String> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -230,7 +239,7 @@ pub fn fetch_page(q: &BrowseQuery) -> Result<Vec<WorkshopItem>, String> {
         .map_err(|e| e.to_string())?
         .into_string()
         .map_err(|e| e.to_string())?;
-    parse_items(&json, &ids)
+    parse_items(&json, ids)
 }
 
 /// The preview at a given width (Steam's image server scales it), for thumbnails.

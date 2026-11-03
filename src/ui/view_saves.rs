@@ -589,7 +589,7 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
                                         .on_hover_text(t.get(TranslationKey::SetsOpenWorkshop))
                                         .clicked()
                                     {
-                                        open_external(crate::steam::workshop_url(steam_id));
+                                        open_in_workshop_tab(ui.ctx(), steam_id);
                                     }
                                 }
                                 if let Some(id) = findable {

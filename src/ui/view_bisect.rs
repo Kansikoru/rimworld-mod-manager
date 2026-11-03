@@ -364,7 +364,7 @@ fn render_result(app: &mut App, ui: &mut Ui, search: &Bisect, outcome: &Outcome)
                             .on_hover_text(t.get(TranslationKey::SetsOpenWorkshop))
                             .clicked()
                         {
-                            open_external(crate::steam::workshop_url(&steam_id));
+                            open_in_workshop_tab(ui.ctx(), &steam_id);
                         }
                     }
                 });

@@ -9,6 +9,30 @@ pub fn open_external(target: impl AsRef<std::ffi::OsStr>) {
     let _ = open::that_detached(target);
 }
 
+fn workshop_request_id() -> egui::Id {
+    egui::Id::new("open_workshop_item")
+}
+
+/// Asks to show a Workshop mod in the program's own Workshop tab, not in the browser. Kept
+/// in egui's memory, so any view can ask while it is reading the app's lists; the app opens
+/// it on the next frame (`App::open_workshop_items`).
+pub fn open_in_workshop_tab(ctx: &egui::Context, item_id: &str) {
+    open_many_in_workshop_tab(ctx, vec![item_id.to_string()]);
+}
+
+/// Several mods at once: the tab shows just them, the first one picked.
+pub fn open_many_in_workshop_tab(ctx: &egui::Context, item_ids: Vec<String>) {
+    if item_ids.is_empty() {
+        return;
+    }
+    ctx.data_mut(|d| d.insert_temp(workshop_request_id(), item_ids));
+    ctx.request_repaint();
+}
+
+pub fn take_workshop_request(ctx: &egui::Context) -> Option<Vec<String>> {
+    ctx.data_mut(|d| d.remove_temp::<Vec<String>>(workshop_request_id()))
+}
+
 /// Unix time as a local date and time: "26.10.2026 14:32" (Russian) or "2026-10-26 14:32".
 pub fn local_date_time(unix_secs: u64) -> String {
     let Some(utc) = chrono::DateTime::from_timestamp(unix_secs as i64, 0) else {

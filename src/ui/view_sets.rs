@@ -636,7 +636,7 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
                                     .on_hover_text(t.get(TranslationKey::SetsOpenWorkshop))
                                     .clicked()
                                 {
-                                    open_external(crate::steam::workshop_url(&steam_id));
+                                    open_in_workshop_tab(ui.ctx(), &steam_id);
                                 }
                             } else if !id.to_lowercase().starts_with("ludeon.rimworld")
                                 && icon_button(ui, ICON_SEARCH, Vec2::splat(14.0), THEME.text_muted)

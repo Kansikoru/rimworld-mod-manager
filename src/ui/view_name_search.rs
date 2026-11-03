@@ -140,10 +140,10 @@ pub fn render_name_search_window(app: &mut App, ctx: &egui::Context) {
                                         }
                                     });
                                     if icon_button(ui, ICON_STEAM, Vec2::splat(14.0), THEME.text_muted)
-                                        .on_hover_text(t.get(TranslationKey::NameSearchOpenSteam))
+                                        .on_hover_text(t.get(TranslationKey::SetsOpenWorkshop))
                                         .clicked()
                                     {
-                                        open_external(crate::steam::workshop_url(&m.id));
+                                        open_in_workshop_tab(ui.ctx(), &m.id);
                                     }
                                     // Tags first, so a long title is the part that gets cut.
                                     if m.exact {

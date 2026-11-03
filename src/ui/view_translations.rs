@@ -344,7 +344,7 @@ fn render_workshop_search_column(app: &mut App, ui: &mut Ui) {
                                 to_subscribe_id = Some(item.id.clone());
                             }
                             if secondary_button_icon(ui, ICON_STEAM, "Workshop").clicked() {
-                                open_external(crate::steam::workshop_url(&item.id));
+                                open_in_workshop_tab(ui.ctx(), &item.id);
                             }
                         });
                     });
@@ -477,7 +477,7 @@ fn render_batch_results(app: &mut App, ui: &mut Ui) {
                                     ))
                                     .clicked()
                                 {
-                                    open_external(crate::steam::workshop_url(&item.id));
+                                    open_in_workshop_tab(ui.ctx(), &item.id);
                                 }
                             });
                         });

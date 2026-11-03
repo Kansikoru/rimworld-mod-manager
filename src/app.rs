@@ -1053,6 +1053,13 @@ impl App {
         self.poll_name_search();
         self.poll_steamcmd();
         self.poll_workshop();
+        if let Some(ids) = self
+            .repaint_ctx
+            .as_ref()
+            .and_then(crate::ui::components::take_workshop_request)
+        {
+            self.open_workshop_items(ids);
+        }
         self.poll_last_good_diff();
         self.poll_last_good_save();
         self.poll_save_backup();
@@ -1943,6 +1950,20 @@ impl App {
         // A page still loading would be replaced by the search right after.
         self.ws_rx = None;
         self.search_workshop_tab();
+    }
+
+    /// Opens mods in the Workshop tab instead of the browser: the grid shows just them, the
+    /// first one's card on the right ("Open the Steam page" is still there). The tab opens
+    /// even when hidden.
+    pub fn open_workshop_items(&mut self, item_ids: Vec<String>) {
+        let Some(first) = item_ids.first() else {
+            return;
+        };
+        self.ws_selected = Some(first.clone());
+        self.ws_loaded = true;
+        self.ws_error = None;
+        self.current_tab = AppTab::Workshop;
+        self.ws_rx = Some(self.spawn_task(move || crate::workshop_browse::fetch_items(&item_ids)));
     }
 
     /// A new search or sort: back to page 1.

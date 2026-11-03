@@ -179,10 +179,10 @@ pub fn render_steamcmd_window(app: &mut App, ctx: &egui::Context) {
                                 ui.set_width(ui.available_width());
                                 ui.horizontal(|ui| {
                                     if icon_button(ui, ICON_STEAM, Vec2::splat(14.0), THEME.text_muted)
-                                        .on_hover_text(t.get(TranslationKey::NameSearchOpenSteam))
+                                        .on_hover_text(t.get(TranslationKey::SetsOpenWorkshop))
                                         .clicked()
                                     {
-                                        open_external(crate::steam::workshop_url(&item.id));
+                                        open_in_workshop_tab(ui.ctx(), &item.id);
                                     }
                                     let (state, color) = match &item.state {
                                         ItemState::Waiting => (
