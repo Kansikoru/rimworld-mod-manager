@@ -43,7 +43,9 @@ fn main() {
     }));
 
     let mut viewport = egui::ViewportBuilder::default()
-        .with_inner_size([1280.0, 840.0])
+        // Wide enough on the first start for the Mods tab to show a mod's details on the
+        // right (it needs 1260 px for itself), and still fits a 1366 px laptop screen.
+        .with_inner_size([1360.0, 860.0])
         // Small enough for a third of a screen or an old 1280 px monitor; every tab
         // rearranges itself to fit.
         .with_min_inner_size([640.0, 480.0])

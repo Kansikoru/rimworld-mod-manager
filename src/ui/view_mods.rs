@@ -299,10 +299,24 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
         }))
         // No scrolling of its own: the card stands to the bottom, only a long description
         // scrolls inside it.
-        .show_inside(ui, |ui| render_mod_details_panel(app, ui, true));
+        .show_inside(ui, |ui| {
+            unclip_edges(ui);
+            render_mod_details_panel(app, ui, true)
+        });
     egui::CentralPanel::default()
         .frame(egui::Frame::none())
-        .show_inside(ui, |ui| render_mods_main(app, ui, true));
+        .show_inside(ui, |ui| {
+            unclip_edges(ui);
+            render_mods_main(app, ui, true)
+        });
+}
+
+/// A panel inside the tab clips at its own edges, which cut the outer half of the 1 px frame
+/// stroke of cards and buttons standing on them (the left edge of the toolbar, the right edge
+/// of the details card). The tab's margin is around it, so a few pixels more are safe.
+fn unclip_edges(ui: &mut Ui) {
+    let clip = ui.clip_rect().expand2(Vec2::new(2.0, 0.0));
+    ui.set_clip_rect(clip);
 }
 
 /// Toolbar, filters and the two lists. `side`: the details are in the strip on the right,
@@ -1397,7 +1411,11 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     let search_hint = app.i18n.get(TranslationKey::ModsSearchActive);
     panel_header(ui, t.get(TranslationKey::ActiveModsTitle), active_count, |ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        search_input_width(ui, &mut app.active_search_query, search_hint, 192.0);
+        // The search gives way to the title in a narrow panel (details strip open): a header
+        // wider than the panel would widen the whole panel and push the rows past its edge.
+        let buttons = 3.0 * (24.0 + 8.0);
+        let search_w = (ui.available_width() - buttons).clamp(90.0, 192.0);
+        search_input_width(ui, &mut app.active_search_query, search_hint, search_w);
         if boxed_icon_button(ui, ICON_ARROW_DOWN)
             .on_hover_text(t.get(TranslationKey::ModsCtxMoveDown))
             .clicked()
