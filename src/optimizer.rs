@@ -1463,6 +1463,37 @@ fn estimate_texture_bytes(
         .sum()
 }
 
+/// PNG/JPG textures of a mod with a side that isn't a power of two, out of all its PNG/JPG
+/// textures (one with a DDS next to it isn't loaded). RimWorld 1.7 loads such a texture a
+/// second time with fewer mipmaps: slower to load and blurrier from afar ("…is being reloaded
+/// with reduced mipmap count…" in a verbose log).
+pub fn non_power_of_two_textures(mod_dir: &Path, game_version: Option<&str>) -> (u32, u32) {
+    count_non_power_of_two(&mod_texture_files(mod_dir, game_version))
+}
+
+fn count_non_power_of_two(files: &[(PathBuf, std::fs::Metadata)]) -> (u32, u32) {
+    let dds: std::collections::HashSet<String> = files
+        .iter()
+        .filter(|(p, _)| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("dds")))
+        .map(|(p, _)| path_key(&p.with_extension("")))
+        .collect();
+    let (mut odd, mut all) = (0, 0);
+    for (path, _) in files {
+        if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("dds"))
+            || dds.contains(&path_key(&path.with_extension("")))
+        {
+            continue;
+        }
+        if let Ok((w, h)) = image::image_dimensions(path) {
+            all += 1;
+            if !w.is_power_of_two() || !h.is_power_of_two() {
+                odd += 1;
+            }
+        }
+    }
+    (odd, all)
+}
+
 /// Estimated VRAM used by textures of one mod in bytes (V2).
 pub fn estimate_mod_vram(
     mod_dir: &Path,
@@ -1521,6 +1552,67 @@ pub fn check_vram_usage(
         },
         updated_cache,
     )
+}
+
+/// A counted mod for the cache: (folder, fingerprint, odd, all).
+pub type TextureSidesEntry = (PathBuf, u64, u32, u32);
+
+/// `non_power_of_two_textures` of several mods (id, folder), in parallel. Every texture header
+/// is read, so a mod is counted again only when its texture files changed (cache: folder ->
+/// (fingerprint, odd, all)). Returns id -> (odd, all) and the new cache entries.
+pub fn non_power_of_two_by_mod(
+    mods: &[(String, PathBuf)],
+    game_version: Option<&str>,
+    cache: &HashMap<PathBuf, (u64, u32, u32)>,
+) -> (HashMap<String, (u32, u32)>, Vec<TextureSidesEntry>) {
+    let engine = crate::game_install::GameEngine::Waylith;
+    let per_mod: Vec<(String, (u32, u32), Option<TextureSidesEntry>)> = mods
+        .par_iter()
+        .map(|(id, dir)| {
+            let files = mod_texture_files(dir, game_version);
+            let fp = texture_fingerprint(&files, engine, true);
+            match cache.get(dir) {
+                Some(&(cached_fp, odd, all)) if cached_fp == fp => (id.clone(), (odd, all), None),
+                _ => {
+                    let (odd, all) = count_non_power_of_two(&files);
+                    (id.clone(), (odd, all), Some((dir.clone(), fp, odd, all)))
+                }
+            }
+        })
+        .collect();
+    let mut counts = HashMap::new();
+    let mut fresh = Vec::new();
+    for (id, count, entry) in per_mod {
+        counts.insert(id, count);
+        fresh.extend(entry);
+    }
+    (counts, fresh)
+}
+
+/// The cache of `non_power_of_two_by_mod`: "fingerprint\todd\tall\tfolder" lines.
+pub fn texture_sides_cache_path() -> PathBuf {
+    crate::game_install::manager_data_dir().join("texture_sides_cache.tsv")
+}
+
+pub fn read_texture_sides_cache(path: &Path) -> HashMap<PathBuf, (u64, u32, u32)> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    text.lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(4, '\t');
+            let fp = parts.next()?.parse().ok()?;
+            let odd = parts.next()?.parse().ok()?;
+            let all = parts.next()?.parse().ok()?;
+            Some((PathBuf::from(parts.next()?), (fp, odd, all)))
+        })
+        .collect()
+}
+
+pub fn write_texture_sides_cache(path: &Path, cache: &HashMap<PathBuf, (u64, u32, u32)>) -> std::io::Result<()> {
+    let mut text = String::new();
+    for (dir, (fp, odd, all)) in cache {
+        text.push_str(&format!("{fp}\t{odd}\t{all}\t{}\n", dir.display()));
+    }
+    std::fs::write(path, text)
 }
 
 /// Asynchronous VRAM check for active mods (V2).

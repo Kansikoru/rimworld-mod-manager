@@ -108,6 +108,7 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
     // The page scrolls as a whole (like Optimizer and Settings): nothing below the window
     // edge is cut off.
     let mut switch_to_optimizer = false;
+    let mut measure_launch = false;
     egui::ScrollArea::vertical()
         .id_salt("analyzer_page_scroll")
         .auto_shrink([false, false])
@@ -189,6 +190,10 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
 
                 render_culprits(ui, t, report);
                 ui.add_space(8.0);
+                if render_load_profile_card(app, ui, report) {
+                    measure_launch = true;
+                }
+                ui.add_space(8.0);
             }
             if app.companion_report.is_some() {
                 // RWMM_TAB=analyzer-companion (screenshots): the card at the top, once the
@@ -200,6 +205,9 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
             }
         });
 
+    if measure_launch {
+        app.launch_with_load_measure();
+    }
     if switch_to_optimizer {
         app.current_tab = crate::app::AppTab::Optimizer;
     }
@@ -556,6 +564,114 @@ pub fn render_load_time_card(app: &mut App, ui: &mut Ui) {
             }
         });
     });
+}
+
+/// Which mods load the longest, from the game's own profiler (verbose logging); without it, a
+/// button that runs the game once with it. Returns true when that button was pressed.
+fn render_load_profile_card(app: &App, ui: &mut Ui, report: &crate::analyzer::LogReport) -> bool {
+    let t = app.i18n;
+    let secs = |ms: f64| crate::load_time::format_duration((ms / 1000.0) as f32);
+    let mut measure = false;
+    card_container(ui, |ui| {
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.add(svg_icon(ICON_ROCKET, egui::Vec2::splat(18.0), THEME.accent_cyan));
+                ui.heading(
+                    egui::RichText::new(t.get(TranslationKey::LoadProfileTitle))
+                        .color(THEME.text_primary)
+                        .size(15.0)
+                        .strong(),
+                )
+                .on_hover_text(t.get(TranslationKey::LoadProfileHint));
+            });
+            let pending = app.measure_next_launch || crate::load_profile::measured_launch_pending();
+            let Some(profile) = &report.load_profile else {
+                report_note(ui, t.get(TranslationKey::LoadProfileNone), THEME.text_secondary);
+                ui.add_space(4.0);
+                if pending {
+                    report_note(ui, t.get(TranslationKey::LoadProfilePending), THEME.accent_amber);
+                } else if primary_button_icon(ui, ICON_PLAY, t.get(TranslationKey::LoadProfileMeasure)).clicked() {
+                    measure = true;
+                }
+                return;
+            };
+            let by_mods: f64 = profile.mods.iter().map(|m| m.total_ms()).sum();
+            report_note(
+                ui,
+                &crate::i18n::fmt(
+                    t.get(TranslationKey::LoadProfileTotal),
+                    &[&secs(profile.total_ms), &secs(by_mods)],
+                ),
+                THEME.text_secondary,
+            );
+            ui.add_space(4.0);
+            report_rows(ui, t, "load_profile_mods", &profile.mods, |ui, m| {
+                let name = if m.unmatched_class {
+                    m.id.clone()
+                } else {
+                    app.find_mod(&m.id)
+                        .map_or_else(|| m.id.clone(), |info| info.name.clone())
+                };
+                let mut parts: Vec<String> = Vec::new();
+                for (ms, key) in [
+                    (m.content_ms, TranslationKey::LoadProfileFiles),
+                    (m.classes_ms, TranslationKey::LoadProfileCode),
+                    (m.defs_ms + m.init_ms, TranslationKey::LoadProfileDefs),
+                ] {
+                    if ms >= 50.0 {
+                        parts.push(crate::i18n::fmt(t.get(key), &[&secs(ms)]));
+                    }
+                }
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("{name} — {}", secs(m.total_ms())))
+                            .color(THEME.text_primary)
+                            .size(12.0),
+                    );
+                    if !parts.is_empty() {
+                        ui.label(
+                            egui::RichText::new(parts.join(" · "))
+                                .color(THEME.text_muted)
+                                .size(11.5),
+                        );
+                    }
+                    if m.unmatched_class {
+                        ui.label(
+                            egui::RichText::new(t.get(TranslationKey::LoadProfileUnknownClass))
+                                .color(THEME.text_muted)
+                                .size(11.5),
+                        );
+                    }
+                    if let Some(&(odd, _)) = app.odd_textures.get(&m.id.to_lowercase()).filter(|c| c.0 > 0) {
+                        ui.label(
+                            egui::RichText::new(crate::i18n::fmt(
+                                t.get(TranslationKey::LoadProfileOddTextures),
+                                &[&odd.to_string()],
+                            ))
+                            .color(THEME.accent_amber)
+                            .size(11.5),
+                        )
+                        .on_hover_text(t.get(TranslationKey::LoadProfileOddTexturesHint));
+                    }
+                });
+            });
+            report_note(
+                ui,
+                &crate::i18n::fmt(t.get(TranslationKey::LoadProfileShared), &[&secs(profile.shared_ms())]),
+                THEME.text_muted,
+            );
+            if app.odd_textures_counting() {
+                report_note(ui, t.get(TranslationKey::LoadProfileCounting), THEME.text_muted);
+            }
+            ui.add_space(4.0);
+            if pending {
+                report_note(ui, t.get(TranslationKey::LoadProfilePending), THEME.accent_amber);
+            } else if secondary_button_icon(ui, ICON_PLAY, t.get(TranslationKey::LoadProfileMeasureAgain)).clicked() {
+                measure = true;
+            }
+        });
+    });
+    measure
 }
 
 /// Rows shown before the rest folds under "Show all".

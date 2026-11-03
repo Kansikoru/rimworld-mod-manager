@@ -1,0 +1,83 @@
+ 72580.453ms (self: 3.928 ms) LoadAllPlayData
+ - 59099.407ms (81%) (self: 810.792 ms) Load all active mods.
+ - - 16050.840ms (27%) (self: 1.583 ms) LoadModContent()
+ - - - 1399.883ms (8.7%) (self: 1399.883 ms) Loading OskarPotocki.VanillaFactionsExpanded.Core content
+ - - - 918.443ms (5.7%) (self: 918.443 ms) Loading tanyavonhart.kindred content
+ - - - 696.874ms (4.3%) (self: 696.874 ms) Loading co.uk.epicguru.meleeanimation content
+ - - - 421.197ms (2.6%) (self: 421.197 ms) Loading erdelf.HumanoidAlienRaces content
+ - - - 64.562ms (0.4%) (self: 64.562 ms) Loading zal.wmbp content
+ - - 14988.453ms (25%) (self: 13.594 ms) CreateModClasses()
+ - - - 3225.405ms (22%) (self: 3225.332 ms) Loading Kindred.KindredMod mod class
+ - - - 1987.238ms (13%) (self: 1987.238 ms) Loading VEF.VEF_Mod mod class
+ - - - 1779.692ms (12%) (self: 1779.692 ms) Loading Rimesis.RimesisMod mod class
+ - - 11811.996ms (20%) (self: 0.524 ms) LoadModXML()
+ - - - 1913.753ms (16%) (self: 0.033 ms) Loading Ludeon.RimWorld
+ - - - 803.110ms (6.8%) (self: 0.005 ms) Loading Ludeon.RimWorld.Odyssey
+ - - - 703.541ms (6%) (self: 0.004 ms) Loading Ludeon.RimWorld.Anomaly
+ - - - 161.689ms (1.4%) (self: 0.003 ms) Loading OskarPotocki.VanillaFactionsExpanded.Core
+ - - - 114.947ms (0.97%) (self: 0.003 ms) Loading tanyavonhart.kindred
+ - - - 28.083ms (0.24%) (self: 0.003 ms) Loading erdelf.HumanoidAlienRaces
+ - - - 0.057ms (0%) (self: 0.001 ms) Loading zal.wmbp
+ - - 8524.948ms (14%) (self: 2.878 ms) ParseAndProcessXML()
+ - - - 4453.519ms (52%) (self: 3862.555 ms) XmlInheritance.Resolve()
+ - - - 4049.038ms (47%) (self: 146.670 ms) Loading defs for 33469 nodes
+ - - - 19.514ms (0.23%) (self: 6.909 ms) Loading asset nodes 33469
+ - - 3398.588ms (5.8%) (self: 3140.696 ms) InitializeMods()
+ - - - 22.904ms (0.67%) (self: 22.904 ms) Initializing [zal.wmbp|World Map Beautification Project (Continued)]
+ - - - 20.295ms (0.6%) (self: 20.295 ms) Initializing [oels.chooseyouroutfit|Choose Your Outfit]
+ - - - 17.987ms (0.53%) (self: 17.987 ms) Initializing [erdelf.HumanoidAlienRaces|Humanoid Alien Races]
+ - - - 0.139ms (0%) (self: 0.139 ms) Initializing [tanyavonhart.kindred|Kindred - Vampires & Werewolves of the Rim | VtM | WtA]
+ - - - 0.043ms (0%) (self: 0.043 ms) Initializing [OskarPotocki.VanillaFactionsExpanded.Core|Vanilla Expanded Framework]
+ - - 1763.372ms (3%) (self: 3.953 ms) ErrorCheckPatches()
+ - - - 1759.419ms (100%) (self: 1759.015 ms) 133x Loading all patches
+ - - 944.440ms (1.6%) (self: 3.368 ms) ApplyPatches()
+ - - - 380.002ms (40%) (self: 380.002 ms) 359x Verse.PatchOperationAdd Worker
+ - - - 133.767ms (14%) (self: 133.767 ms) 20x Verse.PatchOperationAttributeSet Worker
+ - - - 121.717ms (13%) (self: 13.810 ms) 257x Verse.PatchOperationFindMod Worker
+ - - 799.031ms (1.4%) (self: 799.031 ms) CombineIntoUnifiedXML()
+ - - 5.807ms (0.01%) (self: 5.807 ms) TKeySystem.Parse()
+ - - 0.988ms (0%) (self: 0.988 ms) ClearCachedPatches()
+ - - 0.153ms (0%) (self: 0.153 ms) 2x XmlInheritance.Clear()
+ - 3388.475ms (4.7%) (self: 3388.475 ms) Register ShaderDefs.
+ - 3021.958ms (4.2%) (self: 3021.958 ms) Loading language data: Russian (Ð ÑƒÑÑÐºÐ¸Ð¹)
+ - 2112.303ms (2.9%) (self: 92.428 ms) Rebind DefOfs (early).
+ - - 2019.875ms (96%) (self: 2019.875 ms) Loading language data: English
+ - 1919.134ms (2.6%) (self: 1919.134 ms) Inject selected language data into game data (early pass).
+ - 1478.008ms (2%) (self: 0.014 ms) Resolve references.
+ - - 1057.331ms (72%) (self: 11.534 ms) Static resolver calls
+ - - - 857.163ms (81%) (self: 0.100 ms) ResolveAllReferences Verse.ThinkTreeDef
+ - - - 89.651ms (8.5%) (self: 0.046 ms) ResolveAllReferences RimWorld.ThingSetMakerDef
+ - - - 23.864ms (2.3%) (self: 0.006 ms) ResolveAllReferences AlienRace.ThingDef_AlienRace
+ - - 222.901ms (15%) (self: 0.005 ms) ThingDef resolver
+ - - - 222.309ms (100%) (self: 6.021 ms) ResolveAllReferences Verse.ThingDef
+ - - - 0.588ms (0.26%) (self: 0.588 ms) 2x SetIndices
+ - - 193.897ms (13%) (self: 193.897 ms) RecipeDef resolver
+ - - 3.865ms (0.26%) (self: 3.865 ms) ThingCategoryDef resolver
+ - 403.089ms (0.56%) (self: 403.070 ms) Other def binding, resetting and global operations (pre-resolve).
+ - - 0.019ms (0%) (self: 0.019 ms) 2x ResolveAllWantedCrossReferences
+ - - 0.001ms (0%) (self: 0.001 ms) 2x Clear
+ - 334.897ms (0.46%) (self: 333.615 ms) Generate implied Defs (pre-resolve).
+ - - 0.797ms (0.24%) (self: 0.797 ms) ResolveAllWantedCrossReferences
+ - - 0.263ms (0.08%) (self: 0.263 ms) 414x RegisterListWantsCrossRef
+ - - 0.221ms (0.07%) (self: 0.221 ms) 443x RegisterObjectWantsCrossRef (object,string,string)
+ - 268.319ms (0.37%) (self: 268.319 ms) Error check all defs.
+ - 125.560ms (0.17%) (self: 125.556 ms) Load language metadata.
+ - - 0.004ms (0%) (self: 0.004 ms) 9x TryDoPostLoad
+ - 116.095ms (0.16%) (self: 116.095 ms) Copy all Defs from mods to global databases.
+ - 102.026ms (0.14%) (self: 1.272 ms) Resolve cross-references between non-implied Defs.
+ - - 100.755ms (99%) (self: 100.755 ms) ResolveAllWantedCrossReferences
+ - 95.998ms (0.13%) (self: 95.998 ms) Other def binding, resetting and global operations (post-resolve).
+ - 55.147ms (0.08%) (self: 55.147 ms) Short hash giving.
+ - 21.366ms (0.03%) (self: 21.338 ms) Load keyboard preferences.
+ - - 0.016ms (0.08%) (self: 0.016 ms) ResolveAllWantedCrossReferences
+ - - 0.012ms (0.05%) (self: 0.012 ms) 110x TryDoPostLoad
+ - - 0.000ms (0%) (self: 0.000 ms) Clear
+ - 11.904ms (0.02%) (self: 11.904 ms) Legacy backstory translations.
+ - 8.627ms (0.01%) (self: 8.627 ms) TKeySystem.BuildMappings()
+ - 8.061ms (0.01%) (self: 8.061 ms) Generate implied Defs (post-resolve).
+ - 4.179ms (0.01%) (self: 4.179 ms) Rebind DefOfs (final).
+ - 1.570ms (0%) (self: 1.570 ms) Global operations (early pass).
+ - 0.229ms (0%) (self: 0.004 ms) Resolve cross-references between Defs made by the implied defs.
+ - - 0.187ms (82%) (self: 0.187 ms) ResolveAllWantedCrossReferences
+ - - 0.037ms (16%) (self: 0.037 ms) Clear
+ - 0.173ms (0%) (self: 0.173 ms) GraphicDatabase.Clear()

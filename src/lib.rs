@@ -12,6 +12,7 @@ pub mod game_install;
 pub mod i18n;
 pub mod icon_cache;
 pub mod last_good;
+pub mod load_profile;
 pub mod load_time;
 pub mod matcher;
 pub mod mod_updates;

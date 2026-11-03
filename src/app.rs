@@ -186,6 +186,9 @@ pub struct ModDrag {
     pub label: String,
 }
 
+/// Counts per mod and the new cache entries (`optimizer::non_power_of_two_by_mod`).
+type OddTexturesResult = (HashMap<String, (u32, u32)>, Vec<crate::optimizer::TextureSidesEntry>);
+
 /// Mods being selected by holding the button and sweeping over the rows.
 #[derive(Debug, Clone)]
 pub struct ModSweep {
@@ -306,6 +309,16 @@ pub struct App {
     pub log_report: Option<LogReport>,
     /// What the companion mod wrote after the last loading with it (textures, conflicts).
     pub companion_report: Option<crate::companion_report::CompanionReport>,
+    /// The next launch from the manager runs with the game's verbose logging, so the log
+    /// holds how long each mod took to load (`load_profile`).
+    pub measure_next_launch: bool,
+    /// Lowercase package ID -> (textures with a side not a power of two, all PNG/JPG) of the
+    /// mods in the log's load profile (1.7 loads those twice).
+    pub odd_textures: HashMap<String, (u32, u32)>,
+    odd_textures_rx: Option<Receiver<OddTexturesResult>>,
+    /// The log (path, size) `odd_textures` were counted for.
+    odd_textures_for: Option<(PathBuf, u64)>,
+    texture_sides_cache: Option<HashMap<PathBuf, (u64, u32, u32)>>,
     pub custom_log_path: Option<PathBuf>,
     /// F9: Snapshot of the last known working run and diff with current configuration.
     pub last_good: Option<crate::last_good::LastGoodSnapshot>,
@@ -701,6 +714,11 @@ impl App {
             steam_stop_flag: Arc::new(AtomicBool::new(false)),
             load_time_history: crate::load_time::LoadTimeHistory::load(),
             companion_report: crate::companion_report::load(),
+            measure_next_launch: false,
+            odd_textures: HashMap::new(),
+            odd_textures_rx: None,
+            odd_textures_for: None,
+            texture_sides_cache: None,
             game_launch_time: None,
             game_launch_active_mods: Vec::new(),
             launch_watch_rx: None,
@@ -813,6 +831,10 @@ impl App {
         app.scroll_to_companion_report = start_view == "analyzer-companion";
         // The Workshop ID index downloaded earlier (a few MB): read in the background.
         app.workshop_index_rx = Some(app.spawn_task(|| (false, crate::workshop_db::load().ok_or_else(String::new))));
+        // A measured launch whose game closed after the manager did: verbose logging off now.
+        if crate::load_profile::measured_launch_pending() && crate::game_install::game_pid().is_none() {
+            crate::load_profile::finish_measured_launch();
+        }
         app
     }
 
@@ -1053,6 +1075,7 @@ impl App {
         self.poll_name_search();
         self.poll_steamcmd();
         self.poll_workshop();
+        self.poll_odd_textures();
         if let Some(ids) = self
             .repaint_ctx
             .as_ref()
@@ -1950,6 +1973,66 @@ impl App {
         // A page still loading would be replaced by the search right after.
         self.ws_rx = None;
         self.search_workshop_tab();
+    }
+
+    /// For a log with a load profile from 1.7: counts each profiled mod's textures with a side
+    /// that isn't a power of two, in the background (cached per mod, so only the first time
+    /// reads every texture header).
+    fn poll_odd_textures(&mut self) {
+        if let Some(rx) = &self.odd_textures_rx {
+            if let Ok((counts, fresh)) = rx.try_recv() {
+                self.odd_textures_rx = None;
+                let cache = self.texture_sides_cache.get_or_insert_with(HashMap::new);
+                if !fresh.is_empty() {
+                    for (dir, fp, odd, all) in fresh {
+                        cache.insert(dir, (fp, odd, all));
+                    }
+                    let _ = crate::optimizer::write_texture_sides_cache(
+                        &crate::optimizer::texture_sides_cache_path(),
+                        cache,
+                    );
+                }
+                self.odd_textures = counts.into_iter().map(|(id, c)| (id.to_lowercase(), c)).collect();
+            }
+            return;
+        }
+        let Some(report) = self.log_report.as_ref().filter(|r| r.is_waylith) else {
+            return;
+        };
+        let Some(profile) = &report.load_profile else {
+            return;
+        };
+        let key = (report.log_path.clone(), report.file_size_bytes);
+        if self.odd_textures_for.as_ref() == Some(&key) {
+            return;
+        }
+        let mods: Vec<(String, PathBuf)> = profile
+            .mods
+            .iter()
+            .filter_map(|p| self.find_mod(&p.id))
+            .filter(|m| !self.is_official_mod(m))
+            .map(|m| (m.package_id.clone(), m.dir_path.clone()))
+            .collect();
+        self.odd_textures_for = Some(key);
+        let cache = self
+            .texture_sides_cache
+            .get_or_insert_with(|| {
+                crate::optimizer::read_texture_sides_cache(&crate::optimizer::texture_sides_cache_path())
+            })
+            .clone();
+        let version = self.steam_paths.game_version.clone();
+        self.odd_textures_rx =
+            Some(self.spawn_task(move || crate::optimizer::non_power_of_two_by_mod(&mods, version.as_deref(), &cache)));
+    }
+
+    pub fn odd_textures_counting(&self) -> bool {
+        self.odd_textures_rx.is_some()
+    }
+
+    /// "Measure and play": the next launch runs with verbose logging (see `measure_next_launch`).
+    pub fn launch_with_load_measure(&mut self) {
+        self.measure_next_launch = true;
+        self.launch_game();
     }
 
     /// Opens mods in the Workshop tab instead of the browser: the grid shows just them, the
@@ -3134,8 +3217,10 @@ impl App {
                     None => break,
                 }
             }
-            // Give the game a moment to flush Player.log on exit.
+            // Give the game a moment to flush Player.log (and write Prefs.xml) on exit.
             std::thread::sleep(std::time::Duration::from_millis(600));
+            // A measured launch: verbose logging off again, now that the game won't overwrite it.
+            crate::load_profile::finish_measured_launch();
             let fresh = std::fs::metadata(&path)
                 .and_then(|m| m.modified())
                 .is_ok_and(|t| t >= launched_at);
@@ -4632,6 +4717,13 @@ impl App {
 
     fn launch_game_now(&mut self) {
         self.backup_latest_save_if_enabled();
+        if std::mem::take(&mut self.measure_next_launch) {
+            // The game's Prefs.xml lives next to the ModsConfig.xml it reads.
+            let config_dir = self.mods_config_path.as_deref().and_then(Path::parent);
+            if let Some(Err(e)) = config_dir.map(crate::load_profile::start_measured_launch) {
+                self.status_message = fmt(self.i18n.get(TranslationKey::LoadProfileStartFailed), &[&e]);
+            }
+        }
         let args = self.launch_args();
         match launch_rimworld(&self.steam_paths, &args) {
             Ok(_) => {

@@ -110,6 +110,8 @@ pub struct LogReport {
     pub crash_excerpt: String,
     /// The last different errors in the log, each with a few lines after it.
     pub recent_errors: Vec<String>,
+    /// Loading time of each mod, when the game ran with verbose logging (`load_profile`).
+    pub load_profile: Option<crate::load_profile::LoadProfile>,
 }
 
 /// Lines in a log excerpt at most, and characters per line.
@@ -497,6 +499,16 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
     report.raw_content = content.clone();
     // Exact, when the companion mod was on; otherwise the launch watcher's measurement.
     report.load_time_secs = crate::companion::load_time_from_log(&content);
+    report.load_profile = crate::load_profile::parse(&content).map(|mut profile| {
+        let version = crate::load_profile::game_version_in_log(&content);
+        let in_profile: Vec<ModInfo> = mods
+            .iter()
+            .filter(|m| profile.mods.iter().any(|p| p.id.eq_ignore_ascii_case(&m.package_id)))
+            .cloned()
+            .collect();
+        profile.assign_classes(&crate::load_profile::mod_assemblies(&in_profile, version.as_deref()));
+        profile
+    });
     let lines: Vec<&str> = content.lines().collect();
     report.total_lines = lines.len();
 
