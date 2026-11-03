@@ -186,6 +186,14 @@ pub struct ModDrag {
     pub label: String,
 }
 
+/// Mods being selected by holding the button and sweeping over the rows.
+#[derive(Debug, Clone)]
+pub struct ModSweep {
+    pub from_active: bool,
+    /// The row the sweep started on; the selection runs from it to the row under the cursor.
+    pub anchor: String,
+}
+
 /// Where the dragged mods land if the mouse button is released now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DropTarget {
@@ -491,6 +499,7 @@ pub struct App {
     /// Drag and drop of mods (F1): what is dragged and where it lands this frame.
     pub mod_drag: Option<ModDrag>,
     pub drop_target: Option<DropTarget>,
+    pub mod_sweep: Option<ModSweep>,
     /// Scroll position of the active list, and a new one requested by auto-scroll while dragging.
     pub active_scroll_offset: f32,
     pub active_scroll_to: Option<f32>,
@@ -783,6 +792,7 @@ impl App {
             active_row_height: 34.0,
             inactive_row_height: 34.0,
             mod_drag: None,
+            mod_sweep: None,
             drop_target: None,
             active_scroll_offset: 0.0,
             active_scroll_to: None,

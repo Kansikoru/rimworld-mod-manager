@@ -18,8 +18,14 @@ pub fn render_mods_view(app: &mut App, ui: &mut Ui) {
     let active_before = app.active_mods.clone();
     // The lists set the drop target again every frame while something is dragged.
     app.drop_target = None;
+    let view = ui.max_rect();
+    ui.ctx().data_mut(|d| d.remove::<egui::Rect>(details_rect_id()));
     render_mods_view_inner(app, ui);
+    clear_on_empty_click(app, ui, view);
     handle_mod_drag(app, ui.ctx());
+    if app.mod_sweep.is_some() && ui.input(|i| !i.pointer.primary_down()) {
+        app.mod_sweep = None;
+    }
     if app.active_mods != active_before {
         app.validate_deps();
     }
@@ -92,14 +98,126 @@ fn drag_label(first_name: &str, count: usize) -> String {
     }
 }
 
-/// Invisible drag handle over a whole row. Registered before the row content, so the name
-/// (click, double click, menu) and the buttons stay on top and keep working.
+/// Invisible handle over a whole row: a click anywhere selects the mod (like a click on its
+/// name), a drag moves it or sweeps a selection. Registered before the row content, so the
+/// name and the buttons stay on top and keep working.
 fn row_drag_handle(ui: &mut Ui, id: egui::Id, row_height: f32) -> egui::Response {
     let rect = egui::Rect::from_min_size(
         egui::pos2(ui.max_rect().left(), ui.cursor().top()),
         Vec2::new(ui.available_width(), row_height),
     );
-    ui.interact(rect, id, egui::Sense::drag())
+    ui.interact(rect, id, egui::Sense::click_and_drag())
+}
+
+/// Whether a drag that starts on a row moves mods: from the name or from a selected row it
+/// does, from the rest of an unselected row it selects the rows it passes instead.
+fn drag_moves(ui: &Ui, name_rect: egui::Rect, in_selection: bool) -> bool {
+    in_selection
+        || ui
+            .input(|i| i.pointer.press_origin())
+            .is_some_and(|p| name_rect.contains(p))
+}
+
+/// Row under the cursor while sweeping: the drawn row at its height, or the first / last
+/// drawn row when the cursor is above / below them. `rows`: (position in the visible list, rect).
+fn sweep_row_at(rows: &[(usize, egui::Rect)], y: f32) -> Option<usize> {
+    let (first, first_rect) = rows.first()?;
+    if y < first_rect.top() {
+        return Some(*first);
+    }
+    rows.iter()
+        .find(|(_, r)| y < r.bottom())
+        .or(rows.last())
+        .map(|(pos, _)| *pos)
+}
+
+/// Sweep selection while the button is held: the visible rows from the one the sweep started
+/// on to the one under the cursor are selected, and the list scrolls near its edges.
+fn update_sweep(
+    ui: &Ui,
+    sweep: &mut Option<crate::app::ModSweep>,
+    selected: &mut HashSet<String>,
+    from_active: bool,
+    visible_ids: &[String],
+    rows: &[(usize, egui::Rect)],
+) {
+    let Some(s) = sweep.as_ref().filter(|s| s.from_active == from_active) else {
+        return;
+    };
+    let Some(anchor) = visible_ids.iter().position(|id| id.eq_ignore_ascii_case(&s.anchor)) else {
+        // The row is gone (filtered out or moved to the other list).
+        *sweep = None;
+        return;
+    };
+    let Some(pos) = ui.ctx().pointer_interact_pos() else {
+        return;
+    };
+    if let Some(cur) = sweep_row_at(rows, pos.y) {
+        let range = if anchor <= cur { anchor..=cur } else { cur..=anchor };
+        *selected = visible_ids[range].iter().cloned().collect();
+    }
+    const EDGE: f32 = 36.0;
+    let view = ui.clip_rect();
+    let speed = if pos.y < view.top() + EDGE {
+        -(view.top() + EDGE - pos.y)
+    } else if pos.y > view.bottom() - EDGE {
+        pos.y - (view.bottom() - EDGE)
+    } else {
+        0.0
+    };
+    if speed != 0.0 {
+        ui.scroll_with_delta(Vec2::new(0.0, -(speed * 0.4).clamp(-20.0, 20.0)));
+    }
+    ui.ctx().request_repaint();
+}
+
+/// Starts a sweep on a row: the selection becomes this mod, as after a plain click.
+fn start_sweep(app: &mut App, id: String, from_active: bool) {
+    app.selected_mod_ids.clear();
+    app.selected_mod_ids.insert(id.clone());
+    app.selected_mod_id = Some(id.clone());
+    app.last_clicked_mod_id = Some(id.clone());
+    app.is_details_panel_visible = true;
+    app.mod_sweep = Some(crate::app::ModSweep {
+        from_active,
+        anchor: id,
+    });
+}
+
+/// Where the details card was drawn this frame (kept in egui's memory, not in the app).
+fn details_rect_id() -> egui::Id {
+    egui::Id::new("mod_details_card_rect")
+}
+
+/// A plain click on an empty spot of the tab (no row, button, field or text under it) clears
+/// the selection. The details card is left out: its empty spots are part of reading it.
+fn clear_on_empty_click(app: &mut App, ui: &Ui, view: egui::Rect) {
+    if app.mod_drag.is_some()
+        || app.mod_sweep.is_some()
+        || (app.selected_mod_ids.is_empty() && app.selected_mod_id.is_none())
+    {
+        return;
+    }
+    let ctx = ui.ctx();
+    let (clicked, pos, plain) = ctx.input(|i| {
+        (
+            i.pointer.primary_clicked(),
+            i.pointer.interact_pos(),
+            !i.modifiers.ctrl && !i.modifiers.shift && !i.modifiers.mac_cmd,
+        )
+    });
+    let Some(pos) = pos.filter(|_| clicked && plain) else {
+        return;
+    };
+    let on_tab = view.contains(pos) && ctx.layer_id_at(pos) == Some(ui.layer_id());
+    let on_details = ctx
+        .data(|d| d.get_temp::<egui::Rect>(details_rect_id()))
+        .is_some_and(|r| r.contains(pos));
+    if on_tab && !on_details && ctx.interaction_snapshot(|s| s.clicked.is_none()) {
+        app.selected_mod_ids.clear();
+        app.selected_mod_id = None;
+        app.last_clicked_mod_id = None;
+    }
 }
 
 /// Dragged rows are drawn faded, so it is clear what is being moved.
@@ -596,15 +714,20 @@ fn panel_footer(
         });
 }
 
-/// Mod row frame: 34 px card, the selected one lighter with a lavender bar at the left.
-/// A list row: lighter when selected, green when related to the selected mod.
-fn mod_row_frame(selected: bool, related: bool) -> egui::Frame {
+/// A list row: lighter when selected, green when related to the selected mod, a little
+/// lighter under the cursor (the whole row is clickable).
+fn mod_row_frame(selected: bool, related: bool, hovered: bool) -> egui::Frame {
     let (fill, stroke) = if selected {
         (THEME.bg_surface_hover, Stroke::NONE)
     } else if related {
         (
             super::theme::mix(THEME.bg_card, THEME.accent_emerald, 0.14),
             Stroke::new(1.0_f32, super::theme::mix(THEME.bg_card, THEME.accent_emerald, 0.6)),
+        )
+    } else if hovered {
+        (
+            super::theme::mix(THEME.bg_card, THEME.bg_surface_hover, 0.55),
+            Stroke::NONE,
         )
     } else {
         (THEME.bg_card, Stroke::NONE)
@@ -1321,6 +1444,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     // Drag and drop (F1): rows drawn this frame (index in active_mods, rect) and a drag that starts now.
     let mut drawn_rows: Vec<(usize, egui::Rect)> = Vec::new();
     let mut start_drag: Option<ModDrag> = None;
+    let mut sweep_from: Option<String> = None;
     let mut scroll = egui::ScrollArea::vertical()
         .id_salt("active_mods_scroll_right")
         .auto_shrink([false, false])
@@ -1338,14 +1462,19 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
             let output = scroll.show_rows(ui, row_height, visible_rows.len(), |ui, row_range| {
                 let rows_top = ui.cursor().top();
                 let rows_count = row_range.len();
+                let first_pos = row_range.start;
                 shown_range = row_range.clone();
-                for &idx in &visible_rows[row_range] {
+                let mut sweep_rows: Vec<(usize, egui::Rect)> = Vec::new();
+                for (offset, &idx) in visible_rows[row_range].iter().enumerate() {
                     let pkg_id = &app.active_mods[idx];
                     let drag_resp = row_drag_handle(
                         ui,
                         egui::Id::new(("active_row_drag", pkg_id.to_lowercase())),
                         row_height,
                     );
+                    let hovered =
+                        app.mod_drag.is_none() && app.mod_sweep.is_none() && ui.rect_contains_pointer(drag_resp.rect);
+                    let mut name_rect = egui::Rect::NOTHING;
                     let is_dragged = app
                         .mod_drag
                         .as_ref()
@@ -1369,7 +1498,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                     let incompatible = matches!(dep_problem, Some(DependencyProblem::Incompatible { .. }));
 
                     let relation = related.get(&mod_key);
-                    let row = mod_row_frame(is_selected, relation.is_some()).show(ui, |ui| {
+                    let row = mod_row_frame(is_selected, relation.is_some(), hovered).show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 8.0;
                             // Buttons get a fixed slot at the right edge; long names and badges are
@@ -1416,8 +1545,11 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                         THEME.text_primary
                                     })
                                     .size(13.0);
-                                let label_resp =
+                                let name_resp =
                                     mod_name_label(ui, if is_selected { name_text.strong() } else { name_text });
+                                name_rect = name_resp.rect;
+                                // The name and the rest of the row answer clicks, double clicks and the menu alike.
+                                let label_resp = name_resp.union(drag_resp.clone());
 
                                 // Multi-selection: Ctrl+click, Shift+click, normal click
                                 if label_resp.clicked() {
@@ -1692,10 +1824,13 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                         fade_row(ui, row.response.rect);
                     }
                     drawn_rows.push((idx, row.response.rect));
+                    sweep_rows.push((first_pos + offset, row.response.rect));
 
-                    if drag_resp.drag_started() {
+                    let in_selection = app.selected_mod_ids.iter().any(|s| s.eq_ignore_ascii_case(pkg_id));
+                    if drag_resp.drag_started() && !drag_moves(ui, name_rect, in_selection) {
+                        sweep_from = Some(pkg_id.clone());
+                    } else if drag_resp.drag_started() {
                         // A selected row drags the whole selection (in load order), any other row only itself.
-                        let in_selection = app.selected_mod_ids.iter().any(|s| s.eq_ignore_ascii_case(pkg_id));
                         let ids: Vec<String> = if in_selection && app.selected_mod_ids.len() > 1 {
                             app.active_mods
                                 .iter()
@@ -1713,6 +1848,14 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                     }
                 }
                 measured_row_height = measure_row_height(ui, rows_top, rows_count);
+                update_sweep(
+                    ui,
+                    &mut app.mod_sweep,
+                    &mut app.selected_mod_ids,
+                    true,
+                    &visible_active_ids,
+                    &sweep_rows,
+                );
 
                 if app.mod_drag.is_some() {
                     let view = ui.clip_rect();
@@ -1757,6 +1900,9 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     }
     if start_drag.is_some() {
         app.mod_drag = start_drag;
+    }
+    if let Some(id) = sweep_from {
+        start_sweep(app, id, true);
     }
 
     // Footer: visible range and a reminder of how the order works.
@@ -1906,6 +2052,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     let mut measured_row_height: Option<f32> = None;
     let list_height = (ui.available_height() - 48.0).max(60.0);
     let mut start_drag: Option<ModDrag> = None;
+    let mut sweep_from: Option<String> = None;
 
     // Only rows inside the visible area are built (M1).
     egui::Frame::none()
@@ -1920,12 +2067,17 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                 .show_rows(ui, row_height, visible_mods.len(), |ui, row_range| {
                     let rows_top = ui.cursor().top();
                     let rows_count = row_range.len();
-                    for m in visible_mods.iter().skip(row_range.start).take(rows_count) {
+                    let mut sweep_rows: Vec<(usize, egui::Rect)> = Vec::new();
+                    for (pos, m) in visible_mods.iter().enumerate().skip(row_range.start).take(rows_count) {
                         let drag_resp = row_drag_handle(
                             ui,
                             egui::Id::new(("inactive_row_drag", m.package_id.to_lowercase())),
                             row_height,
                         );
+                        let hovered = app.mod_drag.is_none()
+                            && app.mod_sweep.is_none()
+                            && ui.rect_contains_pointer(drag_resp.rect);
+                        let mut name_rect = egui::Rect::NOTHING;
                         let is_dragged = app.mod_drag.as_ref().is_some_and(|d| {
                             !d.from_active && d.ids.iter().any(|id| id.eq_ignore_ascii_case(&m.package_id))
                         });
@@ -1933,7 +2085,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                             || app.selected_mod_id.as_deref() == Some(&m.package_id);
 
                         let relation = related.get(&m.package_id.to_lowercase());
-                        let row = mod_row_frame(is_selected, relation.is_some()).show(ui, |ui| {
+                        let row = mod_row_frame(is_selected, relation.is_some(), hovered).show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 8.0;
                                 // Fixed slot for the "+" button at the right edge (see the active list).
@@ -1954,8 +2106,10 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                                     }
 
                                     let name_text = egui::RichText::new(&m.name).color(THEME.text_primary).size(13.0);
-                                    let label_resp =
+                                    let name_resp =
                                         mod_name_label(ui, if is_selected { name_text.strong() } else { name_text });
+                                    name_rect = name_resp.rect;
+                                    let label_resp = name_resp.union(drag_resp.clone());
 
                                     // Multi-selection: Ctrl+click, Shift+click, normal click
                                     if label_resp.clicked() {
@@ -2105,17 +2259,20 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                         if is_dragged {
                             fade_row(ui, row.response.rect);
                         }
-                        if drag_resp.drag_started() {
-                            let ids: Vec<String> =
-                                if app.selected_mod_ids.contains(&m.package_id) && app.selected_mod_ids.len() > 1 {
-                                    visible_inactive_ids
-                                        .iter()
-                                        .filter(|id| app.selected_mod_ids.contains(*id))
-                                        .cloned()
-                                        .collect()
-                                } else {
-                                    vec![m.package_id.clone()]
-                                };
+                        sweep_rows.push((pos, row.response.rect));
+                        let in_selection = app.selected_mod_ids.contains(&m.package_id);
+                        if drag_resp.drag_started() && !drag_moves(ui, name_rect, in_selection) {
+                            sweep_from = Some(m.package_id.clone());
+                        } else if drag_resp.drag_started() {
+                            let ids: Vec<String> = if in_selection && app.selected_mod_ids.len() > 1 {
+                                visible_inactive_ids
+                                    .iter()
+                                    .filter(|id| app.selected_mod_ids.contains(*id))
+                                    .cloned()
+                                    .collect()
+                            } else {
+                                vec![m.package_id.clone()]
+                            };
                             start_drag = Some(ModDrag {
                                 label: drag_label(&m.name, ids.len()),
                                 ids,
@@ -2124,6 +2281,14 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                         }
                     }
                     measured_row_height = measure_row_height(ui, rows_top, rows_count);
+                    update_sweep(
+                        ui,
+                        &mut app.mod_sweep,
+                        &mut app.selected_mod_ids,
+                        false,
+                        &visible_inactive_ids,
+                        &sweep_rows,
+                    );
                 });
         });
     if let Some(h) = measured_row_height {
@@ -2131,6 +2296,9 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     }
     if start_drag.is_some() {
         app.mod_drag = start_drag;
+    }
+    if let Some(id) = sweep_from {
+        start_sweep(app, id, false);
     }
 
     panel_footer(
@@ -2211,7 +2379,7 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui, side: bool) {
         shadow: egui::epaint::Shadow::NONE,
     };
 
-    frame.show(ui, |ui| {
+    let card = frame.show(ui, |ui| {
         ui.set_width(ui.available_width());
         if side {
             // The strip on the right: the card reaches the bottom of the tab.
@@ -2499,6 +2667,8 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui, side: bool) {
             );
         }
     });
+    let rect = card.response.rect;
+    ui.ctx().data_mut(|d| d.insert_temp(details_rect_id(), rect));
 }
 
 #[allow(dead_code)]
