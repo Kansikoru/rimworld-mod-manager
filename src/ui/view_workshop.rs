@@ -329,6 +329,18 @@ fn render_grid(
 }
 
 /// A preview drawn into `rect` without stretching (letterboxed on the dark color).
+/// A button nested in its own Ui (`add_enabled_ui`) is never moved to the next line of a
+/// wrapped row: the row runs past the card, and egui then widens the whole card, so the
+/// description below gets cut by the window edge. This starts a new line first when a button
+/// with this text (plus icon and padding) won't fit.
+fn wrap_before_button(ui: &mut Ui, text: &str, extra: f32) {
+    let font = egui::FontId::proportional(14.0);
+    let width = ui.fonts(|f| f.layout_no_wrap(text.to_string(), font, Color32::WHITE).size().x) + extra;
+    if ui.available_size_before_wrap().x < width {
+        ui.end_row();
+    }
+}
+
 fn paint_preview(ui: &Ui, rect: egui::Rect, tex: Option<&egui::TextureHandle>, rounding: Rounding) {
     ui.painter().rect_filled(rect, rounding, THEME.bg_dark);
     let Some(tex) = tex else { return };
@@ -478,6 +490,7 @@ fn render_details(
                     tag(ui, t.get(TranslationKey::WsRequested), THEME.accent_cyan);
                 }
                 Have::No => {
+                    wrap_before_button(ui, t.get(TranslationKey::WsDownload), 48.0);
                     if ui
                         .add_enabled_ui(!app.steam_busy(), |ui| {
                             primary_button_icon(ui, ICON_STEAM, t.get(TranslationKey::WsDownload))
@@ -500,6 +513,7 @@ fn render_details(
                     t.get(TranslationKey::WsDownloadWithDeps),
                     &[&missing_deps.len().to_string()],
                 );
+                wrap_before_button(ui, &label, 48.0);
                 if ui
                     .add_enabled_ui(!app.steam_busy(), |ui| secondary_button_icon(ui, ICON_STEAM, &label))
                     .inner
@@ -564,6 +578,7 @@ fn render_details(
                 } else {
                     TranslationKey::WorkshopDbBtn
                 };
+                wrap_before_button(ui, t.get(btn_key), 32.0);
                 if ui
                     .add_enabled_ui(!app.workshop_index_busy(), |ui| {
                         small_button(ui, t.get(btn_key), ButtonStyle::Secondary)
