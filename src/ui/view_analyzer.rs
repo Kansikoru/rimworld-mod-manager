@@ -604,7 +604,9 @@ fn render_companion_report_card(app: &App, ui: &mut Ui) {
             ui.add_space(6.0);
             render_report_textures(ui, t, report);
             ui.add_space(8.0);
-            render_report_defs(ui, t, report);
+            render_report_defs(ui, t, report, |id| {
+                crate::app::lookup_mod(&app.mod_index, &app.all_mods, id)
+            });
             ui.add_space(8.0);
             render_report_patches(ui, t, report);
         });
@@ -707,14 +709,38 @@ fn render_report_textures(ui: &mut Ui, t: crate::i18n::I18n, report: &crate::com
     });
 }
 
-fn render_report_defs(ui: &mut Ui, t: crate::i18n::I18n, report: &crate::companion_report::CompanionReport) {
+/// Replaced defs. Pairs where one mod names the other in About.xml (an add-on, a patch) are
+/// folded away as intended; the rest come with a question, not a verdict, and links to both
+/// mods' Workshop pages, where their authors say how they are meant to be used.
+fn render_report_defs<'a>(
+    ui: &mut Ui,
+    t: crate::i18n::I18n,
+    report: &crate::companion_report::CompanionReport,
+    find_mod: impl Fn(&str) -> Option<&'a crate::models::ModInfo>,
+) {
+    use crate::companion_report::{pair_is_declared, OverridePair};
     if report.def_overrides.is_none() {
         return;
     }
     report_subheading(ui, t.get(TranslationKey::CompanionDefsTitle))
         .on_hover_text(t.get(TranslationKey::CompanionDefsHint));
     let (between, over_game) = report.override_pairs();
-    let pair_row = |ui: &mut Ui, p: &crate::companion_report::OverridePair| {
+    let (intended, unexplained): (Vec<OverridePair>, Vec<OverridePair>) = between.into_iter().partition(|p| {
+        let (w, l) = report.pair_ids(p);
+        pair_is_declared(find_mod(w), w, find_mod(l), l)
+    });
+    let workshop_links = |ui: &mut Ui, p: &OverridePair| {
+        let (w, l) = report.pair_ids(p);
+        for (index, id) in [(p.winner, w), (p.loser, l)] {
+            if let Some(steam_id) = find_mod(id).and_then(|m| m.steam_item_id.as_deref()) {
+                let text = crate::i18n::fmt(t.get(TranslationKey::CompanionDefsPage), &[report.mod_name(index)]);
+                if ui.link(egui::RichText::new(text).size(11.5)).clicked() {
+                    open_in_workshop_tab(ui.ctx(), steam_id);
+                }
+            }
+        }
+    };
+    let pair_row = |ui: &mut Ui, p: &OverridePair, links: bool| {
         let examples: Vec<&str> = p.defs.iter().take(3).map(String::as_str).collect();
         let more = if p.defs.len() > 3 { ", …" } else { "" };
         let all: Vec<&str> = p.defs.iter().take(40).map(String::as_str).collect();
@@ -737,20 +763,43 @@ fn render_report_defs(ui: &mut Ui, t: crate::i18n::I18n, report: &crate::compani
                     .size(11.5),
             )
             .on_hover_text(all.join("\n"));
+            if links {
+                workshop_links(ui, p);
+            }
         });
     };
-    if between.is_empty() {
+    if unexplained.is_empty() && intended.is_empty() {
         report_note(ui, t.get(TranslationKey::CompanionDefsNone), THEME.accent_emerald);
-    } else {
+    }
+    if !unexplained.is_empty() {
         report_note(
             ui,
             &crate::i18n::fmt(
                 t.get(TranslationKey::CompanionDefsBetween),
-                &[&between.len().to_string()],
+                &[&unexplained.len().to_string()],
             ),
             THEME.accent_amber,
         );
-        report_rows(ui, t, "companion_defs_between", &between, pair_row);
+        report_note(ui, t.get(TranslationKey::CompanionDefsCheck), THEME.text_muted);
+        report_rows(ui, t, "companion_defs_between", &unexplained, |ui, p| {
+            pair_row(ui, p, true)
+        });
+    }
+    if !intended.is_empty() {
+        egui::CollapsingHeader::new(
+            egui::RichText::new(crate::i18n::fmt(
+                t.get(TranslationKey::CompanionDefsIntended),
+                &[&intended.len().to_string()],
+            ))
+            .color(THEME.text_secondary)
+            .size(12.0),
+        )
+        .id_salt("companion_defs_intended")
+        .show(ui, |ui| {
+            report_rows(ui, t, "companion_defs_intended_all", &intended, |ui, p| {
+                pair_row(ui, p, false)
+            })
+        });
     }
     if !over_game.is_empty() {
         egui::CollapsingHeader::new(
@@ -763,7 +812,9 @@ fn render_report_defs(ui: &mut Ui, t: crate::i18n::I18n, report: &crate::compani
         )
         .id_salt("companion_defs_game")
         .show(ui, |ui| {
-            report_rows(ui, t, "companion_defs_game_all", &over_game, pair_row)
+            report_rows(ui, t, "companion_defs_game_all", &over_game, |ui, p| {
+                pair_row(ui, p, false)
+            })
         });
     }
 }

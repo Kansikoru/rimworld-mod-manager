@@ -219,6 +219,12 @@ impl CompanionReport {
         (between, over_game)
     }
 
+    /// Package IDs of a pair's mods: (winner, loser).
+    pub fn pair_ids(&self, pair: &OverridePair) -> (&str, &str) {
+        let id = |i: usize| self.mods.get(i).map_or("", |m| m.id.as_str());
+        (id(pair.winner), id(pair.loser))
+    }
+
     /// Methods patched by several mods: the riskiest first, then by how many mods.
     pub fn shared_methods(&self) -> Vec<SharedMethodSummary> {
         let mut out: Vec<SharedMethodSummary> = self
@@ -269,6 +275,29 @@ impl CompanionReport {
         out.sort_by_key(|m| (std::cmp::Reverse(m.risk), std::cmp::Reverse(m.patchers.len())));
         out
     }
+}
+
+/// Whether one mod of a pair names the other in its About.xml (a dependency, load after or
+/// load before it): an add-on or a patch that replaces those defs on purpose, like UNAGI
+/// Facial Animation over [NL] Facial Animation. `a` / `b`: the mods as scanned, if installed.
+pub fn pair_is_declared(
+    a: Option<&crate::models::ModInfo>,
+    a_id: &str,
+    b: Option<&crate::models::ModInfo>,
+    b_id: &str,
+) -> bool {
+    fn names(m: &crate::models::ModInfo, other: &str) -> bool {
+        [
+            &m.dependencies,
+            &m.load_after,
+            &m.force_load_after,
+            &m.load_before,
+            &m.force_load_before,
+        ]
+        .iter()
+        .any(|list| list.iter().any(|id| id.eq_ignore_ascii_case(other)))
+    }
+    a.is_some_and(|m| names(m, b_id)) || b.is_some_and(|m| names(m, a_id))
 }
 
 #[cfg(test)]
@@ -336,6 +365,48 @@ mod tests {
         assert_eq!(over_game.len(), 2);
         assert!(over_game.iter().all(|p| p.loser == 0));
         assert!(over_game.iter().any(|p| p.winner == 2 && p.defs == ["ThingDef Steel"]));
+    }
+
+    #[test]
+    fn add_ons_that_name_their_mod_replace_on_purpose() {
+        let r = sample();
+        let (between, _) = r.override_pairs();
+        assert_eq!(r.pair_ids(&between[0]), ("c.other", "b.big"));
+
+        let mod_with = |id: &str, deps: &[&str], after: &[&str], before: &[&str]| crate::models::ModInfo {
+            package_id: id.into(),
+            dependencies: deps.iter().map(|s| s.to_string()).collect(),
+            load_after: after.iter().map(|s| s.to_string()).collect(),
+            load_before: before.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        };
+        // UNAGI over NL: it requires NL (IDs in another case than the game writes them).
+        let unagi = mod_with("unagi.facialanimation", &["Nals.FacialAnimation"], &[], &[]);
+        let nl = mod_with("nals.facialanimation", &[], &[], &[]);
+        assert!(pair_is_declared(
+            Some(&unagi),
+            "unagi.facialanimation",
+            Some(&nl),
+            "nals.facialanimation"
+        ));
+        // The other way round, or the original asking to load before it, counts as well.
+        assert!(pair_is_declared(
+            Some(&nl),
+            "nals.facialanimation",
+            Some(&unagi),
+            "unagi.facialanimation"
+        ));
+        let patch_target = mod_with("x.base", &[], &[], &["Y.Patch"]);
+        assert!(pair_is_declared(None, "y.patch", Some(&patch_target), "x.base"));
+        // Two mods that don't know each other, or one that isn't installed.
+        let other = mod_with("z.other", &["brrainz.harmony"], &["ludeon.rimworld"], &[]);
+        assert!(!pair_is_declared(
+            Some(&other),
+            "z.other",
+            Some(&nl),
+            "nals.facialanimation"
+        ));
+        assert!(!pair_is_declared(None, "a", None, "b"));
     }
 
     #[test]
