@@ -4892,7 +4892,7 @@ impl eframe::App for App {
             fill: THEME.bg_surface,
             ..Default::default()
         };
-        egui::Panel::top("top_panel").frame(bar_frame).show_inside(root, |ui| {
+        egui::Panel::top("top_panel").frame(bar_frame).show(root, |ui| {
             ui.horizontal(|ui| {
                 ui.set_height(40.0);
                 ui.spacing_mut().item_spacing.x = 8.0;
@@ -5059,7 +5059,7 @@ impl eframe::App for App {
         };
         egui::Panel::bottom("bottom_status_bar")
             .frame(status_frame)
-            .show_inside(root, |ui| {
+            .show(root, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(&self.status_message)
@@ -5104,7 +5104,7 @@ impl eframe::App for App {
         };
         egui::CentralPanel::default()
             .frame(central_frame)
-            .show_inside(root, |ui| match self.current_tab {
+            .show(root, |ui| match self.current_tab {
                 AppTab::Mods => crate::ui::view_mods::render_mods_view(self, ui),
                 AppTab::Sets => crate::ui::view_sets::render_sets_view(self, ui),
                 AppTab::Saves => crate::ui::view_saves::render_saves_view(self, ui),

@@ -10,7 +10,7 @@ pub fn open_external(target: impl AsRef<std::ffi::OsStr>) {
 }
 
 fn workshop_request_id() -> egui::Id {
-    egui::Id::new("open_workshop_item")
+    egui::Id::unique("open_workshop_item")
 }
 
 /// Asks to show a Workshop mod in the program's own Workshop tab, not in the browser. Kept

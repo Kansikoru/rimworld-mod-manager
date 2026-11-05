@@ -1164,7 +1164,7 @@ fn render_full_log_view(app: &mut App, ui: &mut Ui) {
         report.log_path.clone(),
         report.raw_content.len(),
     );
-    let cache_id = egui::Id::new("analyzer_full_log_filter");
+    let cache_id = egui::Id::unique("analyzer_full_log_filter");
     let cached: Option<FilterCache> = ui.data(|d| d.get_temp(cache_id));
     let rows = match cached {
         Some(c) if c.0 == key => c.1,

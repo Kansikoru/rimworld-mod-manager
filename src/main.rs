@@ -55,10 +55,9 @@ fn main() {
         viewport = viewport.with_icon(icon);
     }
 
+    // VSync on and hardware acceleration where available are eframe's defaults.
     let native_options = eframe::NativeOptions {
         viewport,
-        vsync: true,
-        hardware_acceleration: eframe::HardwareAcceleration::Preferred,
         ..Default::default()
     };
 

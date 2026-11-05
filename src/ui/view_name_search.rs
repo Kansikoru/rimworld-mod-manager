@@ -26,7 +26,7 @@ pub fn render_name_search_window(app: &mut App, ctx: &egui::Context) {
     let (width, max_height) = dialog_size(ctx, WIDTH);
 
     egui::Window::new(t.get(TranslationKey::NameSearchTitle))
-        .id(egui::Id::new("name_search_window"))
+        .id(egui::Id::unique("name_search_window"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)

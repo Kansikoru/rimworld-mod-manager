@@ -60,7 +60,7 @@ fn handle_mod_drag(app: &mut App, ctx: &egui::Context) {
             None => Some(tr!("Esc — отмена", "Esc to cancel", "按 Esc 取消")),
             _ => None,
         };
-        egui::Area::new(egui::Id::new("mod_drag_label"))
+        egui::Area::new(egui::Id::unique("mod_drag_label"))
             .order(egui::Order::Tooltip)
             .fixed_pos(pos + Vec2::new(16.0, 12.0))
             .interactable(false)
@@ -185,7 +185,7 @@ fn start_sweep(app: &mut App, id: String, from_active: bool) {
 
 /// Where the details card was drawn this frame (kept in egui's memory, not in the app).
 fn details_rect_id() -> egui::Id {
-    egui::Id::new("mod_details_card_rect")
+    egui::Id::unique("mod_details_card_rect")
 }
 
 /// A plain click on an empty spot of the tab (no row, button, field or text under it) clears
@@ -299,16 +299,14 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
         }))
         // No scrolling of its own: the card stands to the bottom, only a long description
         // scrolls inside it.
-        .show_inside(ui, |ui| {
+        .show(ui, |ui| {
             unclip_edges(ui);
             render_mod_details_panel(app, ui, true)
         });
-    egui::CentralPanel::default()
-        .frame(egui::Frame::NONE)
-        .show_inside(ui, |ui| {
-            unclip_edges(ui);
-            render_mods_main(app, ui, true)
-        });
+    egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
+        unclip_edges(ui);
+        render_mods_main(app, ui, true)
+    });
 }
 
 /// A panel inside the tab clips at its own edges, which cut the outer half of the 1 px frame
@@ -669,10 +667,10 @@ fn render_active_panel(app: &mut App, ui: &mut Ui, details_fit: bool, card: bool
             .show_separator_line(false)
             .resizable(false);
         if details_fit {
-            panel.show_inside(ui, |ui| render_mod_details_panel(app, ui, false));
+            panel.show(ui, |ui| render_mod_details_panel(app, ui, false));
         } else {
             let max_h = (ui.available_height() * 0.4).max(90.0);
-            panel.max_size(max_h).show_inside(ui, |ui| {
+            panel.max_size(max_h).show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .id_salt("mod_details_scroll")
                     // Leave the panel's own margins out, so the card never covers the list.
@@ -683,7 +681,7 @@ fn render_active_panel(app: &mut App, ui: &mut Ui, details_fit: bool, card: bool
     }
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE)
-        .show_inside(ui, |ui| render_active_mods_column(app, ui));
+        .show(ui, |ui| render_active_mods_column(app, ui));
 }
 
 /// Panel card: panel color, subtle border, 6 px corners, fixed size.
@@ -1506,7 +1504,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
         .auto_shrink([false, false])
         .max_height(list_height)
         .scroll_source(egui::scroll_area::ScrollSource {
-            drag: false,
+            drag: egui::scroll_area::DragScroll::Never,
             ..egui::scroll_area::ScrollSource::ALL
         });
     if let Some(offset) = app.active_scroll_to.take() {
@@ -1528,7 +1526,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                     let pkg_id = &app.active_mods[idx];
                     let drag_resp = row_drag_handle(
                         ui,
-                        egui::Id::new(("active_row_drag", pkg_id.to_lowercase())),
+                        egui::Id::unique(("active_row_drag", pkg_id.to_lowercase())),
                         row_height,
                     );
                     let hovered =
@@ -1961,7 +1959,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                     }
                 }
             });
-            scroll_offset = output.state.offset.y;
+            scroll_offset = output.state.clamped_offset().y;
         });
     app.active_scroll_offset = scroll_offset;
     if let Some(h) = measured_row_height {
@@ -2131,7 +2129,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                 .id_salt("inactive_mods_scroll_left")
                 .auto_shrink([false, false])
                 .scroll_source(egui::scroll_area::ScrollSource {
-                    drag: false,
+                    drag: egui::scroll_area::DragScroll::Never,
                     ..egui::scroll_area::ScrollSource::ALL
                 })
                 .max_height(list_height)
@@ -2143,7 +2141,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                     for (pos, m) in visible_mods.iter().enumerate().skip(row_range.start).take(rows_count) {
                         let drag_resp = row_drag_handle(
                             ui,
-                            egui::Id::new(("inactive_row_drag", m.package_id.to_lowercase())),
+                            egui::Id::unique(("inactive_row_drag", m.package_id.to_lowercase())),
                             row_height,
                         );
                         let hovered = app.mod_drag.is_none()

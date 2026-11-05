@@ -33,7 +33,7 @@ pub fn render_steamcmd_window(app: &mut App, ctx: &egui::Context) {
     let (width, max_height) = dialog_size(ctx, WIDTH);
 
     egui::Window::new(t.get(TranslationKey::SteamCmdTitle))
-        .id(egui::Id::new("steamcmd_window"))
+        .id(egui::Id::unique("steamcmd_window"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
