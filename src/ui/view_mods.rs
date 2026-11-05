@@ -2576,14 +2576,13 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     apply_category_actions(app, cat_toggle, cat_reset);
 
     // Activate all selected (from context menu)
-    if activate_selected {
-        let ids: Vec<String> = app.selected_mod_ids.drain().collect();
-        for id in ids {
-            app.activate_mod(&id);
-        }
-    } else if let Some(pkg_id) = activate_id {
-        app.activate_mod(&pkg_id);
-    }
+    let to_enable: Vec<String> = if activate_selected {
+        app.selected_mod_ids.drain().collect()
+    } else {
+        activate_id.into_iter().collect()
+    };
+    let enabled: Vec<String> = to_enable.into_iter().filter(|id| app.activate_mod(id)).collect();
+    app.warn_no_version(&enabled);
 }
 
 /// Mod details panel at the bottom of the right column.

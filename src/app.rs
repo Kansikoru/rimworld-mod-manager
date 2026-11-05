@@ -429,6 +429,8 @@ pub struct App {
     /// Card pictures of the sets by name: the texture and whether it is the user's own
     /// (else a generated placeholder). Filled by the Modpacks tab.
     pub modlist_pictures: HashMap<String, (egui::TextureHandle, bool)>,
+    /// Mods already warned about in this session: enabled without declaring the game version.
+    warned_no_version: std::collections::HashSet<String>,
     /// The set last loaded or saved here.
     pub current_modlist: Option<String>,
     /// Set selected on the Sets tab, and its search query.
@@ -774,6 +776,7 @@ impl App {
             history: None,
             modlists: Vec::new(),
             modlist_pictures: HashMap::new(),
+            warned_no_version: std::collections::HashSet::new(),
             current_modlist: None,
             // RWMM_SET=<name> opens that modpack on the Modpacks tab (screenshots).
             selected_modlist: std::env::var("RWMM_SET").ok().filter(|s| !s.is_empty()),
@@ -1653,7 +1656,12 @@ impl App {
             return;
         };
         match self.drop_target.take() {
-            Some(DropTarget::Active(to)) => move_mods(&mut self.active_mods, &drag.ids, to),
+            Some(DropTarget::Active(to)) => {
+                move_mods(&mut self.active_mods, &drag.ids, to);
+                if !drag.from_active {
+                    self.warn_no_version(&drag.ids);
+                }
+            }
             Some(DropTarget::Available) if drag.from_active => {
                 remove_mods(&mut self.active_mods, &drag.ids);
             }
@@ -3779,6 +3787,37 @@ impl App {
     pub fn download_missing_dependencies(&mut self) {
         let ids = self.missing_dependency_workshop_ids();
         self.subscribe_workshop_ids(ids);
+    }
+
+    /// Mods the user just enabled by hand (double click, menu, drag): says once per session
+    /// which of them do not declare the installed game version.
+    pub fn warn_no_version(&mut self, ids: &[String]) {
+        let game_mm = self.steam_paths.game_major_minor();
+        let found: Vec<(String, String)> = ids
+            .iter()
+            .filter_map(|id| self.find_mod(id))
+            .filter(|m| crate::version_check::supports_version(m, game_mm.as_deref()) == Some(false))
+            .map(|m| (m.package_id.to_lowercase(), m.name.clone()))
+            .filter(|(id, _)| !self.warned_no_version.contains(id))
+            .collect();
+        if found.is_empty() {
+            return;
+        }
+        let version = game_mm.unwrap_or_else(|| "?".to_string());
+        let t = self.i18n;
+        self.status_message = if let [(_, name)] = found.as_slice() {
+            fmt(t.get(TranslationKey::ModsNoVersionWarnOne), &[name, &version])
+        } else {
+            let mut names: Vec<&str> = found.iter().take(3).map(|(_, n)| n.as_str()).collect();
+            if found.len() > 3 {
+                names.push("…");
+            }
+            fmt(
+                t.get(TranslationKey::ModsNoVersionWarnMany),
+                &[&found.len().to_string(), &version, &names.join(", ")],
+            )
+        };
+        self.warned_no_version.extend(found.into_iter().map(|(id, _)| id));
     }
 
     /// Enables every missing dependency, including dependencies of the mods it just
