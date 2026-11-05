@@ -219,6 +219,35 @@ impl CompanionReport {
         (between, over_game)
     }
 
+    /// The estimate before "Play" replaced by what the game really took (1.6, where the mod
+    /// measures textures): when the report is of the same mods and no texture was rewritten
+    /// since (by the optimizer, an update). All textures count, the game's own too: that is
+    /// what fills the video memory. `None` keeps the estimate.
+    pub fn measured_vram(
+        &self,
+        estimate: &crate::optimizer::VramReport,
+        active_ids: &[String],
+    ) -> Option<crate::optimizer::VramReport> {
+        let textures = self.textures.as_ref()?;
+        let written = u64::try_from(self.written_unix).ok()?;
+        if self.mods_differ(active_ids) || estimate.newest_texture_unix > written || textures.all_bytes == 0 {
+            return None;
+        }
+        let mut heavy_mods: Vec<(String, u64)> = self
+            .heaviest_mods()
+            .into_iter()
+            .filter(|m| !self.is_official(m.mod_index) && m.bytes >= crate::optimizer::HEAVY_MOD_BYTES)
+            .map(|m| (self.mod_name(m.mod_index).to_string(), m.bytes))
+            .collect();
+        heavy_mods.truncate(crate::optimizer::HEAVY_MODS_SHOWN);
+        Some(crate::optimizer::VramReport {
+            estimated_used_bytes: textures.all_bytes,
+            heavy_mods,
+            measured: true,
+            ..estimate.clone()
+        })
+    }
+
     /// Package IDs of a pair's mods: (winner, loser).
     pub fn pair_ids(&self, pair: &OverridePair) -> (&str, &str) {
         let id = |i: usize| self.mods.get(i).map_or("", |m| m.id.as_str());
@@ -365,6 +394,38 @@ mod tests {
         assert_eq!(over_game.len(), 2);
         assert!(over_game.iter().all(|p| p.loser == 0));
         assert!(over_game.iter().any(|p| p.winner == 2 && p.defs == ["ThingDef Steel"]));
+    }
+
+    #[test]
+    fn the_measured_vram_replaces_the_estimate_when_it_still_fits() {
+        let r = sample();
+        let ids: Vec<String> = r.mods.iter().map(|m| m.id.clone()).collect();
+        let estimate = crate::optimizer::VramReport {
+            total_vram_bytes: 8 * 1024 * 1024 * 1024,
+            estimated_used_bytes: 1,
+            heavy_mods: vec![("Guess".into(), 1)],
+            newest_texture_unix: 1_793_560_000,
+            measured: false,
+        };
+        let m = r.measured_vram(&estimate, &ids).expect("same mods, no newer texture");
+        assert!(m.measured);
+        assert_eq!(m.estimated_used_bytes, 3_000_000_000);
+        assert_eq!(m.total_vram_bytes, estimate.total_vram_bytes);
+        // Core is the game's own: not among the mods to turn off.
+        assert_eq!(m.heavy_mods, vec![("Big Mod".to_string(), 900_000_000)]);
+
+        // Another mod list, a texture written after the game run, or 1.7 (no textures): the estimate.
+        assert!(r.measured_vram(&estimate, &ids[1..]).is_none());
+        let newer = crate::optimizer::VramReport {
+            newest_texture_unix: 1_793_570_001,
+            ..estimate.clone()
+        };
+        assert!(r.measured_vram(&newer, &ids).is_none());
+        let on_17 = CompanionReport {
+            textures: None,
+            ..r.clone()
+        };
+        assert!(on_17.measured_vram(&estimate, &ids).is_none());
     }
 
     #[test]

@@ -1104,7 +1104,17 @@ pub struct VramReport {
     pub estimated_used_bytes: u64,
     /// Heaviest mods sorted descending by texture memory: (mod_name, vram_bytes).
     pub heavy_mods: Vec<(String, u64)>,
+    /// When the newest texture file of the active mods was written (Unix seconds): a
+    /// measurement from a game run before that no longer describes these textures.
+    pub newest_texture_unix: u64,
+    /// The numbers come from the game itself (the companion's report), not from the files.
+    pub measured: bool,
 }
+
+/// A mod is listed among the heaviest from this much texture memory.
+pub const HEAVY_MOD_BYTES: u64 = 25 * 1024 * 1024;
+/// How many of the heaviest mods the warning lists.
+pub const HEAVY_MODS_SHOWN: usize = 8;
 
 impl VramReport {
     /// Whether texture memory exceeds ~80% of dedicated video memory.
@@ -1518,37 +1528,48 @@ pub fn check_vram_usage(
     let total_vram = detect_dedicated_vram();
     // Per mod: its bytes and, when estimated anew, the cache entry (dir, fingerprint, bytes).
     type CacheEntry = (PathBuf, u64, u64);
-    let per_mod: Vec<(u64, Option<CacheEntry>)> = active_mods
+    // Also the time the newest texture file of the mod was written (Unix seconds).
+    let per_mod: Vec<(u64, Option<CacheEntry>, u64)> = active_mods
         .par_iter()
         .map(|(_, dir)| {
             let files = mod_texture_files(dir, game_version);
+            let newest = files
+                .iter()
+                .filter_map(|(_, meta)| meta.modified().ok())
+                .filter_map(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .max()
+                .unwrap_or(0);
             let fp = texture_fingerprint(&files, engine, game_compresses);
             match cache.get(dir) {
-                Some(&(cached_fp, bytes)) if cached_fp == fp => (bytes, None),
+                Some(&(cached_fp, bytes)) if cached_fp == fp => (bytes, None, newest),
                 _ => {
                     let bytes = estimate_texture_bytes(&files, engine, game_compresses);
-                    (bytes, Some((dir.clone(), fp, bytes)))
+                    (bytes, Some((dir.clone(), fp, bytes)), newest)
                 }
             }
         })
         .collect();
 
-    let total_used = per_mod.iter().map(|(b, _)| b).sum();
+    let total_used = per_mod.iter().map(|(b, _, _)| b).sum();
+    let newest_texture_unix = per_mod.iter().map(|(_, _, t)| *t).max().unwrap_or(0);
     let mut heavy_mods: Vec<(String, u64)> = active_mods
         .iter()
         .zip(&per_mod)
-        .filter(|(_, (bytes, _))| *bytes >= 25 * 1024 * 1024)
-        .map(|((name, _), (bytes, _))| (name.clone(), *bytes))
+        .filter(|(_, (bytes, _, _))| *bytes >= HEAVY_MOD_BYTES)
+        .map(|((name, _), (bytes, _, _))| (name.clone(), *bytes))
         .collect();
     heavy_mods.sort_by_key(|b| std::cmp::Reverse(b.1));
-    heavy_mods.truncate(8);
-    let updated_cache = per_mod.into_iter().filter_map(|(_, c)| c).collect();
+    heavy_mods.truncate(HEAVY_MODS_SHOWN);
+    let updated_cache = per_mod.into_iter().filter_map(|(_, c, _)| c).collect();
 
     (
         VramReport {
             total_vram_bytes: total_vram,
             estimated_used_bytes: total_used,
             heavy_mods,
+            newest_texture_unix,
+            measured: false,
         },
         updated_cache,
     )
@@ -2266,6 +2287,7 @@ mod tests {
             total_vram_bytes: 10_000_000_000,
             estimated_used_bytes: 8_500_000_000, // 85%
             heavy_mods: vec![("Heavy Mod".into(), 4_000_000_000)],
+            ..Default::default()
         };
         assert!(rep_critical.is_critical());
 
@@ -2273,6 +2295,7 @@ mod tests {
             total_vram_bytes: 10_000_000_000,
             estimated_used_bytes: 7_500_000_000, // 75%
             heavy_mods: vec![],
+            ..Default::default()
         };
         assert!(!rep_ok.is_critical());
 
@@ -2280,6 +2303,7 @@ mod tests {
             total_vram_bytes: 0,
             estimated_used_bytes: 999_999_999,
             heavy_mods: vec![],
+            ..Default::default()
         };
         assert!(!rep_no_total.is_critical());
     }

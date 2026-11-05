@@ -100,6 +100,8 @@ pub enum PendingQuestion {
         estimated_bytes: u64,
         total_vram_bytes: u64,
         heavy_mods: Vec<(String, u64)>,
+        /// Measured in the game (companion), not estimated from the files.
+        measured: bool,
     },
 }
 
@@ -4617,15 +4619,21 @@ impl App {
 
     fn finish_vram_check_and_launch(&mut self) {
         self.launch_after_vram_check = false;
-        if let Some(report) = &self.vram_report {
-            if report.is_critical() {
-                self.pending_question = Some(PendingQuestion::VramWarning {
-                    estimated_bytes: report.estimated_used_bytes,
-                    total_vram_bytes: report.total_vram_bytes,
-                    heavy_mods: report.heavy_mods.clone(),
-                });
-                return;
-            }
+        // What the game really took last time with these mods beats the estimate (1.6).
+        let report = self.vram_report.as_ref().map(|estimate| {
+            self.companion_report
+                .as_ref()
+                .and_then(|r| r.measured_vram(estimate, &self.active_mods))
+                .unwrap_or_else(|| estimate.clone())
+        });
+        if let Some(report) = report.filter(crate::optimizer::VramReport::is_critical) {
+            self.pending_question = Some(PendingQuestion::VramWarning {
+                estimated_bytes: report.estimated_used_bytes,
+                total_vram_bytes: report.total_vram_bytes,
+                heavy_mods: report.heavy_mods,
+                measured: report.measured,
+            });
+            return;
         }
         self.launch_game_now();
     }
@@ -5241,6 +5249,7 @@ impl App {
             PendingQuestion::VramWarning {
                 estimated_bytes,
                 total_vram_bytes,
+                measured,
                 ..
             } => {
                 let est_gb = (*estimated_bytes as f64) / 1_073_741_824.0;
@@ -5255,7 +5264,11 @@ impl App {
                     )
                 } else {
                     (
-                        TranslationKey::VramWarningBody,
+                        if *measured {
+                            TranslationKey::VramWarningBodyMeasured
+                        } else {
+                            TranslationKey::VramWarningBody
+                        },
                         TranslationKey::VramBtnOptimize,
                         TranslationKey::VramBtnLaunchAnyway,
                     )
