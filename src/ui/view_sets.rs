@@ -35,6 +35,19 @@ enum SetAction {
     Copied(String),
     SetPicture(String, std::path::PathBuf),
     RemovePicture(String),
+    ToggleTag(String, String),
+}
+
+/// A tag as shown: built-in ones translated, own ones as typed.
+fn tag_label(t: crate::i18n::I18n, tag: &str) -> String {
+    let key = match tag {
+        "stable" => TranslationKey::SetsTagStable,
+        "test" => TranslationKey::SetsTagTest,
+        "performance" => TranslationKey::SetsTagPerformance,
+        "roleplay" => TranslationKey::SetsTagRoleplay,
+        _ => return tag.to_string(),
+    };
+    t.get(key).to_string()
 }
 
 const CARD_SIZE: Vec2 = Vec2::new(168.0, 140.0);
@@ -77,37 +90,65 @@ pub fn render_sets_view(app: &mut App, ui: &mut Ui) {
         egui::ScrollArea::vertical()
             .id_salt("sets_details_narrow")
             .auto_shrink([false, false])
-            .show(ui, |ui| render_details(app, ui, &mut actions));
+            .show(ui, |ui| render_details(app, ui, &mut actions, true));
         apply_actions(app, actions);
         return;
     }
 
-    let gap = 16.0;
-    let left_w = ((ui.available_width() - gap) * 0.5).floor().max(300.0);
-    let right_w = (ui.available_width() - gap - left_w).max(300.0);
-    let height = ui.available_height();
+    // Wide window: cards | the selected modpack | its mods, each column the full height.
+    // Narrower: the modpack and its mods share the right column, which scrolls.
+    let gap = 24.0;
+    let full = ui.available_rect_before_wrap();
+    let total = full.width();
+    let height = full.height();
+    let three = total >= WIDE_THREE_COLUMNS;
+    let (left_w, mid_w) = if three {
+        let free = total - 2.0 * gap;
+        ((free * 0.36).floor(), (free * 0.34).floor())
+    } else {
+        let left = ((total - gap) * 0.5).floor();
+        (left, total - gap - left)
+    };
+    let right_w = total - 2.0 * gap - left_w - mid_w;
 
-    ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = gap;
-        ui.allocate_ui_with_layout(
-            Vec2::new(left_w, height),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                ui.set_width(left_w);
-                render_cards(app, ui, &mut actions);
-            },
+    // Each column has a fixed place and is clipped to it: something too wide inside one
+    // column is cut there instead of pushing the next columns past the window.
+    let column_rect =
+        |left: f32, width: f32| egui::Rect::from_min_size(egui::pos2(left, full.top()), Vec2::new(width, height));
+    let cards_rect = column_rect(full.left(), left_w);
+    let mid_rect = column_rect(cards_rect.right() + gap, mid_w);
+    let mods_rect = column_rect(mid_rect.right() + gap, right_w);
+    let column = |ui: &mut Ui, rect: egui::Rect| {
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
         );
-        ui.allocate_ui_with_layout(
-            Vec2::new(right_w, height),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                ui.set_width(right_w);
-                render_details(app, ui, &mut actions);
-            },
-        );
-    });
+        // 2 px on the sides for the card frames on the column edge.
+        child.set_clip_rect(rect.expand2(Vec2::new(2.0, 0.0)).intersect(ui.clip_rect()));
+        child
+    };
+
+    render_cards(app, &mut column(ui, cards_rect), &mut actions);
+    egui::ScrollArea::vertical()
+        .id_salt("sets_details")
+        .auto_shrink([false, false])
+        .show(&mut column(ui, mid_rect), |ui| {
+            render_details(app, ui, &mut actions, !three)
+        });
+    if three {
+        let mut mods_ui = column(ui, mods_rect);
+        if let Some(list) = selected_list(app) {
+            let max_h = (mods_ui.available_height() - 48.0).max(200.0);
+            render_set_mods(app, &mut mods_ui, list, &mut actions, max_h);
+        }
+    }
+    ui.allocate_rect(full, Sense::hover());
     apply_actions(app, actions);
 }
+
+/// From this width the Modpacks tab shows the selected modpack's mods in a third column.
+const WIDE_THREE_COLUMNS: f32 = 1150.0;
 
 /// Runs what the user clicked (after drawing, when `app` is free to change).
 fn apply_actions(app: &mut App, actions: Vec<SetAction>) {
@@ -140,6 +181,7 @@ fn apply_actions(app: &mut App, actions: Vec<SetAction>) {
             SetAction::Copied(name) => app.status_message = fmt(t.get(TranslationKey::SetsCopied), &[&name]),
             SetAction::SetPicture(name, file) => app.set_modlist_picture(&name, &file),
             SetAction::RemovePicture(name) => app.remove_modlist_picture(&name),
+            SetAction::ToggleTag(name, tag) => app.toggle_modlist_tag(&name, &tag),
             SetAction::OpenFolder => {
                 if let Some(dir) = app.modlists_folder() {
                     let _ = std::fs::create_dir_all(&dir);
@@ -172,56 +214,136 @@ fn paint_set_picture(app: &App, ui: &Ui, name: &str, rect: egui::Rect, radius: u
 
 fn render_cards(app: &mut App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
     let t = app.i18n;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        let new_label = t.get(TranslationKey::SetsNewFromCurrent);
-        let import_label = t.get(TranslationKey::SetsBtnImport);
-        let col_label = t.get(TranslationKey::SetsBtnCollection);
-        let buttons_w = styled_button_width(ui, true, new_label)
-            + styled_button_width(ui, true, import_label)
-            + styled_button_width(ui, true, col_label)
-            + 24.0;
-        let search_w = (ui.available_width() - buttons_w).max(120.0);
-        search_input_width(ui, &mut app.sets_search, t.get(TranslationKey::SetsSearch), search_w);
-        if primary_button_icon(ui, ICON_PLUS, new_label).clicked() {
-            let default = fmt(
-                t.get(TranslationKey::SetsDefaultName),
-                &[&(app.modlists.len() + 1).to_string()],
-            );
-            actions.push(SetAction::Dialog(ModListDialog::SaveAs {
-                name: default,
-                error: None,
-            }));
-        }
-        if secondary_button_icon(ui, ICON_FOLDER, import_label)
-            .on_hover_text(t.get(TranslationKey::SetsImportHint))
-            .clicked()
-        {
-            if let Some(file) = rfd::FileDialog::new()
-                .add_filter(t.get(TranslationKey::SetsImportFilter), &["rml", "xml", "zip"])
-                .pick_file()
-            {
-                actions.push(SetAction::Import(file));
+    let buttons_w = styled_button_width(ui, true, t.get(TranslationKey::SetsNewFromCurrent))
+        + styled_button_width(ui, true, t.get(TranslationKey::SetsBtnImport))
+        + styled_button_width(ui, true, t.get(TranslationKey::SetsBtnCollection))
+        + 24.0;
+    // Search and the buttons in one row while the search keeps a usable width; in a narrow
+    // column the buttons wrap and the search goes under them. The estimate counts 12 px
+    // text, so a larger text size in Settings gets room too (×1.3). In the one row the
+    // buttons are laid from the right edge and the search takes what is left, so nothing
+    // runs past the column even when the estimate is short.
+    if ui.available_width() - buttons_w * 1.3 >= 160.0 {
+        let row = Vec2::new(ui.available_width(), 32.0);
+        ui.allocate_ui_with_layout(row, egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            header_buttons(app, ui, actions, true);
+            let search_w = ui.available_width();
+            search_input_width(ui, &mut app.sets_search, t.get(TranslationKey::SetsSearch), search_w);
+        });
+    } else {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+            header_buttons(app, ui, actions, false);
+        });
+        ui.add_space(6.0);
+        let width = ui.available_width();
+        search_input_width(ui, &mut app.sets_search, t.get(TranslationKey::SetsSearch), width);
+    }
+    ui.add_space(10.0);
+    render_card_grid(app, ui, actions);
+}
+
+/// "New from current", "Import…", "Collection…" above the cards (and a spinner while a
+/// collection loads). `from_right`: the row is laid right to left, so they are added in
+/// reverse to read in the same order.
+fn header_buttons(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, from_right: bool) {
+    #[derive(Clone, Copy)]
+    enum Item {
+        New,
+        Import,
+        Collection,
+        Spinner,
+    }
+    let order = [Item::New, Item::Import, Item::Collection, Item::Spinner];
+    let t = app.i18n;
+    let mut draw = |ui: &mut Ui, item: Item| match item {
+        Item::New => {
+            if primary_button_icon(ui, ICON_PLUS, t.get(TranslationKey::SetsNewFromCurrent)).clicked() {
+                let default = fmt(
+                    t.get(TranslationKey::SetsDefaultName),
+                    &[&(app.modlists.len() + 1).to_string()],
+                );
+                actions.push(SetAction::Dialog(ModListDialog::SaveAs {
+                    name: default,
+                    error: None,
+                }));
             }
         }
-        if ui
-            .add_enabled_ui(!app.collection_busy(), |ui| {
-                secondary_button_icon(ui, ICON_STEAM, col_label)
-            })
-            .inner
-            .on_hover_text(t.get(TranslationKey::SetsCollectionHint))
-            .clicked()
-        {
-            actions.push(SetAction::Dialog(ModListDialog::Collection {
-                url: String::new(),
-                error: None,
-            }));
+        Item::Import => {
+            if secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::SetsBtnImport))
+                .on_hover_text(t.get(TranslationKey::SetsImportHint))
+                .clicked()
+            {
+                if let Some(file) = rfd::FileDialog::new()
+                    .add_filter(t.get(TranslationKey::SetsImportFilter), &["rml", "xml", "zip"])
+                    .pick_file()
+                {
+                    actions.push(SetAction::Import(file));
+                }
+            }
         }
-        if app.collection_busy() {
-            ui.spinner();
+        Item::Collection => {
+            if ui
+                .add_enabled_ui(!app.collection_busy(), |ui| {
+                    secondary_button_icon(ui, ICON_STEAM, t.get(TranslationKey::SetsBtnCollection))
+                })
+                .inner
+                .on_hover_text(t.get(TranslationKey::SetsCollectionHint))
+                .clicked()
+            {
+                actions.push(SetAction::Dialog(ModListDialog::Collection {
+                    url: String::new(),
+                    error: None,
+                }));
+            }
         }
-    });
-    ui.add_space(10.0);
+        Item::Spinner => {
+            if app.collection_busy() {
+                ui.spinner();
+            }
+        }
+    };
+    if from_right {
+        order.iter().rev().for_each(|item| draw(ui, *item));
+    } else {
+        order.iter().for_each(|item| draw(ui, *item));
+    }
+}
+
+/// The tag filter and the cards of the sets.
+fn render_card_grid(app: &mut App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
+    let t = app.i18n;
+    // Tags in use: clicking one shows only the sets with it (several: any of them).
+    let used = crate::modlist_tags::in_use(&app.modlist_tags, app.modlists.iter().map(|l| l.name.as_str()));
+    app.sets_tag_filter
+        .retain(|f| used.iter().any(|(tag, _)| tag.to_lowercase() == *f));
+    if !used.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+            if ui
+                .selectable_label(app.sets_tag_filter.is_empty(), t.get(TranslationKey::CategoriesAll))
+                .clicked()
+            {
+                app.sets_tag_filter.clear();
+            }
+            for (tag, n) in &used {
+                let key = tag.to_lowercase();
+                let on = app.sets_tag_filter.contains(&key);
+                if ui
+                    .selectable_label(on, format!("{} · {n}", tag_label(t, tag)))
+                    .clicked()
+                {
+                    if on {
+                        app.sets_tag_filter.remove(&key);
+                    } else {
+                        app.sets_tag_filter.insert(key);
+                    }
+                }
+            }
+        });
+        ui.add_space(8.0);
+    }
     let app: &App = app;
 
     if app.modlists.is_empty() {
@@ -254,6 +376,13 @@ fn render_cards(app: &mut App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
                     .modlists
                     .iter()
                     .filter(|l| query.is_empty() || l.name.to_lowercase().contains(&query))
+                    .filter(|l| {
+                        app.sets_tag_filter.is_empty()
+                            || app
+                                .sets_tag_filter
+                                .iter()
+                                .any(|f| crate::modlist_tags::has(&app.modlist_tags, &l.name, f))
+                    })
                 {
                     let selected = app.selected_modlist.as_deref() == Some(list.name.as_str());
                     if set_card(app, ui, list, selected).clicked() {
@@ -349,13 +478,18 @@ fn set_card(app: &App, ui: &mut Ui, list: &ModList, selected: bool) -> egui::Res
     response
 }
 
-fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
-    let t = app.i18n;
-    let Some(list) = app
-        .selected_modlist
+/// The set open on the right: the loaded one, else the first.
+fn selected_list(app: &App) -> Option<&ModList> {
+    app.selected_modlist
         .as_deref()
         .and_then(|name| app.modlists.iter().find(|l| l.name == name))
-    else {
+}
+
+/// The selected set: picture, tags, actions, details, missing mods; its mod list too when
+/// `with_mods` (the wide layout puts that in a column of its own).
+fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, with_mods: bool) {
+    let t = app.i18n;
+    let Some(list) = selected_list(app) else {
         card_container(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.add(
@@ -392,11 +526,16 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
             }
         }
         ui.vertical(|ui| {
-            ui.label(
-                egui::RichText::new(&list.name)
-                    .color(THEME.accent_cyan)
-                    .size(18.0)
-                    .strong(),
+            // A long name wraps instead of widening the column past the window.
+            ui.set_max_width(ui.available_width());
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(&list.name)
+                        .color(THEME.accent_cyan)
+                        .size(18.0)
+                        .strong(),
+                )
+                .wrap(),
             );
             ui.add(
                 egui::Label::new(
@@ -421,6 +560,49 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
                 }
             });
         });
+    });
+    ui.add_space(8.0);
+
+    // Tags: the built-in ones and own ones used by any set, lit when this set has them;
+    // the field adds a new own tag (Enter or "+").
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+        ui.label(egui::RichText::new(t.get(TranslationKey::SetsTagsLabel)).color(THEME.text_muted));
+        let mut offered: Vec<String> = crate::modlist_tags::BUILT_IN.iter().map(|s| s.to_string()).collect();
+        let used = crate::modlist_tags::in_use(&app.modlist_tags, app.modlists.iter().map(|l| l.name.as_str()));
+        for (tag, _) in used {
+            if !offered.iter().any(|o| o.eq_ignore_ascii_case(&tag)) {
+                offered.push(tag);
+            }
+        }
+        for tag in &offered {
+            let on = crate::modlist_tags::has(&app.modlist_tags, &name, tag);
+            if ui.selectable_label(on, tag_label(t, tag)).clicked() {
+                actions.push(SetAction::ToggleTag(name.clone(), tag.clone()));
+            }
+        }
+        let id = ui.make_persistent_id(("sets_new_tag", &name));
+        let mut text = ui.data_mut(|d| d.get_temp::<String>(id).unwrap_or_default());
+        let edit = ui.add(
+            egui::TextEdit::singleline(&mut text)
+                .hint_text(t.get(TranslationKey::SetsTagNewHint))
+                .char_limit(crate::modlist_tags::MAX_LEN)
+                .desired_width(130.0),
+        );
+        let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let plus = ui
+            .add_enabled(!text.trim().is_empty(), egui::Button::new("+"))
+            .on_hover_text(t.get(TranslationKey::SetsTagAdd))
+            .clicked();
+        if enter || plus {
+            if let Some(tag) = crate::modlist_tags::clean(&text) {
+                if !crate::modlist_tags::has(&app.modlist_tags, &name, &tag) {
+                    actions.push(SetAction::ToggleTag(name.clone(), tag));
+                }
+                text.clear();
+            }
+        }
+        ui.data_mut(|d| d.insert_temp(id, text));
     });
     ui.add_space(8.0);
 
@@ -618,7 +800,20 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
         });
     }
 
-    // Mods of the set
+    if with_mods {
+        // Inside a scrolling column the height is unlimited: keep the list to the window.
+        let max_h = ui
+            .available_height()
+            .min(ui.ctx().content_rect().height() * 0.7)
+            .max(240.0);
+        render_set_mods(app, ui, list, actions, max_h);
+    }
+}
+
+/// The mods of the selected set, numbered; ones not on disk get a Workshop link or a
+/// "find by name" button. `max_h`: height of the scrolling list.
+fn render_set_mods(app: &App, ui: &mut Ui, list: &ModList, actions: &mut Vec<SetAction>, max_h: f32) {
+    let t = app.i18n;
     card_container(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(
@@ -630,15 +825,11 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
             .strong(),
         );
         ui.add_space(4.0);
+        // Every set starts at the top of its list.
         egui::ScrollArea::vertical()
-            .id_salt("set_mods_scroll")
+            .id_salt(("set_mods_scroll", &list.name))
             .auto_shrink([false, false])
-            // Inside the narrow layout's scrolling the height is unlimited: keep it to the window.
-            .max_height(
-                ui.available_height()
-                    .min(ui.ctx().content_rect().height() * 0.7)
-                    .max(120.0),
-            )
+            .max_height(max_h)
             .show_rows(ui, 22.0, list.ids.len(), |ui, range| {
                 for i in range {
                     let id = &list.ids[i];

@@ -429,6 +429,10 @@ pub struct App {
     /// Card pictures of the sets by name: the texture and whether it is the user's own
     /// (else a generated placeholder). Filled by the Modpacks tab.
     pub modlist_pictures: HashMap<String, (egui::TextureHandle, bool)>,
+    /// Tags of the sets by name (`modlist_tags.json`).
+    pub modlist_tags: crate::modlist_tags::Tags,
+    /// Modpacks tab: show only sets with any of these tags (lower case).
+    pub sets_tag_filter: std::collections::HashSet<String>,
     /// Mods already warned about in this session: enabled without declaring the game version.
     warned_no_version: std::collections::HashSet<String>,
     /// The set last loaded or saved here.
@@ -776,6 +780,8 @@ impl App {
             history: None,
             modlists: Vec::new(),
             modlist_pictures: HashMap::new(),
+            modlist_tags: crate::modlist_tags::load(&crate::modlist_tags::tags_path()),
+            sets_tag_filter: std::collections::HashSet::new(),
             warned_no_version: std::collections::HashSet::new(),
             current_modlist: None,
             // RWMM_SET=<name> opens that modpack on the Modpacks tab (screenshots).
@@ -3570,6 +3576,18 @@ impl App {
         self.modlist_pictures.remove(name);
     }
 
+    /// Turns a tag on or off for a set and saves the tags.
+    pub fn toggle_modlist_tag(&mut self, set: &str, tag: &str) {
+        crate::modlist_tags::toggle(&mut self.modlist_tags, set, tag);
+        self.save_modlist_tags();
+    }
+
+    fn save_modlist_tags(&mut self) {
+        if let Err(e) = crate::modlist_tags::save(&crate::modlist_tags::tags_path(), &self.modlist_tags) {
+            self.status_message = fmt(self.i18n.get(TranslationKey::SetsTagsSaveError), &[&e.to_string()]);
+        }
+    }
+
     /// Copies a set to a free "Name (copy)" and selects the copy.
     pub fn duplicate_modlist(&mut self, name: &str) {
         let Some(dir) = self.modlists_folder() else { return };
@@ -3580,6 +3598,8 @@ impl App {
         ) {
             Ok(_) => {
                 crate::modlist_images::copy_image(&crate::modlist_images::images_dir(), name, &copy);
+                crate::modlist_tags::copy(&mut self.modlist_tags, name, &copy);
+                self.save_modlist_tags();
                 self.refresh_modlists();
                 self.selected_modlist = Some(copy.clone());
                 self.status_message = fmt(self.i18n.get(TranslationKey::SetsDuplicated), &[name, &copy]);
@@ -3697,6 +3717,8 @@ impl App {
         crate::modlist_images::rename_image(&crate::modlist_images::images_dir(), from, &name);
         self.modlist_pictures.remove(from);
         self.modlist_pictures.remove(&name);
+        crate::modlist_tags::rename(&mut self.modlist_tags, from, &name);
+        self.save_modlist_tags();
         self.refresh_modlists();
         self.status_message = fmt(self.i18n.get(TranslationKey::SetsRenamed), &[from, &name]);
         Ok(())
@@ -3709,6 +3731,9 @@ impl App {
             Ok(()) => {
                 crate::modlist_images::remove_image(&crate::modlist_images::images_dir(), name);
                 self.modlist_pictures.remove(name);
+                if self.modlist_tags.remove(name).is_some() {
+                    self.save_modlist_tags();
+                }
                 self.status_message = fmt(self.i18n.get(TranslationKey::SetsDeleted), &[name]);
             }
             Err(e) => self.status_message = fmt(self.i18n.get(TranslationKey::SetsWriteError), &[&e.to_string()]),

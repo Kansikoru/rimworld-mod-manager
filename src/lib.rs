@@ -18,6 +18,7 @@ pub mod matcher;
 pub mod mod_updates;
 pub mod models;
 pub mod modlist_images;
+pub mod modlist_tags;
 pub mod modlists;
 pub mod mods_config;
 pub mod name_search;
