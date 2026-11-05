@@ -426,6 +426,9 @@ pub struct App {
     pub legacy_rx: Option<Receiver<String>>,
     /// Mod sets from the game's ModLists folder (F4), by name.
     pub modlists: Vec<crate::modlists::ModList>,
+    /// Card pictures of the sets by name: the texture and whether it is the user's own
+    /// (else a generated placeholder). Filled by the Modpacks tab.
+    pub modlist_pictures: HashMap<String, (egui::TextureHandle, bool)>,
     /// The set last loaded or saved here.
     pub current_modlist: Option<String>,
     /// Set selected on the Sets tab, and its search query.
@@ -770,6 +773,7 @@ impl App {
             legacy_rx: None,
             history: None,
             modlists: Vec::new(),
+            modlist_pictures: HashMap::new(),
             current_modlist: None,
             // RWMM_SET=<name> opens that modpack on the Modpacks tab (screenshots).
             selected_modlist: std::env::var("RWMM_SET").ok().filter(|s| !s.is_empty()),
@@ -3520,6 +3524,44 @@ impl App {
         }
     }
 
+    /// Makes the textures of set pictures that are not loaded yet: the user's own picture,
+    /// else a placeholder generated from the name. Small files, read once per set.
+    pub fn load_modlist_pictures(&mut self, ctx: &egui::Context) {
+        let dir = crate::modlist_images::images_dir();
+        for list in &self.modlists {
+            if self.modlist_pictures.contains_key(&list.name) {
+                continue;
+            }
+            let own = crate::modlist_images::load_image(&dir, &list.name);
+            let custom = own.is_some();
+            let img = own.unwrap_or_else(|| crate::modlist_images::placeholder(&list.name));
+            let size = [img.width() as usize, img.height() as usize];
+            let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+            let tex = ctx.load_texture(
+                format!("modlist_picture/{}", list.name),
+                color,
+                egui::TextureOptions::LINEAR,
+            );
+            self.modlist_pictures.insert(list.name.clone(), (tex, custom));
+        }
+    }
+
+    /// Makes a picture file the card picture of a set.
+    pub fn set_modlist_picture(&mut self, name: &str, source: &Path) {
+        match crate::modlist_images::set_image(&crate::modlist_images::images_dir(), name, source) {
+            Ok(()) => {
+                self.modlist_pictures.remove(name);
+            }
+            Err(e) => self.status_message = fmt(self.i18n.get(TranslationKey::SetsPictureError), &[&e]),
+        }
+    }
+
+    /// Back to the generated placeholder.
+    pub fn remove_modlist_picture(&mut self, name: &str) {
+        crate::modlist_images::remove_image(&crate::modlist_images::images_dir(), name);
+        self.modlist_pictures.remove(name);
+    }
+
     /// Copies a set to a free "Name (copy)" and selects the copy.
     pub fn duplicate_modlist(&mut self, name: &str) {
         let Some(dir) = self.modlists_folder() else { return };
@@ -3529,6 +3571,7 @@ impl App {
             crate::modlists::path_for(&dir, &copy),
         ) {
             Ok(_) => {
+                crate::modlist_images::copy_image(&crate::modlist_images::images_dir(), name, &copy);
                 self.refresh_modlists();
                 self.selected_modlist = Some(copy.clone());
                 self.status_message = fmt(self.i18n.get(TranslationKey::SetsDuplicated), &[name, &copy]);
@@ -3643,6 +3686,9 @@ impl App {
         if self.current_modlist.as_deref() == Some(from) {
             self.current_modlist = Some(name.clone());
         }
+        crate::modlist_images::rename_image(&crate::modlist_images::images_dir(), from, &name);
+        self.modlist_pictures.remove(from);
+        self.modlist_pictures.remove(&name);
         self.refresh_modlists();
         self.status_message = fmt(self.i18n.get(TranslationKey::SetsRenamed), &[from, &name]);
         Ok(())
@@ -3652,7 +3698,11 @@ impl App {
     pub fn delete_modlist(&mut self, name: &str) {
         let Some(dir) = self.modlists_folder() else { return };
         match trash::delete(crate::modlists::path_for(&dir, name)) {
-            Ok(()) => self.status_message = fmt(self.i18n.get(TranslationKey::SetsDeleted), &[name]),
+            Ok(()) => {
+                crate::modlist_images::remove_image(&crate::modlist_images::images_dir(), name);
+                self.modlist_pictures.remove(name);
+                self.status_message = fmt(self.i18n.get(TranslationKey::SetsDeleted), &[name]);
+            }
             Err(e) => self.status_message = fmt(self.i18n.get(TranslationKey::SetsWriteError), &[&e.to_string()]),
         }
         self.refresh_modlists();

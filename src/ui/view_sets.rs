@@ -33,9 +33,11 @@ enum SetAction {
         target: std::path::PathBuf,
     },
     Copied(String),
+    SetPicture(String, std::path::PathBuf),
+    RemovePicture(String),
 }
 
-const CARD_SIZE: Vec2 = Vec2::new(168.0, 132.0);
+const CARD_SIZE: Vec2 = Vec2::new(168.0, 140.0);
 
 pub fn render_sets_view(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
@@ -46,6 +48,7 @@ pub fn render_sets_view(app: &mut App, ui: &mut Ui) {
         None,
     );
     ui.add_space(8.0);
+    app.load_modlist_pictures(ui.ctx());
 
     // Something is always open on the right: the loaded set, else the first one.
     if app.selected_modlist.is_none() {
@@ -135,6 +138,8 @@ fn apply_actions(app: &mut App, actions: Vec<SetAction>) {
             SetAction::Import(file) => app.import_modlist(&file),
             SetAction::Export { name, target } => app.export_modlist(&name, &target),
             SetAction::Copied(name) => app.status_message = fmt(t.get(TranslationKey::SetsCopied), &[&name]),
+            SetAction::SetPicture(name, file) => app.set_modlist_picture(&name, &file),
+            SetAction::RemovePicture(name) => app.remove_modlist_picture(&name),
             SetAction::OpenFolder => {
                 if let Some(dir) = app.modlists_folder() {
                     let _ = std::fs::create_dir_all(&dir);
@@ -145,18 +150,24 @@ fn apply_actions(app: &mut App, actions: Vec<SetAction>) {
     }
 }
 
-/// A steady color per name, for the letter square of a card.
-fn card_color(name: &str) -> Color32 {
-    let palette = [
-        THEME.accent_purple,
-        THEME.accent_cyan,
-        THEME.accent_emerald,
-        THEME.accent_rose,
-        THEME.accent_amber,
-        THEME.accent_info,
-    ];
-    let sum: usize = name.bytes().map(usize::from).sum();
-    palette[sum % palette.len()]
+/// The picture of a set in `rect`: the user's own, or the generated placeholder with the
+/// modpack icon on top. Before the textures are made, a plain tinted square.
+fn paint_set_picture(app: &App, ui: &Ui, name: &str, rect: egui::Rect, radius: u8) {
+    let Some((tex, custom)) = app.modlist_pictures.get(name) else {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(radius), tint(THEME.accent_cyan));
+        return;
+    };
+    egui::Image::from_texture(tex)
+        .corner_radius(CornerRadius::same(radius))
+        .paint_at(ui, rect);
+    if !custom {
+        let ([r, g, b], _) = crate::modlist_images::placeholder_colors(name);
+        let icon = egui::Rect::from_center_size(rect.center(), rect.size() * 0.46);
+        egui::Image::new(ICON_MODS)
+            .tint(Color32::from_rgb(r, g, b))
+            .paint_at(ui, icon);
+    }
 }
 
 fn render_cards(app: &mut App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
@@ -273,23 +284,9 @@ fn set_card(app: &App, ui: &mut Ui, list: &ModList, selected: bool) -> egui::Res
     };
     painter.rect(rect, CornerRadius::same(8), fill, stroke, egui::StrokeKind::Middle);
 
-    // Letter square
-    let color = card_color(&list.name);
-    let square = egui::Rect::from_center_size(egui::pos2(rect.center().x, rect.top() + 34.0), Vec2::splat(44.0));
-    painter.rect_filled(square, CornerRadius::same(8), tint(color));
-    let letter: String = list
-        .name
-        .chars()
-        .next()
-        .map(|c| c.to_uppercase().collect())
-        .unwrap_or_default();
-    painter.text(
-        square.center(),
-        egui::Align2::CENTER_CENTER,
-        letter,
-        egui::FontId::proportional(22.0),
-        color,
-    );
+    // Picture: the user's own or the generated one
+    let square = egui::Rect::from_center_size(egui::pos2(rect.center().x, rect.top() + 36.0), Vec2::splat(52.0));
+    paint_set_picture(app, ui, &list.name, square, 8);
 
     // Name: at most two centred lines, cut with "…" (a third would run into the mod count)
     let mut job = egui::text::LayoutJob::simple(
@@ -303,7 +300,7 @@ fn set_card(app: &App, ui: &mut Ui, list: &ModList, selected: bool) -> egui::Res
     job.halign = egui::Align::Center;
     let name_galley = painter.layout_job(job);
     painter.with_clip_rect(rect.shrink(6.0)).galley(
-        egui::pos2(rect.center().x, rect.top() + 61.0),
+        egui::pos2(rect.center().x, rect.top() + 68.0),
         name_galley,
         THEME.text_primary,
     );
@@ -374,20 +371,57 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
     };
     let name = list.name.clone();
 
-    ui.label(
-        egui::RichText::new(&list.name)
-            .color(THEME.accent_cyan)
-            .size(18.0)
-            .strong(),
-    );
-    ui.add(
-        egui::Label::new(
-            egui::RichText::new(list.path.display().to_string())
-                .color(THEME.text_muted)
-                .size(11.0),
-        )
-        .truncate(),
-    );
+    // Picture (click to choose another), name, file, picture buttons
+    let custom_picture = app.modlist_pictures.get(&name).is_some_and(|(_, custom)| *custom);
+    let pick_picture = || {
+        rfd::FileDialog::new()
+            .add_filter(t.get(TranslationKey::SetsPictureFilter), &["png", "jpg", "jpeg", "gif"])
+            .pick_file()
+    };
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 12.0;
+        let (pic_rect, pic_resp) = ui.allocate_exact_size(Vec2::splat(72.0), Sense::click());
+        paint_set_picture(app, ui, &name, pic_rect, 10);
+        if pic_resp
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(t.get(TranslationKey::SetsPictureHint))
+            .clicked()
+        {
+            if let Some(file) = pick_picture() {
+                actions.push(SetAction::SetPicture(name.clone(), file));
+            }
+        }
+        ui.vertical(|ui| {
+            ui.label(
+                egui::RichText::new(&list.name)
+                    .color(THEME.accent_cyan)
+                    .size(18.0)
+                    .strong(),
+            );
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(list.path.display().to_string())
+                        .color(THEME.text_muted)
+                        .size(11.0),
+                )
+                .truncate(),
+            );
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if secondary_button(ui, t.get(TranslationKey::SetsPictureChoose))
+                    .on_hover_text(t.get(TranslationKey::SetsPictureHint))
+                    .clicked()
+                {
+                    if let Some(file) = pick_picture() {
+                        actions.push(SetAction::SetPicture(name.clone(), file));
+                    }
+                }
+                if custom_picture && secondary_button(ui, t.get(TranslationKey::SetsPictureRemove)).clicked() {
+                    actions.push(SetAction::RemovePicture(name.clone()));
+                }
+            });
+        });
+    });
     ui.add_space(8.0);
 
     ui.horizontal_wrapped(|ui| {

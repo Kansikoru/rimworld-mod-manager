@@ -17,6 +17,7 @@ pub mod load_time;
 pub mod matcher;
 pub mod mod_updates;
 pub mod models;
+pub mod modlist_images;
 pub mod modlists;
 pub mod mods_config;
 pub mod name_search;
