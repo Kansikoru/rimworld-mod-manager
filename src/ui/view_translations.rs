@@ -1,4 +1,4 @@
-use eframe::egui::{self, Rounding, Stroke, Ui};
+use eframe::egui::{self, CornerRadius, Stroke, Ui};
 
 use super::components::*;
 use super::icons::*;
@@ -147,9 +147,9 @@ fn render_installed_translations_column(app: &mut App, ui: &mut Ui) {
 
             for (idx, m) in translation_mods.iter().enumerate() {
                 let frame = egui::Frame {
-                    inner_margin: egui::Margin::symmetric(8.0, 6.0),
-                    outer_margin: egui::Margin::symmetric(0.0, 2.0),
-                    rounding: Rounding::same(6.0),
+                    inner_margin: egui::Margin::symmetric(8, 6),
+                    outer_margin: egui::Margin::symmetric(0, 2),
+                    corner_radius: CornerRadius::same(6),
                     fill: if idx % 2 == 0 { THEME.bg_card } else { THEME.bg_surface },
                     stroke: Stroke::new(1.0_f32, THEME.border_subtle),
                     shadow: egui::epaint::Shadow::NONE,

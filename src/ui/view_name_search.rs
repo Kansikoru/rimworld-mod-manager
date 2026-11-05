@@ -1,7 +1,7 @@
 //! "Find mods by name" window (D1): missing mods with no Workshop link, what the Workshop
 //! search found for each, ticks, and one "Subscribe" for the ticked ones.
 
-use eframe::egui::{self, Rounding, Vec2};
+use eframe::egui::{self, CornerRadius, Vec2};
 
 use super::components::*;
 use super::icons::*;
@@ -73,9 +73,9 @@ pub fn render_name_search_window(app: &mut App, ctx: &egui::Context) {
 
             for row in &search.rows {
                 egui::Frame {
-                    inner_margin: egui::Margin::symmetric(10.0, 6.0),
-                    outer_margin: egui::Margin::symmetric(0.0, 2.0),
-                    rounding: Rounding::same(6.0),
+                    inner_margin: egui::Margin::symmetric(10, 6),
+                    outer_margin: egui::Margin::symmetric(0, 2),
+                    corner_radius: CornerRadius::same(6),
                     fill: THEME.bg_card,
                     ..Default::default()
                 }

@@ -1,7 +1,7 @@
 //! "Saves" tab (F7): the game's saves on the left; for the selected one, how its mods
 //! compare with the current load order, and buttons to load them as in the save.
 
-use eframe::egui::{self, Color32, Rounding, Sense, Stroke, Ui, Vec2};
+use eframe::egui::{self, Color32, CornerRadius, Sense, Stroke, Ui, Vec2};
 
 use super::components::*;
 use super::icons::*;
@@ -205,11 +205,11 @@ fn render_list(app: &mut App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
                             name: row_name.clone(),
                             error: None,
                         }));
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui.button(t.get(TranslationKey::SetsBtnDelete)).clicked() {
                         actions.push(SaveAction::Dialog(SaveDialog::Delete { name: row_name }));
-                        ui.close_menu();
+                        ui.close();
                     }
                 });
             }
@@ -234,7 +234,7 @@ fn save_row(app: &App, ui: &mut Ui, save: &SaveInfo, selected: bool) -> egui::Re
     } else {
         Stroke::new(1.0_f32, THEME.border_subtle)
     };
-    painter.rect(rect, Rounding::same(6.0), fill, stroke);
+    painter.rect(rect, CornerRadius::same(6), fill, stroke, egui::StrokeKind::Middle);
 
     let left = rect.left() + 12.0;
 
@@ -553,7 +553,7 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
             // Inside the narrow layout's scrolling the height is unlimited: keep it to the window.
             .max_height(
                 ui.available_height()
-                    .min(ui.ctx().screen_rect().height() * 0.7)
+                    .min(ui.ctx().content_rect().height() * 0.7)
                     .max(120.0),
             )
             .show_rows(ui, 22.0, rows.len(), |ui, range| {

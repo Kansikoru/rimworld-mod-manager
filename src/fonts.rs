@@ -1,5 +1,6 @@
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily, FontId, FontTweak, TextStyle};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::ui_prefs::UiPrefs;
 
@@ -26,13 +27,13 @@ pub fn setup_custom_fonts(ctx: &egui::Context, prefs: &UiPrefs) {
     };
     let mut primary: Vec<(&str, FontData)> = Vec::new();
     if let Some(bytes) = prefs.font.bundled() {
-        primary.push(("BundledPrimaryFont", FontData::from_static(bytes).tweak(tweak)));
+        primary.push(("BundledPrimaryFont", FontData::from_static(bytes).tweak(tweak.clone())));
     }
     if let Some(bytes) = prefs.font.files().iter().find_map(|f| windows_font(f)) {
         primary.push(("SystemPrimaryFont", FontData::from_owned(bytes).tweak(tweak)));
     }
     for (i, (name, data)) in primary.into_iter().enumerate() {
-        fonts.font_data.insert(name.to_owned(), data);
+        fonts.font_data.insert(name.to_owned(), Arc::new(data));
         fonts
             .families
             .entry(FontFamily::Proportional)
@@ -44,10 +45,10 @@ pub fn setup_custom_fonts(ctx: &egui::Context, prefs: &UiPrefs) {
     if let Some(bytes) = windows_font("consola.ttf") {
         fonts.font_data.insert(
             "SystemMono".to_owned(),
-            FontData::from_owned(bytes).tweak(FontTweak {
+            Arc::new(FontData::from_owned(bytes).tweak(FontTweak {
                 scale,
                 ..Default::default()
-            }),
+            })),
         );
         fonts
             .families
@@ -63,7 +64,9 @@ pub fn setup_custom_fonts(ctx: &egui::Context, prefs: &UiPrefs) {
         ("malgun.ttf", "CJK_Korean"),
     ] {
         if let Some(bytes) = windows_font(file) {
-            fonts.font_data.insert(name.to_owned(), FontData::from_owned(bytes));
+            fonts
+                .font_data
+                .insert(name.to_owned(), Arc::new(FontData::from_owned(bytes)));
             fonts
                 .families
                 .entry(FontFamily::Proportional)
@@ -77,7 +80,7 @@ pub fn setup_custom_fonts(ctx: &egui::Context, prefs: &UiPrefs) {
         if let Some(bytes) = windows_font(file) {
             fonts
                 .font_data
-                .insert("SystemEmojiFont".to_owned(), FontData::from_owned(bytes));
+                .insert("SystemEmojiFont".to_owned(), Arc::new(FontData::from_owned(bytes)));
             fonts
                 .families
                 .entry(FontFamily::Proportional)
@@ -90,7 +93,7 @@ pub fn setup_custom_fonts(ctx: &egui::Context, prefs: &UiPrefs) {
     ctx.set_fonts(fonts);
 
     // Base sizes for widgets that don't set their own (labels, buttons, inputs).
-    ctx.style_mut(|style| {
+    ctx.global_style_mut(|style| {
         style.text_styles = [
             (TextStyle::Small, FontId::proportional(12.0)),
             (TextStyle::Body, FontId::proportional(14.0)),

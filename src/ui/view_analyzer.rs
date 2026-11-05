@@ -1,4 +1,4 @@
-use eframe::egui::{self, Color32, Rounding, Stroke, Ui};
+use eframe::egui::{self, Color32, CornerRadius, Stroke, Ui};
 
 use super::components::*;
 use super::icons::*;
@@ -38,7 +38,7 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
                     && success_button_icon(ui, ICON_COPY, t.get(TranslationKey::CrashBtnCopyPrompt)).clicked()
                 {
                     let prompt = generate_ai_diagnostic_prompt(report, app.is_russian);
-                    ui.output_mut(|o| o.copied_text = prompt);
+                    ui.ctx().copy_text(prompt);
                 }
 
                 if secondary_button_icon(ui, ICON_SAVE, t.get(TranslationKey::AnalyzerSaveReport)).clicked() {
@@ -273,8 +273,8 @@ fn render_culprits(ui: &mut Ui, t: crate::i18n::I18n, report: &crate::analyzer::
                 if !culprit.stack_trace_excerpt.is_empty() {
                     ui.add_space(6.0);
                     let code_frame = egui::Frame {
-                        inner_margin: egui::Margin::same(8.0),
-                        rounding: Rounding::same(4.0),
+                        inner_margin: egui::Margin::same(8),
+                        corner_radius: CornerRadius::same(4),
                         fill: Color32::from_rgb(15, 17, 23),
                         stroke: Stroke::new(1.0_f32, THEME.border_subtle),
                         shadow: egui::epaint::Shadow::NONE,
@@ -1200,8 +1200,8 @@ fn render_full_log_view(app: &mut App, ui: &mut Ui) {
 
     const LOG_ROW_H: f32 = 20.0;
     let code_frame = egui::Frame {
-        inner_margin: egui::Margin::same(8.0),
-        rounding: Rounding::same(6.0),
+        inner_margin: egui::Margin::same(8),
+        corner_radius: CornerRadius::same(6),
         fill: Color32::from_rgb(15, 17, 23),
         stroke: Stroke::new(1.0_f32, THEME.border_subtle),
         shadow: egui::epaint::Shadow::NONE,
@@ -1240,8 +1240,8 @@ fn render_full_log_view(app: &mut App, ui: &mut Ui) {
 
                         resp.context_menu(|ui| {
                             if ui.button(t.get(TranslationKey::AnalyzerCopyLine)).clicked() {
-                                ui.output_mut(|o| o.copied_text = line_text.to_string());
-                                ui.close_menu();
+                                ui.ctx().copy_text(line_text.to_string());
+                                ui.close();
                             }
                         });
                     });

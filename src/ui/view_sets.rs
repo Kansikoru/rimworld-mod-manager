@@ -1,7 +1,7 @@
 //! "Modpacks" tab: mod sets as cards on the left, the selected one's details, actions and
 //! mods on the right. The sets are the game's own ModLists files.
 
-use eframe::egui::{self, Color32, Rounding, Sense, Stroke, Ui, Vec2};
+use eframe::egui::{self, Color32, CornerRadius, Sense, Stroke, Ui, Vec2};
 
 use super::components::*;
 use super::icons::*;
@@ -271,12 +271,12 @@ fn set_card(app: &App, ui: &mut Ui, list: &ModList, selected: bool) -> egui::Res
     } else {
         Stroke::new(1.0_f32, THEME.border_subtle)
     };
-    painter.rect(rect, Rounding::same(8.0), fill, stroke);
+    painter.rect(rect, CornerRadius::same(8), fill, stroke, egui::StrokeKind::Middle);
 
     // Letter square
     let color = card_color(&list.name);
     let square = egui::Rect::from_center_size(egui::pos2(rect.center().x, rect.top() + 34.0), Vec2::splat(44.0));
-    painter.rect_filled(square, Rounding::same(8.0), tint(color));
+    painter.rect_filled(square, CornerRadius::same(8), tint(color));
     let letter: String = list
         .name
         .chars()
@@ -444,7 +444,7 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
             .clicked()
         {
             let text = app.modlist_share_text(list);
-            ui.output_mut(|o| o.copied_text = text);
+            ui.ctx().copy_text(text);
             actions.push(SetAction::Copied(name.clone()));
         }
         if secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::ModsBtnFolder)).clicked() {
@@ -602,7 +602,7 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
             // Inside the narrow layout's scrolling the height is unlimited: keep it to the window.
             .max_height(
                 ui.available_height()
-                    .min(ui.ctx().screen_rect().height() * 0.7)
+                    .min(ui.ctx().content_rect().height() * 0.7)
                     .max(120.0),
             )
             .show_rows(ui, 22.0, list.ids.len(), |ui, range| {

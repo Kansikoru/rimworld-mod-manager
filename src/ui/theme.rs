@@ -1,4 +1,4 @@
-use eframe::egui::{self, Color32, Rounding, Stroke, Visuals};
+use eframe::egui::{self, Color32, CornerRadius, Stroke, Visuals};
 
 /// Interface colors (soft lavender on deep violet-black).
 /// Field names are kept from the old theme so every screen picks up the new palette:
@@ -85,7 +85,7 @@ pub fn apply_dark_theme(ctx: &egui::Context) {
     visuals.widgets.noninteractive.weak_bg_fill = THEME.bg_surface;
     visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, THEME.border_subtle);
     visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, THEME.text_secondary);
-    visuals.widgets.noninteractive.rounding = Rounding::same(6.0);
+    visuals.widgets.noninteractive.corner_radius = CornerRadius::same(6);
 
     // Inactive buttons / inputs. `bg_fill` also paints slider tracks, checkbox boxes and
     // scrollbar handles: they need a visible color on a card (buttons use `weak_bg_fill`).
@@ -93,27 +93,27 @@ pub fn apply_dark_theme(ctx: &egui::Context) {
     visuals.widgets.inactive.weak_bg_fill = THEME.bg_card;
     visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, THEME.border_strong);
     visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, THEME.text_secondary);
-    visuals.widgets.inactive.rounding = Rounding::same(6.0);
+    visuals.widgets.inactive.corner_radius = CornerRadius::same(6);
 
     // Hovered
     visuals.widgets.hovered.bg_fill = THEME.bg_surface_hover;
     visuals.widgets.hovered.weak_bg_fill = THEME.bg_surface_hover;
     visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, THEME.border_strong);
     visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, THEME.text_primary);
-    visuals.widgets.hovered.rounding = Rounding::same(6.0);
+    visuals.widgets.hovered.corner_radius = CornerRadius::same(6);
 
     // Pressed
     visuals.widgets.active.bg_fill = THEME.accent_purple;
     visuals.widgets.active.weak_bg_fill = THEME.accent_purple;
     visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, THEME.accent_cyan);
     visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, THEME.text_primary);
-    visuals.widgets.active.rounding = Rounding::same(6.0);
+    visuals.widgets.active.corner_radius = CornerRadius::same(6);
 
     // Open menus / combo boxes
     visuals.widgets.open.bg_fill = THEME.bg_surface_hover;
     visuals.widgets.open.weak_bg_fill = THEME.bg_surface_hover;
     visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, THEME.border_strong);
-    visuals.widgets.open.rounding = Rounding::same(6.0);
+    visuals.widgets.open.corner_radius = CornerRadius::same(6);
 
     visuals.selection.bg_fill = tint(THEME.accent_cyan);
     visuals.selection.stroke = Stroke::new(1.0_f32, THEME.accent_cyan);

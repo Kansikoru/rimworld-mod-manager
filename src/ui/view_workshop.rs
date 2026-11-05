@@ -2,7 +2,7 @@
 //! version, cards with previews, the picked mod's description, and "Download" (a Steam
 //! subscription or SteamCMD, as set in Settings).
 
-use eframe::egui::{self, Color32, Rounding, Sense, Stroke, Ui, Vec2};
+use eframe::egui::{self, Color32, CornerRadius, Sense, Stroke, Ui, Vec2};
 use std::collections::{HashMap, HashSet};
 
 use super::components::*;
@@ -335,13 +335,18 @@ fn render_grid(
 /// with this text (plus icon and padding) won't fit.
 fn wrap_before_button(ui: &mut Ui, text: &str, extra: f32) {
     let font = egui::FontId::proportional(14.0);
-    let width = ui.fonts(|f| f.layout_no_wrap(text.to_string(), font, Color32::WHITE).size().x) + extra;
+    let width = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), font, Color32::WHITE)
+        .size()
+        .x
+        + extra;
     if ui.available_size_before_wrap().x < width {
         ui.end_row();
     }
 }
 
-fn paint_preview(ui: &Ui, rect: egui::Rect, tex: Option<&egui::TextureHandle>, rounding: Rounding) {
+fn paint_preview(ui: &Ui, rect: egui::Rect, tex: Option<&egui::TextureHandle>, rounding: CornerRadius) {
     ui.painter().rect_filled(rect, rounding, THEME.bg_dark);
     let Some(tex) = tex else { return };
     let size = tex.size_vec2();
@@ -381,11 +386,12 @@ fn card(
     } else {
         (THEME.bg_card, Stroke::new(1.0_f32, THEME.border_subtle))
     };
-    ui.painter().rect(rect, Rounding::same(8.0), fill, stroke);
+    ui.painter()
+        .rect(rect, CornerRadius::same(8), fill, stroke, egui::StrokeKind::Middle);
 
     let inner = rect.shrink(pad);
     let preview = egui::Rect::from_min_size(inner.min, Vec2::new(inner.width(), preview_h));
-    paint_preview(ui, preview, thumb, Rounding::same(6.0));
+    paint_preview(ui, preview, thumb, CornerRadius::same(6));
 
     // Title, then subscribers and versions, then the state.
     let mut child = ui.new_child(
@@ -446,7 +452,7 @@ fn render_details(
         ui.set_width(ui.available_width());
         let w = ui.available_width();
         let (rect, _) = ui.allocate_exact_size(Vec2::new(w, (w * 9.0 / 16.0).round()), Sense::hover());
-        paint_preview(ui, rect, preview, Rounding::same(6.0));
+        paint_preview(ui, rect, preview, CornerRadius::same(6));
         ui.add_space(8.0);
         ui.add(
             egui::Label::new(

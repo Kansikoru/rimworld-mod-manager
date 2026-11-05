@@ -1,4 +1,4 @@
-use eframe::egui::{self, Color32, ImageSource, Pos2, Rect, Response, Rounding, Sense, Stroke, Ui, Vec2};
+use eframe::egui::{self, Color32, CornerRadius, ImageSource, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2};
 
 use super::icons::*;
 use super::theme::{mix, tint, THEME};
@@ -72,7 +72,8 @@ pub fn badge(ui: &mut Ui, text: &str, bg: Color32, fg: Color32) -> Response {
         .layout_no_wrap(text.to_string(), egui::FontId::proportional(12.0), fg);
     let (rect, response) = ui.allocate_exact_size(galley.size() + BADGE_PAD * 2.0, Sense::hover());
     if ui.is_rect_visible(rect) {
-        ui.painter().rect(rect, Rounding::same(6.0), bg, Stroke::NONE);
+        ui.painter()
+            .rect(rect, CornerRadius::same(6), bg, Stroke::NONE, egui::StrokeKind::Middle);
         ui.painter().galley(rect.min + BADGE_PAD, galley, fg);
     }
     response
@@ -144,7 +145,8 @@ pub fn icon_badge(ui: &mut Ui, icon: ImageSource<'static>, text: &str, bg: Color
     );
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
     if ui.is_rect_visible(rect) {
-        ui.painter().rect(rect, Rounding::same(6.0), bg, Stroke::NONE);
+        ui.painter()
+            .rect(rect, CornerRadius::same(6), bg, Stroke::NONE, egui::StrokeKind::Middle);
         let icon_center = Pos2::new(rect.min.x + BADGE_PAD.x + BADGE_ICON / 2.0, rect.center().y);
         paint_icon(ui, icon, icon_center, BADGE_ICON, fg);
         let text_pos = Pos2::new(
@@ -251,8 +253,13 @@ fn styled_button_sized(
         let hovered = enabled && response.hovered();
         let dim = |c: Color32| if enabled { c } else { c.gamma_multiply(0.45) };
         let bg = if hovered { hover_fill } else { fill };
-        ui.painter()
-            .rect(rect, Rounding::same(6.0), dim(bg), Stroke::new(1.0_f32, dim(stroke)));
+        ui.painter().rect(
+            rect,
+            CornerRadius::same(6),
+            dim(bg),
+            Stroke::new(1.0_f32, dim(stroke)),
+            egui::StrokeKind::Middle,
+        );
         let color = dim(if hovered { hover_fg } else { fg });
         let mut x = rect.min.x + pad;
         if let Some(icon) = icon {
@@ -313,7 +320,7 @@ pub fn icon_button(ui: &mut Ui, icon: ImageSource<'static>, size: Vec2, tint_col
         let hovered = response.hovered();
         if hovered {
             ui.painter()
-                .rect_filled(rect, Rounding::same(4.0), THEME.bg_surface_hover);
+                .rect_filled(rect, CornerRadius::same(4), THEME.bg_surface_hover);
         }
         paint_icon(
             ui,
@@ -334,9 +341,10 @@ pub fn boxed_icon_button(ui: &mut Ui, icon: ImageSource<'static>) -> Response {
         let fill = if hovered { THEME.bg_surface_hover } else { THEME.bg_card };
         ui.painter().rect(
             rect,
-            Rounding::same(6.0),
+            CornerRadius::same(6),
             fill,
             Stroke::new(1.0_f32, THEME.border_strong),
+            egui::StrokeKind::Middle,
         );
         let color = if hovered {
             THEME.text_primary
@@ -397,7 +405,7 @@ pub fn workshop_links_hint(ui: &mut Ui, t: crate::i18n::I18n, no_link: usize, ha
 /// A dialog's content width and its largest height for the current window: as wide as
 /// wanted if the window allows, never taller than the window (the rest scrolls).
 pub fn dialog_size(ctx: &egui::Context, wanted_width: f32) -> (f32, f32) {
-    let screen = ctx.screen_rect();
+    let screen = ctx.content_rect();
     (
         wanted_width.min(screen.width() - 64.0).max(240.0),
         (screen.height() - 96.0).max(200.0),
@@ -435,7 +443,7 @@ pub fn nav_tab_face(ui: &mut Ui, face: &TabFace, active: bool, pad: f32) -> Resp
                 let hovered = response.hovered();
                 if active || hovered {
                     ui.painter()
-                        .rect_filled(rect, Rounding::same(6.0), THEME.bg_surface_hover);
+                        .rect_filled(rect, CornerRadius::same(6), THEME.bg_surface_hover);
                 }
                 let color = if active {
                     THEME.accent_cyan
@@ -452,7 +460,7 @@ pub fn nav_tab_face(ui: &mut Ui, face: &TabFace, active: bool, pad: f32) -> Resp
                         Pos2::new(rect.min.x + half, rect.max.y - 2.0),
                         Pos2::new(rect.max.x - half, rect.max.y),
                     );
-                    ui.painter().rect_filled(line, Rounding::same(1.0), THEME.accent_cyan);
+                    ui.painter().rect_filled(line, CornerRadius::same(1), THEME.accent_cyan);
                 }
             }
             response
@@ -483,7 +491,7 @@ pub fn nav_tab_padded(ui: &mut Ui, label: &str, active: bool, pad: f32) -> Respo
         let hovered = response.hovered();
         if active || hovered {
             ui.painter()
-                .rect_filled(rect, Rounding::same(6.0), THEME.bg_surface_hover);
+                .rect_filled(rect, CornerRadius::same(6), THEME.bg_surface_hover);
         }
         let text_color = if hovered && !active { THEME.text_primary } else { color };
         let pos = Pos2::new(
@@ -496,7 +504,7 @@ pub fn nav_tab_padded(ui: &mut Ui, label: &str, active: bool, pad: f32) -> Respo
                 Pos2::new(rect.min.x + half, rect.max.y - 2.0),
                 Pos2::new(rect.max.x - half, rect.max.y),
             );
-            ui.painter().rect_filled(line, Rounding::same(1.0), THEME.accent_cyan);
+            ui.painter().rect_filled(line, CornerRadius::same(1), THEME.accent_cyan);
         }
     }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -540,8 +548,13 @@ pub fn chip(
         } else {
             fill
         };
-        ui.painter()
-            .rect(rect, Rounding::same(6.0), fill, Stroke::new(1.0_f32, stroke));
+        ui.painter().rect(
+            rect,
+            CornerRadius::same(6),
+            fill,
+            Stroke::new(1.0_f32, stroke),
+            egui::StrokeKind::Middle,
+        );
         let mut x = rect.min.x + pad;
         if let Some((icon, color)) = icon {
             paint_icon(
@@ -572,9 +585,9 @@ pub fn search_input(ui: &mut Ui, query: &mut String, placeholder: &str) {
 pub fn search_input_width(ui: &mut Ui, query: &mut String, placeholder: &str, width: f32) -> bool {
     let mut entered = false;
     egui::Frame {
-        inner_margin: egui::Margin::symmetric(8.0, 0.0),
+        inner_margin: egui::Margin::symmetric(8, 0),
         outer_margin: egui::Margin::ZERO,
-        rounding: Rounding::same(6.0),
+        corner_radius: CornerRadius::same(6),
         shadow: egui::epaint::Shadow::NONE,
         fill: THEME.bg_dark,
         stroke: Stroke::new(1.0_f32, THEME.border_subtle),
@@ -591,7 +604,7 @@ pub fn search_input_width(ui: &mut Ui, query: &mut String, placeholder: &str, wi
             let field = ui.add(
                 egui::TextEdit::singleline(query)
                     .hint_text(egui::RichText::new(placeholder).color(THEME.text_muted).size(12.0))
-                    .frame(false)
+                    .frame(egui::Frame::NONE)
                     .font(egui::FontId::proportional(12.0))
                     .desired_width((ui.available_width() - clear_w).max(40.0)),
             );
@@ -607,9 +620,9 @@ pub fn search_input_width(ui: &mut Ui, query: &mut String, placeholder: &str, wi
 /// Card: panel color, subtle border, 6 px corners.
 pub fn card_container<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
     let frame = egui::Frame {
-        inner_margin: egui::Margin::same(12.0),
-        outer_margin: egui::Margin::symmetric(0.0, 4.0),
-        rounding: Rounding::same(6.0),
+        inner_margin: egui::Margin::same(12),
+        outer_margin: egui::Margin::symmetric(0, 4),
+        corner_radius: CornerRadius::same(6),
         shadow: egui::epaint::Shadow::NONE,
         fill: THEME.bg_surface,
         stroke: Stroke::new(1.0_f32, THEME.border_subtle),

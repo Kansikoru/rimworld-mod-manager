@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
 
-use eframe::egui::{self, Rounding};
+use eframe::egui::{self, CornerRadius};
 
 use crate::analyzer::{analyze_rimworld_log, detect_rimworld_log_paths, LogReport};
 use crate::categories::ModCategory;
@@ -4807,7 +4807,11 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    /// One frame: the panels of the main window go into `root` (the whole window); windows
+    /// and popups still open on the context.
+    fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = root.ctx().clone();
+        let ctx = &ctx;
         // Process loaded mod icons
         while let Ok((pkg_id, img)) = self.icon_rx.try_recv() {
             let handle = ctx.load_texture(&pkg_id, img, Default::default());
@@ -4884,11 +4888,11 @@ impl eframe::App for App {
         // Top Navigation Bar
         // App bar (64 px): logo + name + version, text tabs, "Play" on the right.
         let bar_frame = egui::Frame {
-            inner_margin: egui::Margin::symmetric(16.0, 12.0),
+            inner_margin: egui::Margin::symmetric(16, 12),
             fill: THEME.bg_surface,
             ..Default::default()
         };
-        egui::TopBottomPanel::top("top_panel").frame(bar_frame).show(ctx, |ui| {
+        egui::Panel::top("top_panel").frame(bar_frame).show_inside(root, |ui| {
             ui.horizontal(|ui| {
                 ui.set_height(40.0);
                 ui.spacing_mut().item_spacing.x = 8.0;
@@ -4972,7 +4976,7 @@ impl eframe::App for App {
                 let (logo_rect, logo) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
                 ui.painter().rect_filled(
                     logo_rect,
-                    Rounding::same(6.0),
+                    CornerRadius::same(6),
                     crate::ui::theme::tint(THEME.accent_cyan),
                 );
                 egui::Image::new(ICON_LOGO).paint_at(ui, logo_rect.shrink(4.0));
@@ -5018,22 +5022,20 @@ impl eframe::App for App {
                     let in_menu = hidden.iter().any(|(tab, _)| *tab == self.current_tab);
                     let more = crate::ui::components::nav_tab_face(ui, &more_face, in_menu, tab_pad)
                         .on_hover_text(t.get(TranslationKey::TabsMore));
-                    let popup_id = ui.make_persistent_id("top_bar_more_tabs");
-                    if more.clicked() {
-                        ui.memory_mut(|m| m.toggle_popup(popup_id));
-                    }
-                    egui::popup_below_widget(ui, popup_id, &more, egui::PopupCloseBehavior::CloseOnClick, |ui| {
-                        ui.set_min_width(180.0);
-                        for (tab_val, face) in hidden {
-                            let name = match face {
-                                TabFace::Text(label) => *label,
-                                TabFace::Icon(_, name) => *name,
-                            };
-                            if ui.selectable_label(self.current_tab == *tab_val, name).clicked() {
-                                self.current_tab = *tab_val;
+                    egui::Popup::from_toggle_button_response(&more)
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+                        .show(|ui| {
+                            ui.set_min_width(180.0);
+                            for (tab_val, face) in hidden {
+                                let name = match face {
+                                    TabFace::Text(label) => *label,
+                                    TabFace::Icon(_, name) => *name,
+                                };
+                                if ui.selectable_label(self.current_tab == *tab_val, name).clicked() {
+                                    self.current_tab = *tab_val;
+                                }
                             }
-                        }
-                    });
+                        });
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -5051,13 +5053,13 @@ impl eframe::App for App {
 
         // Status bar (28 px): last status on the left, game version on the right.
         let status_frame = egui::Frame {
-            inner_margin: egui::Margin::symmetric(16.0, 6.0),
+            inner_margin: egui::Margin::symmetric(16, 6),
             fill: THEME.bg_surface,
             ..Default::default()
         };
-        egui::TopBottomPanel::bottom("bottom_status_bar")
+        egui::Panel::bottom("bottom_status_bar")
             .frame(status_frame)
-            .show(ctx, |ui| {
+            .show_inside(root, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(&self.status_message)
@@ -5092,17 +5094,17 @@ impl eframe::App for App {
         // Main area: window background with 16 px side padding.
         let central_frame = egui::Frame {
             inner_margin: egui::Margin {
-                left: 16.0,
-                right: 16.0,
-                top: 8.0,
-                bottom: 12.0,
+                left: 16,
+                right: 16,
+                top: 8,
+                bottom: 12,
             },
             fill: THEME.bg_dark,
             ..Default::default()
         };
         egui::CentralPanel::default()
             .frame(central_frame)
-            .show(ctx, |ui| match self.current_tab {
+            .show_inside(root, |ui| match self.current_tab {
                 AppTab::Mods => crate::ui::view_mods::render_mods_view(self, ui),
                 AppTab::Sets => crate::ui::view_sets::render_sets_view(self, ui),
                 AppTab::Saves => crate::ui::view_saves::render_saves_view(self, ui),
@@ -5646,9 +5648,9 @@ impl App {
                         for (i, b) in backups.iter().enumerate() {
                             let diff = crate::mods_config::diff_lists(&self.active_mods, &b.mods);
                             egui::Frame {
-                                inner_margin: egui::Margin::symmetric(10.0, 6.0),
-                                outer_margin: egui::Margin::symmetric(0.0, 2.0),
-                                rounding: Rounding::same(6.0),
+                                inner_margin: egui::Margin::symmetric(10, 6),
+                                outer_margin: egui::Margin::symmetric(0, 2),
+                                corner_radius: CornerRadius::same(6),
                                 fill: THEME.bg_card,
                                 ..Default::default()
                             }

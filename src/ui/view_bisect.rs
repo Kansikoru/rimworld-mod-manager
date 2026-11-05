@@ -55,8 +55,8 @@ pub fn render_bisect_window(app: &mut App, ctx: &egui::Context) {
 /// A dark box with a border for a scrolling list inside the window.
 fn list_box(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
     egui::Frame {
-        inner_margin: egui::Margin::symmetric(8.0, 6.0),
-        rounding: egui::Rounding::same(6.0),
+        inner_margin: egui::Margin::symmetric(8, 6),
+        corner_radius: egui::CornerRadius::same(6),
         fill: THEME.bg_dark,
         stroke: egui::Stroke::new(1.0_f32, THEME.border_subtle),
         ..Default::default()
@@ -96,7 +96,7 @@ fn render_setup(app: &mut App, ui: &mut Ui) {
         egui::ScrollArea::vertical()
             .id_salt("bisect_keep_scroll")
             // Shorter in a short window, so "Start" stays within reach.
-            .max_height((ui.ctx().screen_rect().height() * 0.3).clamp(100.0, 240.0))
+            .max_height((ui.ctx().content_rect().height() * 0.3).clamp(100.0, 240.0))
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 for id in &order {

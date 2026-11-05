@@ -1,4 +1,4 @@
-use eframe::egui::{self, Color32, Rounding, Stroke, Ui, Vec2};
+use eframe::egui::{self, Color32, CornerRadius, Stroke, Ui, Vec2};
 use std::collections::HashSet;
 
 use super::components::*;
@@ -66,8 +66,8 @@ fn handle_mod_drag(app: &mut App, ctx: &egui::Context) {
             .interactable(false)
             .show(ctx, |ui| {
                 egui::Frame {
-                    inner_margin: egui::Margin::symmetric(10.0, 6.0),
-                    rounding: Rounding::same(6.0),
+                    inner_margin: egui::Margin::symmetric(10, 6),
+                    corner_radius: CornerRadius::same(6),
                     fill: THEME.bg_surface_hover,
                     stroke: Stroke::new(1.0_f32, THEME.accent_cyan),
                     ..Default::default()
@@ -262,14 +262,14 @@ fn open_selected_in_workshop_item(ui: &mut Ui, t: crate::i18n::I18n, lists: ModL
         .replace("{}", &ids.len().to_string());
     if ui.button(label).clicked() {
         open_many_in_workshop_tab(ui.ctx(), ids);
-        ui.close_menu();
+        ui.close();
     }
 }
 
 /// Dragged rows are drawn faded, so it is clear what is being moved.
 fn fade_row(ui: &Ui, rect: egui::Rect) {
     ui.painter()
-        .rect_filled(rect, Rounding::same(6.0), THEME.bg_surface.gamma_multiply(0.65));
+        .rect_filled(rect, CornerRadius::same(6), THEME.bg_surface.gamma_multiply(0.65));
 }
 
 /// Width of the details strip on the right (the player can drag its edge).
@@ -286,16 +286,16 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
         render_mods_main(app, ui, false);
         return;
     }
-    egui::SidePanel::right("mod_details_side")
+    egui::Panel::right("mod_details_side")
         .resizable(true)
-        .default_width(SIDE_DETAILS_W)
-        .width_range(260.0..=560.0)
+        .default_size(SIDE_DETAILS_W)
+        .size_range(260.0..=560.0)
         .show_separator_line(false)
-        .frame(egui::Frame::none().inner_margin(egui::Margin {
-            left: 12.0,
-            right: 0.0,
-            top: 4.0,
-            bottom: 4.0,
+        .frame(egui::Frame::NONE.inner_margin(egui::Margin {
+            left: 12,
+            right: 0,
+            top: 4,
+            bottom: 4,
         }))
         // No scrolling of its own: the card stands to the bottom, only a long description
         // scrolls inside it.
@@ -304,7 +304,7 @@ fn render_mods_view_inner(app: &mut App, ui: &mut Ui) {
             render_mod_details_panel(app, ui, true)
         });
     egui::CentralPanel::default()
-        .frame(egui::Frame::none())
+        .frame(egui::Frame::NONE)
         .show_inside(ui, |ui| {
             unclip_edges(ui);
             render_mods_main(app, ui, true)
@@ -452,26 +452,18 @@ fn render_mods_main(app: &mut App, ui: &mut Ui, side: bool) {
                 return;
             }
             // Narrow window: a magnifier opens the search field below it; lit while a search is active.
-            let popup_id = ui.make_persistent_id("mods_search_popup");
             let style = if app.mod_search_query.trim().is_empty() {
                 ButtonStyle::Secondary
             } else {
                 ButtonStyle::Primary
             };
             let resp = styled_button(ui, Some(ICON_SEARCH), "", style).on_hover_text(placeholder);
-            if resp.clicked() {
-                ui.memory_mut(|m| m.toggle_popup(popup_id));
-            }
-            egui::popup_below_widget(
-                ui,
-                popup_id,
-                &resp,
-                egui::PopupCloseBehavior::CloseOnClickOutside,
-                |ui| {
+            egui::Popup::from_toggle_button_response(&resp)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show(|ui| {
                     ui.set_min_width(240.0);
                     search_input_width(ui, &mut app.mod_search_query, placeholder, 240.0);
-                },
-            );
+                });
         });
     });
 
@@ -672,15 +664,15 @@ fn render_active_panel(app: &mut App, ui: &mut Ui, details_fit: bool, card: bool
     // In a short window the summary (no mod selected) isn't worth the space.
     let show_card = card && app.is_details_panel_visible && (details_fit || app.selected_mod_id.is_some());
     if show_card {
-        let panel = egui::TopBottomPanel::bottom("mod_details_card")
-            .frame(egui::Frame::none().inner_margin(egui::Margin::same(8.0)))
+        let panel = egui::Panel::bottom("mod_details_card")
+            .frame(egui::Frame::NONE.inner_margin(egui::Margin::same(8)))
             .show_separator_line(false)
             .resizable(false);
         if details_fit {
             panel.show_inside(ui, |ui| render_mod_details_panel(app, ui, false));
         } else {
             let max_h = (ui.available_height() * 0.4).max(90.0);
-            panel.max_height(max_h).show_inside(ui, |ui| {
+            panel.max_size(max_h).show_inside(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .id_salt("mod_details_scroll")
                     // Leave the panel's own margins out, so the card never covers the list.
@@ -690,7 +682,7 @@ fn render_active_panel(app: &mut App, ui: &mut Ui, details_fit: bool, card: bool
         }
     }
     egui::CentralPanel::default()
-        .frame(egui::Frame::none())
+        .frame(egui::Frame::NONE)
         .show_inside(ui, |ui| render_active_mods_column(app, ui));
 }
 
@@ -703,7 +695,7 @@ fn panel_card(ui: &mut Ui, width: f32, height: f32, add_contents: impl FnOnce(&m
             egui::Frame {
                 inner_margin: egui::Margin::ZERO,
                 outer_margin: egui::Margin::ZERO,
-                rounding: Rounding::same(6.0),
+                corner_radius: CornerRadius::same(6),
                 shadow: egui::epaint::Shadow::NONE,
                 fill: THEME.bg_surface,
                 stroke: Stroke::new(1.0_f32, THEME.border_subtle),
@@ -720,8 +712,8 @@ fn panel_card(ui: &mut Ui, width: f32, height: f32, add_contents: impl FnOnce(&m
 
 /// 48 px panel header: uppercase title + muted count on the left, `right` content on the right.
 fn panel_header(ui: &mut Ui, title: &str, count: usize, right: impl FnOnce(&mut Ui)) {
-    egui::Frame::none()
-        .inner_margin(egui::Margin::symmetric(16.0, 0.0))
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(16, 0))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.set_height(48.0);
@@ -755,8 +747,8 @@ fn panel_footer(
         ui.painter()
             .hline(rect.x_range(), rect.top(), Stroke::new(1.0_f32, THEME.border_subtle));
     }
-    egui::Frame::none()
-        .inner_margin(egui::Margin::symmetric(16.0, 0.0))
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(16, 0))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.set_height(if top_border { 48.0 } else { 28.0 });
@@ -793,9 +785,9 @@ fn mod_row_frame(selected: bool, related: bool, hovered: bool) -> egui::Frame {
         (THEME.bg_card, Stroke::NONE)
     };
     egui::Frame {
-        inner_margin: egui::Margin::symmetric(8.0, 5.0),
-        outer_margin: egui::Margin::symmetric(0.0, 1.0),
-        rounding: Rounding::same(6.0),
+        inner_margin: egui::Margin::symmetric(8, 5),
+        outer_margin: egui::Margin::symmetric(0, 1),
+        corner_radius: CornerRadius::same(6),
         shadow: egui::epaint::Shadow::NONE,
         fill,
         stroke,
@@ -823,7 +815,7 @@ fn paint_selection_bar(ui: &Ui, row: egui::Rect) {
         egui::pos2(row.min.x, row.center().y - 11.0),
         egui::pos2(row.min.x + 3.0, row.center().y + 11.0),
     );
-    ui.painter().rect_filled(bar, Rounding::same(1.5), THEME.accent_cyan);
+    ui.painter().rect_filled(bar, CornerRadius::same(2), THEME.accent_cyan);
 }
 
 /// Mod name in a list row: clickable, takes at most ~60% of the row so badges keep room,
@@ -1304,7 +1296,7 @@ fn category_context_menu(
             );
             if ui.button(t.get(TranslationKey::CategoriesReset)).clicked() {
                 *reset = Some(pkg_id.to_string());
-                ui.close_menu();
+                ui.close();
             }
         }
     });
@@ -1375,14 +1367,14 @@ fn render_mod_icon_pill(
     if let Some(tex) = texture {
         ui.add(
             egui::Image::new(tex)
-                .rounding(Rounding::same(4.0))
+                .corner_radius(CornerRadius::same(4))
                 .fit_to_exact_size(egui::vec2(20.0, 20.0)),
         );
         return;
     }
     let (icon, bg_col, fg_col) = mod_fallback_icon(is_protected, category);
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(20.0), egui::Sense::hover());
-    ui.painter().rect_filled(rect, Rounding::same(6.0), bg_col);
+    ui.painter().rect_filled(rect, CornerRadius::same(6), bg_col);
     egui::Image::new(icon)
         .texture_options(egui::TextureOptions::NEAREST)
         .tint(fg_col)
@@ -1513,15 +1505,18 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
         .id_salt("active_mods_scroll_right")
         .auto_shrink([false, false])
         .max_height(list_height)
-        .drag_to_scroll(false);
+        .scroll_source(egui::scroll_area::ScrollSource {
+            drag: false,
+            ..egui::scroll_area::ScrollSource::ALL
+        });
     if let Some(offset) = app.active_scroll_to.take() {
         scroll = scroll.vertical_scroll_offset(offset);
     }
     let mut scroll_offset = app.active_scroll_offset;
 
     // Only rows inside the visible area are built (M1): big modpacks stay smooth.
-    egui::Frame::none()
-        .inner_margin(egui::Margin::symmetric(8.0, 0.0))
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(8, 0))
         .show(ui, |ui| {
             let output = scroll.show_rows(ui, row_height, visible_rows.len(), |ui, row_range| {
                 let rows_top = ui.cursor().top();
@@ -1662,7 +1657,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                     if !is_protected {
                                         if ui.button(app.i18n.get(TranslationKey::ModsCtxDeactivate)).clicked() {
                                             deactivate_idx = Some(idx);
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                         // Deactivate all selected
                                         if app.selected_mod_ids.len() > 1
@@ -1675,31 +1670,31 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                                 .clicked()
                                         {
                                             deactivate_selected = true;
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                         ui.separator();
                                     }
                                     if idx > 0 && ui.button(app.i18n.get(TranslationKey::ModsCtxMoveUp)).clicked() {
                                         move_up_idx = Some(idx);
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                     if idx < app.active_mods.len().saturating_sub(1)
                                         && ui.button(app.i18n.get(TranslationKey::ModsCtxMoveDown)).clicked()
                                     {
                                         move_down_idx = Some(idx);
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                     ui.separator();
                                     if let Some(ref dir) = dir_path_ctx {
                                         if ui.button(app.i18n.get(TranslationKey::ModsCtxOpenFolder)).clicked() {
                                             open_external(dir);
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                     }
                                     if let Some(ref steam_id) = steam_id_ctx {
                                         if ui.button(app.i18n.get(TranslationKey::ModsCtxOpenWorkshop)).clicked() {
                                             open_in_workshop_tab(ui.ctx(), steam_id);
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                     }
                                     open_selected_in_workshop_item(
@@ -1724,7 +1719,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                         };
                                         if ui.button(ignore_text).clicked() {
                                             toggle_ignore_id = Some(pkg_id.clone());
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                     }
                                     if let Some(m) = mod_info_opt
@@ -1855,7 +1850,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                             let right_rect = finish_row(ui, &left_ui, &split);
 
                             // Right action buttons (deactivate, move)
-                            ui.allocate_new_ui(
+                            ui.scope_builder(
                                 egui::UiBuilder::new()
                                     .max_rect(right_rect)
                                     .layout(egui::Layout::right_to_left(egui::Align::Center)),
@@ -2129,13 +2124,16 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     let mut sweep_from: Option<String> = None;
 
     // Only rows inside the visible area are built (M1).
-    egui::Frame::none()
-        .inner_margin(egui::Margin::symmetric(8.0, 0.0))
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(8, 0))
         .show(ui, |ui| {
             egui::ScrollArea::vertical()
                 .id_salt("inactive_mods_scroll_left")
                 .auto_shrink([false, false])
-                .drag_to_scroll(false)
+                .scroll_source(egui::scroll_area::ScrollSource {
+                    drag: false,
+                    ..egui::scroll_area::ScrollSource::ALL
+                })
                 .max_height(list_height)
                 .min_scrolled_height(list_height)
                 .show_rows(ui, row_height, visible_mods.len(), |ui, row_range| {
@@ -2230,7 +2228,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                                     label_resp.context_menu(|ui| {
                                         if ui.button(app.i18n.get(TranslationKey::ModsCtxActivate)).clicked() {
                                             activate_id = Some(pkg_id_ctx.clone());
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                         if app.selected_mod_ids.len() > 1
                                             && ui
@@ -2242,17 +2240,17 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                                                 .clicked()
                                         {
                                             activate_selected = true;
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                         ui.separator();
                                         if ui.button(app.i18n.get(TranslationKey::ModsCtxOpenFolder)).clicked() {
                                             open_external(&dir_path_ctx);
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                         if let Some(ref steam_id) = steam_id_ctx {
                                             if ui.button(app.i18n.get(TranslationKey::ModsCtxOpenWorkshop)).clicked() {
                                                 open_in_workshop_tab(ui.ctx(), steam_id);
-                                                ui.close_menu();
+                                                ui.close();
                                             }
                                         }
                                         open_selected_in_workshop_item(
@@ -2278,7 +2276,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                                             };
                                             if ui.button(ignore_text).clicked() {
                                                 toggle_ignore_id = Some(pkg_id_ctx.clone());
-                                                ui.close_menu();
+                                                ui.close();
                                             }
                                         }
                                         if !pkg_id_ctx.to_lowercase().starts_with("ludeon.rimworld") {
@@ -2321,7 +2319,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                                 }
                                 let right_rect = finish_row(ui, &left_ui, &split);
 
-                                ui.allocate_new_ui(
+                                ui.scope_builder(
                                     egui::UiBuilder::new()
                                         .max_rect(right_rect)
                                         .layout(egui::Layout::right_to_left(egui::Align::Center)),
@@ -2404,8 +2402,9 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                 app.drop_target = Some(DropTarget::Available);
                 ui.painter().rect_stroke(
                     panel_rect.shrink(1.0),
-                    Rounding::same(6.0),
+                    CornerRadius::same(6),
                     Stroke::new(2.0_f32, THEME.accent_cyan),
+                    egui::StrokeKind::Middle,
                 );
             }
         }
@@ -2455,9 +2454,9 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui, side: bool) {
     });
 
     let frame = egui::Frame {
-        inner_margin: egui::Margin::same(12.0),
+        inner_margin: egui::Margin::same(12),
         outer_margin: egui::Margin::ZERO,
-        rounding: Rounding::same(6.0),
+        corner_radius: CornerRadius::same(6),
         fill: THEME.bg_dark,
         stroke: Stroke::new(1.0_f32, THEME.border_subtle),
         shadow: egui::epaint::Shadow::NONE,
@@ -2554,7 +2553,7 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui, side: bool) {
                     let frame = egui::Frame {
                         inner_margin: egui::Margin::ZERO,
                         outer_margin: egui::Margin::ZERO,
-                        rounding: Rounding::same(6.0),
+                        corner_radius: CornerRadius::same(6),
                         fill: bg_col,
                         stroke: Stroke::new(1.0_f32, fg_col.linear_multiply(0.4)),
                         shadow: egui::epaint::Shadow::NONE,

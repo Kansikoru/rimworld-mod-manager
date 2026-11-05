@@ -1,7 +1,7 @@
 //! SteamCMD window: what SteamCMD is doing (it runs hidden), in the manager's own look —
 //! the step, a progress bar, each mod with its state, and SteamCMD's own output folded away.
 
-use eframe::egui::{self, Rounding, Vec2};
+use eframe::egui::{self, CornerRadius, Vec2};
 
 use super::components::*;
 use super::icons::*;
@@ -60,8 +60,8 @@ pub fn render_steamcmd_window(app: &mut App, ctx: &egui::Context) {
                 );
                 ui.add_space(6.0);
                 egui::Frame {
-                    inner_margin: egui::Margin::same(6.0),
-                    rounding: Rounding::same(6.0),
+                    inner_margin: egui::Margin::same(6),
+                    corner_radius: CornerRadius::same(6),
                     fill: THEME.bg_dark,
                     stroke: egui::Stroke::new(1.0_f32, THEME.border_subtle),
                     ..Default::default()
@@ -70,7 +70,7 @@ pub fn render_steamcmd_window(app: &mut App, ctx: &egui::Context) {
                     ui.add(
                         egui::TextEdit::multiline(&mut input)
                             .code_editor()
-                            .frame(false)
+                            .frame(egui::Frame::NONE)
                             .desired_rows(3)
                             .desired_width(f32::INFINITY)
                             .hint_text("workshop_download_item 294100 818773962"),
@@ -144,7 +144,7 @@ pub fn render_steamcmd_window(app: &mut App, ctx: &egui::Context) {
                         THEME.accent_purple
                     })
                     .desired_height(8.0)
-                    .rounding(Rounding::same(4.0));
+                    .corner_radius(CornerRadius::same(4));
                 if !job.items.is_empty() {
                     bar = bar.text(
                         egui::RichText::new(fmt(
@@ -164,14 +164,14 @@ pub fn render_steamcmd_window(app: &mut App, ctx: &egui::Context) {
             if !job.items.is_empty() {
                 egui::ScrollArea::vertical()
                     .id_salt("steamcmd_items")
-                    .max_height((ctx.screen_rect().height() * 0.35).clamp(120.0, 320.0))
+                    .max_height((ctx.content_rect().height() * 0.35).clamp(120.0, 320.0))
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
                         for item in &job.items {
                             egui::Frame {
-                                inner_margin: egui::Margin::symmetric(10.0, 5.0),
-                                outer_margin: egui::Margin::symmetric(0.0, 2.0),
-                                rounding: Rounding::same(6.0),
+                                inner_margin: egui::Margin::symmetric(10, 5),
+                                outer_margin: egui::Margin::symmetric(0, 2),
+                                corner_radius: CornerRadius::same(6),
                                 fill: THEME.bg_card,
                                 ..Default::default()
                             }
@@ -269,8 +269,8 @@ pub fn render_steamcmd_window(app: &mut App, ctx: &egui::Context) {
             .default_open(console)
             .show(ui, |ui| {
                 egui::Frame {
-                    inner_margin: egui::Margin::same(8.0),
-                    rounding: Rounding::same(6.0),
+                    inner_margin: egui::Margin::same(8),
+                    corner_radius: CornerRadius::same(6),
                     fill: THEME.bg_dark,
                     stroke: egui::Stroke::new(1.0_f32, THEME.border_subtle),
                     ..Default::default()
