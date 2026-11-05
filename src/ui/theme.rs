@@ -119,4 +119,11 @@ pub fn apply_dark_theme(ctx: &egui::Context) {
     visuals.selection.stroke = Stroke::new(1.0_f32, THEME.accent_cyan);
 
     ctx.set_visuals(visuals);
+
+    // egui 0.37 made buttons roomier (padding 8x2, height 20); the layout of every tab is
+    // made for the earlier 4x1 and 18 px.
+    ctx.global_style_mut(|style| {
+        style.spacing.button_padding = egui::vec2(4.0, 1.0);
+        style.spacing.interact_size = egui::vec2(40.0, 18.0);
+    });
 }
