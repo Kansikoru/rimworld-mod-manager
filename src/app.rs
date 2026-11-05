@@ -3757,6 +3757,30 @@ impl App {
         }
     }
 
+    /// Workshop IDs of the missing dependencies that the Workshop database knows.
+    pub fn missing_dependency_workshop_ids(&self) -> Vec<String> {
+        let Some(index) = self.workshop_index.as_ref() else {
+            return Vec::new();
+        };
+        let mut ids: Vec<String> = Vec::new();
+        for problem in &self.dependency_report.problems {
+            if let DependencyProblem::Missing { required_id, .. } = problem {
+                if let Some(ws) = index.lookup(required_id, None) {
+                    if !ids.iter().any(|i| i == ws) {
+                        ids.push(ws.to_string());
+                    }
+                }
+            }
+        }
+        ids
+    }
+
+    /// Downloads every missing dependency the Workshop database knows, in one go.
+    pub fn download_missing_dependencies(&mut self) {
+        let ids = self.missing_dependency_workshop_ids();
+        self.subscribe_workshop_ids(ids);
+    }
+
     /// Enables every missing dependency, including dependencies of the mods it just
     /// enabled, then sorts the load order once.
     pub fn auto_fix_dependencies(&mut self) {

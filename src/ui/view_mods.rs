@@ -574,11 +574,26 @@ fn render_mods_main(app: &mut App, ui: &mut Ui, side: bool) {
                     ui.label(egui::RichText::new(summary).color(THEME.accent_amber).strong());
                 });
                 // Auto-fix only when it has something to do: incompatible mods are the
-                // player's choice (buttons below).
-                if app.dependency_report.auto_fixable() {
+                // player's choice (buttons below). Missing mods the Workshop database knows
+                // are downloaded in one go.
+                let auto_fix = app.dependency_report.auto_fixable();
+                let downloadable = app.missing_dependency_workshop_ids().len();
+                if auto_fix || downloadable > 0 {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if secondary_button(ui, t.get(TranslationKey::BtnAutoFixDependencies)).clicked() {
+                        if auto_fix && secondary_button(ui, t.get(TranslationKey::BtnAutoFixDependencies)).clicked() {
                             app.auto_fix_dependencies();
+                        }
+                        if downloadable > 0 {
+                            let label = fmt(t.get(TranslationKey::DepDownloadMissing), &[&downloadable.to_string()]);
+                            let busy = app.steam_busy();
+                            if ui
+                                .add_enabled_ui(!busy, |ui| primary_button_icon(ui, ICON_STEAM, &label))
+                                .inner
+                                .on_hover_text(t.get(TranslationKey::DepDownloadMissingHint))
+                                .clicked()
+                            {
+                                app.download_missing_dependencies();
+                            }
                         }
                     });
                 }
