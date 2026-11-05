@@ -8,7 +8,7 @@ use eframe::egui::{self, CornerRadius};
 
 use crate::analyzer::{analyze_rimworld_log, detect_rimworld_log_paths, LogReport};
 use crate::categories::ModCategory;
-use crate::cleaner::{delete_translation_mods, unsubscribe_and_delete_single};
+use crate::cleaner::{delete_mods, delete_translation_mods, unsubscribe_and_delete_single};
 use crate::community_rules::CommunityDatabase;
 use crate::dependencies::{validate_dependencies, DependencyProblem, DependencyReport};
 use crate::game_install::known_launch_flags;
@@ -75,6 +75,35 @@ pub enum DeleteKind {
     Translations,
     /// A single mod (trash icon)
     Single,
+    /// Mods chosen in the mod lists' context menu
+    Mods,
+    /// Unsubscribe only: Steam removes the files itself
+    Unsubscribe,
+    /// Folders to the Recycle Bin, then the mods are downloaded again
+    Reinstall,
+}
+
+/// A mod a background deletion works on: package ID, folder, Workshop ID.
+type DeleteTarget = (String, PathBuf, Option<String>);
+
+/// What a finished background deletion reports back.
+#[derive(Debug)]
+pub struct DeleteDone {
+    pub message: String,
+    /// The Steam step worked (for `Unsubscribe`: the mods are unsubscribed).
+    pub steam_ok: bool,
+}
+
+/// Workshop ID of a mod: from the Workshop folder, or a local copy kept in a folder named
+/// by its ID (SteamCMD downloads).
+pub fn workshop_id_of(m: &ModInfo) -> Option<String> {
+    m.steam_item_id.clone().or_else(|| {
+        m.dir_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|n| crate::modlists::is_workshop_id(n))
+            .map(str::to_string)
+    })
 }
 
 /// Deletion waiting for the user's confirmation in a modal window.
@@ -388,7 +417,9 @@ pub struct App {
     /// Closing the window was confirmed: don't ask again.
     allow_close: bool,
     /// Background delete (Steam unsubscribe + Recycle Bin); yields the status message.
-    pub delete_rx: Option<Receiver<String>>,
+    pub delete_rx: Option<Receiver<DeleteDone>>,
+    /// What the running deletion does, and to which mods (ID, folder, Workshop ID).
+    delete_job: Option<(DeleteKind, Vec<DeleteTarget>)>,
     /// Background reset of the 1.7 game cache.
     pub cache_rx: Option<Receiver<String>>,
     /// Background removal of DDS files that are not in the manager's log.
@@ -734,6 +765,7 @@ impl App {
             pending_question: None,
             allow_close: false,
             delete_rx: None,
+            delete_job: None,
             cache_rx: None,
             legacy_rx: None,
             history: None,
@@ -1052,9 +1084,12 @@ impl App {
             }
         }
         if let Some(rx) = &self.delete_rx {
-            if let Ok(msg) = rx.try_recv() {
+            if let Ok(done) = rx.try_recv() {
                 self.delete_rx = None;
-                self.status_message = msg;
+                self.status_message = done.message;
+                if let Some((kind, targets)) = self.delete_job.take() {
+                    self.finish_delete_job(kind, targets, done.steam_ok);
+                }
                 self.rescan_mods_keep_status();
             }
         }
@@ -1708,6 +1743,12 @@ impl App {
 
     /// Subscribes to Workshop items in one Steam session in the background.
     fn subscribe_workshop_ids(&mut self, ids: Vec<String>) {
+        self.download_workshop_ids(ids, false);
+    }
+
+    /// Downloads Workshop items: SteamCMD when it is on, else the Steam client.
+    /// `reinstall`: the old files were just removed, so Steam is asked to download again.
+    fn download_workshop_ids(&mut self, ids: Vec<String>, reinstall: bool) {
         if self.steam_busy() || ids.is_empty() {
             return;
         }
@@ -1721,10 +1762,10 @@ impl App {
             return;
         };
         self.status_message = fmt(t.get(TranslationKey::SetsSubscribing), &[&ids.len().to_string()]);
-        self.start_steam_client_download(dll, ids);
+        self.start_steam_client_download(dll, ids, reinstall);
     }
 
-    fn start_steam_client_download(&mut self, dll: PathBuf, ids: Vec<String>) {
+    fn start_steam_client_download(&mut self, dll: PathBuf, ids: Vec<String>, force_download: bool) {
         let t = self.i18n;
         // A flag of its own: a wait stopped just before keeps its "stop" even if it has not
         // looked at it yet.
@@ -1748,7 +1789,13 @@ impl App {
                     ctx.request_repaint();
                 }
             };
-            match crate::steam::subscribe_workshop_items_with_progress(&dll, &refs, Some(stop_flag), &mut on_prog) {
+            match crate::steam::subscribe_workshop_items_with_progress(
+                &dll,
+                &refs,
+                Some(stop_flag),
+                force_download,
+                &mut on_prog,
+            ) {
                 Ok((_accepted, installed)) if installed > 0 => fmt(
                     t.get(TranslationKey::SteamDownloadFinished),
                     &[&installed.to_string(), &ids.len().to_string()],
@@ -2913,13 +2960,7 @@ impl App {
             .iter()
             .filter(|m| !self.is_official_mod(m))
             .filter_map(|m| {
-                let workshop_id = m.steam_item_id.clone().or_else(|| {
-                    m.dir_path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .filter(|n| crate::modlists::is_workshop_id(n))
-                        .map(str::to_string)
-                })?;
+                let workshop_id = workshop_id_of(m)?;
                 Some(crate::mod_updates::CheckItem {
                     package_id: m.package_id.clone(),
                     workshop_id,
@@ -3737,6 +3778,74 @@ impl App {
         self.pending_delete = Some(pending);
     }
 
+    /// Asks for confirmation of a context menu action on mods (delete, unsubscribe,
+    /// reinstall); only the mods it applies to are listed. Core and DLC are left out.
+    pub fn request_mod_action(&mut self, kind: DeleteKind, ids: &[String]) {
+        let mods: Vec<&ModInfo> = ids
+            .iter()
+            .filter_map(|id| self.find_mod(id))
+            .filter(|m| !self.is_official_mod(m))
+            .filter(|m| match kind {
+                DeleteKind::Unsubscribe => m.steam_item_id.is_some(),
+                DeleteKind::Reinstall => self.can_reinstall(m),
+                _ => true,
+            })
+            .collect();
+        if mods.is_empty() {
+            return;
+        }
+        let pending = PendingDelete {
+            kind,
+            ids: mods.iter().map(|m| m.package_id.clone()).collect(),
+            names: mods.iter().map(|m| m.name.clone()).collect(),
+        };
+        self.pending_delete = Some(pending);
+    }
+
+    /// A mod can be downloaded again: a Steam subscription, or a copy in the Mods folder
+    /// named by its Workshop ID while SteamCMD downloads mods.
+    pub fn can_reinstall(&self, m: &ModInfo) -> bool {
+        if self.is_official_mod(m) {
+            return false;
+        }
+        m.steam_item_id.is_some() || (self.steamcmd_active() && workshop_id_of(m).is_some())
+    }
+
+    /// After a background deletion: deleted mods leave the active list, unsubscribed ones
+    /// too; reinstalled ones stay and are downloaded again.
+    fn finish_delete_job(&mut self, kind: DeleteKind, targets: Vec<DeleteTarget>, steam_ok: bool) {
+        match kind {
+            DeleteKind::Unsubscribe => {
+                if steam_ok {
+                    let ids: Vec<String> = targets.into_iter().map(|(id, _, _)| id).collect();
+                    remove_mods(&mut self.active_mods, &ids);
+                }
+            }
+            DeleteKind::Reinstall => {
+                let ws_ids: Vec<String> = targets
+                    .into_iter()
+                    .filter(|(_, dir, _)| !dir.exists())
+                    .filter_map(|(_, _, ws)| ws)
+                    .collect();
+                if !ws_ids.is_empty() {
+                    if self.steam_busy() {
+                        self.status_message = self.i18n.get(TranslationKey::ModsReinstallBusy).to_string();
+                    } else {
+                        self.download_workshop_ids(ws_ids, true);
+                    }
+                }
+            }
+            _ => {
+                let gone: Vec<String> = targets
+                    .into_iter()
+                    .filter(|(_, dir, _)| !dir.exists())
+                    .map(|(id, _, _)| id)
+                    .collect();
+                remove_mods(&mut self.active_mods, &gone);
+            }
+        }
+    }
+
     /// Runs the deletion the user confirmed in the modal window.
     /// Runs the deletion the user confirmed in the modal window — in the background: the
     /// Steam request and moving big folders to the Recycle Bin take seconds (R4).
@@ -3759,11 +3868,37 @@ impl App {
         }
         let steam_paths = self.steam_paths.clone();
         self.status_message = tr!("Удаление...", "Deleting...", "正在删除...").to_string();
+        self.delete_job = Some((
+            pending.kind,
+            targets
+                .iter()
+                .map(|m| (m.package_id.clone(), m.dir_path.clone(), workshop_id_of(m)))
+                .collect(),
+        ));
+        let t = self.i18n;
+        let done = |message: String| DeleteDone {
+            message,
+            steam_ok: true,
+        };
 
         self.delete_rx = Some(self.spawn_task(move || match pending.kind {
-            DeleteKind::Translations => {
+            DeleteKind::Unsubscribe => {
                 let refs: Vec<&ModInfo> = targets.iter().collect();
-                let res = delete_translation_mods(&refs, &steam_paths);
+                match crate::cleaner::unsubscribe_mods(&refs, &steam_paths) {
+                    Ok(n) => done(fmt(t.get(TranslationKey::ModsUnsubscribed), &[&n.to_string()])),
+                    Err(e) => DeleteDone {
+                        message: fmt(t.get(TranslationKey::ModsUnsubscribeFailed), &[&e]),
+                        steam_ok: false,
+                    },
+                }
+            }
+            DeleteKind::Translations | DeleteKind::Mods | DeleteKind::Reinstall => {
+                let refs: Vec<&ModInfo> = targets.iter().collect();
+                let res = match pending.kind {
+                    DeleteKind::Translations => delete_translation_mods(&refs, &steam_paths),
+                    DeleteKind::Reinstall => crate::cleaner::trash_mods(&refs),
+                    _ => delete_mods(&refs, &steam_paths),
+                };
                 let mut msg = tr!(
                     "Перемещено в Корзину: {} | Отписано в Steam: {}",
                     "Moved to Recycle Bin: {} | Unsubscribed in Steam: {}",
@@ -3780,11 +3915,11 @@ impl App {
                         err
                     ));
                 }
-                msg
+                done(msg)
             }
             DeleteKind::Single => {
                 let m = &targets[0];
-                match unsubscribe_and_delete_single(m, &steam_paths) {
+                done(match unsubscribe_and_delete_single(m, &steam_paths) {
                     Ok(()) => tr!(
                         "Мод {} перемещён в Корзину",
                         "Mod {} moved to the Recycle Bin",
@@ -3798,7 +3933,7 @@ impl App {
                         m.name,
                         e
                     ),
-                }
+                })
             }
         }));
     }
@@ -4077,7 +4212,7 @@ impl App {
             "正在订阅翻译：{}...",
             ids.len()
         );
-        self.start_steam_client_download(dll, ids);
+        self.start_steam_client_download(dll, ids, false);
     }
 
     /// Free-text Workshop search — in the background (S5).
@@ -4159,7 +4294,7 @@ impl App {
                 "正在发送订阅请求 #{}...",
                 id
             );
-            self.start_steam_client_download(dll, vec![id]);
+            self.start_steam_client_download(dll, vec![id], false);
         } else {
             crate::ui::components::open_external(crate::steam::workshop_url(item_id));
             self.status_message = tr!(
@@ -5169,18 +5304,32 @@ impl App {
         let mut confirm = false;
         let mut cancel = ctx.input(|i| i.key_pressed(egui::Key::Escape));
 
+        let (title, body, button) = match pending.kind {
+            DeleteKind::Unsubscribe => (
+                TranslationKey::ConfirmUnsubscribeTitle,
+                TranslationKey::ConfirmUnsubscribeBody,
+                TranslationKey::ConfirmUnsubscribeBtn,
+            ),
+            DeleteKind::Reinstall => (
+                TranslationKey::ConfirmReinstallTitle,
+                TranslationKey::ConfirmReinstallBody,
+                TranslationKey::ConfirmReinstallBtn,
+            ),
+            _ => (
+                TranslationKey::ConfirmDeleteTitle,
+                TranslationKey::ConfirmDeleteBody,
+                TranslationKey::ConfirmDeleteBtn,
+            ),
+        };
         let (_, max_height) = crate::ui::components::dialog_size(ctx, 560.0);
-        egui::Window::new(t.get(TranslationKey::ConfirmDeleteTitle))
+        egui::Window::new(t.get(title))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .max_height(max_height)
             .vscroll(true)
             .show(ctx, |ui| {
-                ui.label(fmt(
-                    t.get(TranslationKey::ConfirmDeleteBody),
-                    &[&pending.names.len().to_string()],
-                ));
+                ui.label(fmt(t.get(body), &[&pending.names.len().to_string()]));
                 ui.add_space(6.0);
                 egui::ScrollArea::vertical()
                     .id_salt("confirm_delete_list")
@@ -5192,7 +5341,7 @@ impl App {
                     });
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if crate::ui::components::danger_button(ui, t.get(TranslationKey::ConfirmDeleteBtn)).clicked() {
+                    if crate::ui::components::danger_button(ui, t.get(button)).clicked() {
                         confirm = true;
                     }
                     if crate::ui::components::secondary_button(ui, t.get(TranslationKey::BtnCancel)).clicked() {

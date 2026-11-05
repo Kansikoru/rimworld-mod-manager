@@ -94,6 +94,60 @@ pub fn delete_translation_mods(mods_to_delete: &[&ModInfo], steam_paths: &SteamP
         }
     }
 
+    delete_allowed(allowed, steam_paths, &mut result);
+    result
+}
+
+/// Unsubscribes from the Workshop mods among `mods_to_delete` and moves every folder to the
+/// Recycle Bin. Official content is skipped with an error.
+pub fn delete_mods(mods_to_delete: &[&ModInfo], steam_paths: &SteamPaths) -> CleanResult {
+    let mut result = CleanResult::default();
+    let allowed = without_protected(mods_to_delete, &mut result);
+    delete_allowed(allowed, steam_paths, &mut result);
+    result
+}
+
+/// Moves the mods' folders to the Recycle Bin and keeps their Workshop subscriptions:
+/// the first half of a reinstall. Official content is skipped with an error.
+pub fn trash_mods(mods: &[&ModInfo]) -> CleanResult {
+    let mut result = CleanResult::default();
+    let allowed = without_protected(mods, &mut result);
+    trash_each(allowed, true, &mut result);
+    result
+}
+
+/// Unsubscribes from the Workshop mods in one Steam session; Steam removes their files
+/// itself. Mods without a Workshop subscription are left alone.
+pub fn unsubscribe_mods(mods: &[&ModInfo], steam_paths: &SteamPaths) -> Result<usize, String> {
+    let ids: Vec<&str> = mods
+        .iter()
+        .filter(|m| !is_protected(m))
+        .filter_map(|m| m.steam_item_id.as_deref())
+        .collect();
+    unsubscribe(&ids, steam_paths)
+}
+
+fn without_protected<'a>(mods: &[&'a ModInfo], result: &mut CleanResult) -> Vec<&'a ModInfo> {
+    let mut allowed = Vec::new();
+    for m in mods {
+        if is_protected(m) {
+            result.errors.push(tr!(
+                "Защищённый мод '{}' нельзя удалить",
+                "Protected mod '{}' can't be deleted",
+                "受保护的模组「{}」不能删除",
+                m.package_id
+            ));
+            result.failed_count += 1;
+        } else {
+            allowed.push(*m);
+        }
+    }
+    allowed
+}
+
+/// One Steam request for all Workshop mods, then their folders go to the Recycle Bin.
+/// A Workshop mod stays when the unsubscribe failed.
+fn delete_allowed(allowed: Vec<&ModInfo>, steam_paths: &SteamPaths, result: &mut CleanResult) {
     let steam_ids: Vec<&str> = allowed.iter().filter_map(|m| m.steam_item_id.as_deref()).collect();
     let workshop_ok = match unsubscribe(&steam_ids, steam_paths) {
         Ok(n) => {
@@ -105,7 +159,11 @@ pub fn delete_translation_mods(mods_to_delete: &[&ModInfo], steam_paths: &SteamP
             false
         }
     };
+    trash_each(allowed, workshop_ok, result);
+}
 
+/// Moves each folder to the Recycle Bin; Workshop mods only when `workshop_ok`.
+fn trash_each(allowed: Vec<&ModInfo>, workshop_ok: bool, result: &mut CleanResult) {
     for m in allowed {
         if m.steam_item_id.is_some() && !workshop_ok {
             result.failed_count += 1;
@@ -121,8 +179,6 @@ pub fn delete_translation_mods(mods_to_delete: &[&ModInfo], steam_paths: &SteamP
             }
         }
     }
-
-    result
 }
 
 /// Unsubscribes from one mod (if it comes from the Workshop) and moves its folder to the
@@ -168,8 +224,21 @@ mod tests {
         assert!(unsubscribe_and_delete_single(&m, &no_steam).is_err());
         let res = delete_translation_mods(&[&m], &no_steam);
         assert_eq!((res.deleted_count, res.failed_count), (0, 1));
+        let res = delete_mods(&[&m], &no_steam);
+        assert_eq!((res.deleted_count, res.failed_count), (0, 1));
         assert!(dir.is_dir(), "folder must stay when Steam can't unsubscribe");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_mods_skips_core_and_dlc() {
+        let core = ModInfo {
+            package_id: "Ludeon.RimWorld.Royalty".into(),
+            name: "Royalty".into(),
+            ..Default::default()
+        };
+        let res = delete_mods(&[&core], &SteamPaths::default());
+        assert_eq!((res.deleted_count, res.failed_count, res.errors.len()), (0, 1, 1));
     }
 }

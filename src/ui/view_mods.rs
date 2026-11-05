@@ -4,7 +4,9 @@ use std::collections::HashSet;
 use super::components::*;
 use super::icons::*;
 use super::theme::THEME;
-use crate::app::{is_official_content, lookup_mod, passes_category_filter, App, DropTarget, ModDrag};
+use crate::app::{
+    is_official_content, lookup_mod, passes_category_filter, workshop_id_of, App, DeleteKind, DropTarget, ModDrag,
+};
 use crate::categories::ModCategory;
 use crate::dependencies::DependencyProblem;
 use crate::i18n::{fmt, tr, TranslationKey};
@@ -264,6 +266,80 @@ fn open_selected_in_workshop_item(ui: &mut Ui, t: crate::i18n::I18n, lists: ModL
         open_many_in_workshop_tab(ui.ctx(), ids);
         ui.close();
     }
+}
+
+/// Context menu items that remove mods: this mod, or every selected one when the row is
+/// part of a selection. Never offered for Core and DLC; each asks for confirmation first.
+/// - Workshop subscription: "Unsubscribe" (Steam removes the files), "Unsubscribe and delete".
+///   A plain "delete" is not offered: Steam would download a subscribed mod again.
+/// - Local mod: "Move to Recycle Bin".
+/// - "Reinstall": a subscription, or a local copy named by its Workshop ID while SteamCMD
+///   is on; the folder goes to the Recycle Bin and the mod is downloaded again.
+fn remove_mods_items(
+    ui: &mut Ui,
+    t: crate::i18n::I18n,
+    lists: &ModLists,
+    pkg_id: &str,
+    game_data: Option<&std::path::Path>,
+    steamcmd: bool,
+    out: &mut Option<(DeleteKind, Vec<String>)>,
+) {
+    let removable = |id: &str| lookup_mod(lists.index, lists.all, id).filter(|m| !is_official_content(m, game_data));
+    let in_selection = lists.selected.len() > 1 && lists.selected.iter().any(|s| s.eq_ignore_ascii_case(pkg_id));
+    let mods: Vec<&ModInfo> = if in_selection {
+        lists.selected.iter().filter_map(|id| removable(id)).collect()
+    } else {
+        removable(pkg_id).into_iter().collect()
+    };
+    if mods.is_empty() {
+        return;
+    }
+    let subscribed = mods.iter().filter(|m| m.steam_item_id.is_some()).count();
+    let reinstallable = mods
+        .iter()
+        .filter(|m| m.steam_item_id.is_some() || (steamcmd && workshop_id_of(m).is_some()))
+        .count();
+    let ids: Vec<String> = mods.iter().map(|m| m.package_id.clone()).collect();
+    // One mod: "Unsubscribe"; a selection: "Unsubscribe selected (N)", N = mods it applies to.
+    let label = |single: TranslationKey, many: TranslationKey, n: usize| {
+        if in_selection {
+            t.get(many).replace("{}", &n.to_string())
+        } else {
+            t.get(single).to_string()
+        }
+    };
+    let mut item = |ui: &mut Ui, text: String, kind: DeleteKind, danger: bool| {
+        let color = if danger { THEME.accent_rose } else { THEME.text_primary };
+        if ui.button(egui::RichText::new(text).color(color)).clicked() {
+            *out = Some((kind, ids.clone()));
+            ui.close();
+        }
+    };
+
+    ui.separator();
+    if reinstallable > 0 {
+        let text = label(
+            TranslationKey::ModsCtxReinstall,
+            TranslationKey::ModsCtxReinstallSelected,
+            reinstallable,
+        );
+        item(ui, text, DeleteKind::Reinstall, false);
+    }
+    if subscribed > 0 {
+        let text = label(
+            TranslationKey::ModsCtxUnsubscribe,
+            TranslationKey::ModsCtxUnsubscribeSelected,
+            subscribed,
+        );
+        item(ui, text, DeleteKind::Unsubscribe, true);
+    }
+    let delete_single = if subscribed > 0 {
+        TranslationKey::ModsCtxUnsubscribeDelete
+    } else {
+        TranslationKey::ModsCtxDelete
+    };
+    let text = label(delete_single, TranslationKey::ModsCtxDeleteSelected, mods.len());
+    item(ui, text, DeleteKind::Mods, true);
 }
 
 /// Dragged rows are drawn faded, so it is clear what is being moved.
@@ -1475,6 +1551,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     let mut download_dep_ws_id = None;
     let mut deactivate_selected = false;
     let mut toggle_ignore_id = None;
+    let mut mod_action: Option<(DeleteKind, Vec<String>)> = None;
     let mut cat_toggle: Option<(String, ModCategory)> = None;
     let mut cat_reset: Option<String> = None;
     let steamcmd_active = app.steamcmd_active();
@@ -1752,6 +1829,20 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                             &mut cat_reset,
                                         );
                                     }
+                                    remove_mods_items(
+                                        ui,
+                                        t,
+                                        &ModLists {
+                                            selected: &app.selected_mod_ids,
+                                            active: &app.active_mods,
+                                            all: &app.all_mods,
+                                            index: &app.mod_index,
+                                        },
+                                        pkg_id,
+                                        game_data.as_deref(),
+                                        steamcmd_active,
+                                        &mut mod_action,
+                                    );
                                 });
 
                                 // Badges: Core, categories, version, "not on disk"
@@ -2033,6 +2124,9 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     if let Some(pkg_id) = toggle_ignore_id {
         app.toggle_optimizer_ignore(&pkg_id);
     }
+    if let Some((kind, ids)) = mod_action {
+        app.request_mod_action(kind, &ids);
+    }
     if let Some(ws_id) = download_dep_ws_id {
         app.subscribe_steam_mod(&ws_id);
     }
@@ -2112,6 +2206,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     let mut activate_id = None;
     let mut activate_selected = false;
     let mut toggle_ignore_id = None;
+    let mut mod_action: Option<(DeleteKind, Vec<String>)> = None;
     let mut cat_toggle: Option<(String, ModCategory)> = None;
     let mut cat_reset: Option<String> = None;
     let mut download_dep_ws_id: Option<String> = None;
@@ -2307,6 +2402,20 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                                                 &mut cat_reset,
                                             );
                                         }
+                                        remove_mods_items(
+                                            ui,
+                                            t,
+                                            &ModLists {
+                                                selected: &app.selected_mod_ids,
+                                                active: &app.active_mods,
+                                                all: &app.all_mods,
+                                                index: &app.mod_index,
+                                            },
+                                            &pkg_id_ctx,
+                                            game_data.as_deref(),
+                                            steamcmd_active,
+                                            &mut mod_action,
+                                        );
                                     });
 
                                     relation_badge(ui, relation, t);
@@ -2442,6 +2551,9 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
 
     if let Some(pkg_id) = toggle_ignore_id {
         app.toggle_optimizer_ignore(&pkg_id);
+    }
+    if let Some((kind, ids)) = mod_action {
+        app.request_mod_action(kind, &ids);
     }
     if let Some(ws_id) = download_dep_ws_id {
         app.subscribe_steam_mod(&ws_id);

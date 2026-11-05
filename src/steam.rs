@@ -336,10 +336,14 @@ impl SteamDownloadProgress {
 /// Subscribes to `item_ids` and polls `GetItemState` + `GetItemDownloadInfo` while the Steam
 /// client downloads them, calling `on_progress` with updates. Returns `(subscribed_count, installed_count)`.
 /// `stop_flag` allows stopping the wait early to release the Steam API session (S1).
+/// `force_download` (reinstall): also asks Steam to download the items now, and does not
+/// trust an "installed" state in the first seconds, which Steam may still report for files
+/// that were just removed.
 pub fn subscribe_workshop_items_with_progress(
     dll_path: &Path,
     item_ids: &[&str],
     stop_flag: Option<Arc<AtomicBool>>,
+    force_download: bool,
     mut on_progress: impl FnMut(SteamDownloadProgress),
 ) -> Result<(usize, usize), String> {
     let ids: Vec<u64> = item_ids.iter().filter_map(|s| s.trim().parse().ok()).collect();
@@ -354,6 +358,19 @@ pub fn subscribe_workshop_items_with_progress(
             for id in &ids {
                 let _call_handle = call(ugc_ptr, *id);
             }
+            if force_download {
+                type DownloadFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64, bool) -> bool;
+                if let Ok(download) = lib.get::<DownloadFn>(b"SteamAPI_ISteamUGC_DownloadItem\0") {
+                    for id in &ids {
+                        download(ugc_ptr, *id, true);
+                    }
+                }
+            }
+            let trust_installed_after = if force_download {
+                std::time::Duration::from_secs(3)
+            } else {
+                std::time::Duration::ZERO
+            };
 
             type GetStateFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64) -> u32;
             type GetDlInfoFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64, *mut u64, *mut u64) -> bool;
@@ -400,7 +417,7 @@ pub fn subscribe_workshop_items_with_progress(
                     bytes_total,
                     active: installed < ids.len() && active,
                 });
-                if installed >= ids.len() {
+                if installed >= ids.len() && started.elapsed() >= trust_installed_after {
                     break;
                 }
                 // Give the Steam client up to 5 seconds to start downloading; if nothing is queued, stop waiting.
@@ -507,7 +524,7 @@ mod tests {
     #[test]
     fn subscribe_empty_items_returns_zero_immediately() {
         let flag = Arc::new(AtomicBool::new(false));
-        let res = subscribe_workshop_items_with_progress(Path::new("dummy.dll"), &[], Some(flag), |_| {});
+        let res = subscribe_workshop_items_with_progress(Path::new("dummy.dll"), &[], Some(flag), false, |_| {});
         assert_eq!(res, Ok((0, 0)));
     }
 
