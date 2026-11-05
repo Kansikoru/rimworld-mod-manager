@@ -1024,7 +1024,10 @@ fn update_badge(
 /// The "Filters" button of a narrow window: opens or folds the chips; lit when a filter is on.
 fn filters_toggle(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
-    let selected = app.category_filter.len() + usize::from(app.filter_updates) + usize::from(app.filter_no_version);
+    let selected = app.category_filter.len()
+        + usize::from(app.filter_updates)
+        + usize::from(app.filter_no_version)
+        + usize::from(app.filter_local);
     let label = if selected > 0 {
         format!("{} · {}", t.get(TranslationKey::ModsFiltersBtn), selected)
     } else {
@@ -1120,6 +1123,7 @@ fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
         .filter(|m| crate::version_check::supports_version(m, game_mm.as_deref()) == Some(false))
         .count();
     let updates = app.mod_updates.as_ref().map(|r| r.outdated_count()).unwrap_or(0);
+    let local = app.all_mods.iter().filter(|m| app.is_local_mod(m)).count();
 
     // Narrow window: the chips take many rows, so they fold behind a "Filters" button
     // (drawn here, or already drawn by the caller next to the list switch).
@@ -1144,7 +1148,8 @@ fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
     };
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
-        let all_selected = app.category_filter.is_empty() && !app.filter_updates && !app.filter_no_version;
+        let all_selected =
+            app.category_filter.is_empty() && !app.filter_updates && !app.filter_no_version && !app.filter_local;
         if chip(
             ui,
             None,
@@ -1157,6 +1162,7 @@ fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
             app.category_filter.clear();
             app.filter_updates = false;
             app.filter_no_version = false;
+            app.filter_local = false;
         }
         // Status filters: a newer Workshop version, no support for the installed game version.
         if updates > 0 {
@@ -1200,6 +1206,19 @@ fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
             {
                 app.filter_no_version = !app.filter_no_version;
             }
+        }
+        if local > 0
+            && chip(
+                ui,
+                Some((ICON_STATUS_LOCAL, THEME.text_secondary)),
+                t.get(TranslationKey::LocalChip),
+                local,
+                app.filter_local,
+            )
+            .on_hover_text(t.get(TranslationKey::LocalChipHint))
+            .clicked()
+        {
+            app.filter_local = !app.filter_local;
         }
         for cat in ModCategory::ALL {
             let Some(n) = counts.get(&cat) else {

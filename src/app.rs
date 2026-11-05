@@ -428,6 +428,8 @@ pub struct App {
     pub filter_updates: bool,
     /// Show only mods that don't declare the installed game version.
     pub filter_no_version: bool,
+    /// Show only mods from the game's Mods folder (not Workshop, not Core/DLC).
+    pub filter_local: bool,
     /// Narrow window: the Mods tab shows one list; this says which one.
     pub mods_show_active: bool,
     /// Narrow window: the category chips are folded behind a "Filters" button.
@@ -758,6 +760,7 @@ impl App {
             name_search_stop: Arc::new(AtomicBool::new(false)),
             filter_updates: false,
             filter_no_version: false,
+            filter_local: false,
             mods_show_active: true,
             show_filter_chips: false,
             // An unfinished search opens again where it stopped.
@@ -2993,11 +2996,19 @@ impl App {
             .and_then(|r| r.mods.get(&package_id.to_lowercase()))
     }
 
-    /// The "updates" and "no support for this version" filters of the mod lists.
+    /// A mod of the game's Mods folder: not from Workshop and not Core/DLC.
+    pub fn is_local_mod(&self, m: &ModInfo) -> bool {
+        m.origin == crate::models::ModOrigin::Local && !self.is_official_mod(m)
+    }
+
+    /// The "updates", "no support for this version" and "local" filters of the mod lists.
     pub fn passes_extra_filters(&self, m: Option<&ModInfo>, game_mm: Option<&str>) -> bool {
         let has_update = m.is_some_and(|m| self.mod_update(&m.package_id).is_some());
         let lacks_version = m.is_some_and(|m| crate::version_check::supports_version(m, game_mm) == Some(false));
-        (has_update || !self.filter_updates) && (lacks_version || !self.filter_no_version)
+        let local = m.is_some_and(|m| self.is_local_mod(m));
+        (has_update || !self.filter_updates)
+            && (lacks_version || !self.filter_no_version)
+            && (local || !self.filter_local)
     }
 
     // ----- Broken-mod search (F8) -----
