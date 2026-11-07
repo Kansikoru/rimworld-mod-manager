@@ -212,50 +212,83 @@ fn paint_set_picture(app: &App, ui: &Ui, name: &str, rect: egui::Rect, radius: u
     }
 }
 
+/// A button above the modpack cards.
+#[derive(Clone, Copy)]
+enum HeaderItem {
+    New,
+    Import,
+    Collection,
+    /// While a Steam collection loads.
+    Spinner,
+}
+
 fn render_cards(app: &mut App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
+    use HeaderItem::*;
     let t = app.i18n;
-    let buttons_w = styled_button_width(ui, true, t.get(TranslationKey::SetsNewFromCurrent))
-        + styled_button_width(ui, true, t.get(TranslationKey::SetsBtnImport))
-        + styled_button_width(ui, true, t.get(TranslationKey::SetsBtnCollection))
-        + 24.0;
-    // Search and the buttons in one row while the search keeps a usable width; in a narrow
-    // column the buttons wrap and the search goes under them. The estimate counts 12 px
-    // text, so a larger text size in Settings gets room too (×1.3). In the one row the
-    // buttons are laid from the right edge and the search takes what is left, so nothing
-    // runs past the column even when the estimate is short.
-    if ui.available_width() - buttons_w * 1.3 >= 160.0 {
-        let row = Vec2::new(ui.available_width(), 32.0);
+    // The column's own width, taken before anything is drawn: a row that came out too wide
+    // makes `available_width` larger afterwards.
+    let width = ui.available_width();
+    let gap = 8.0;
+    let sizes = [
+        (
+            New,
+            styled_button_width(ui, true, t.get(TranslationKey::SetsNewFromCurrent)),
+        ),
+        (
+            Import,
+            styled_button_width(ui, true, t.get(TranslationKey::SetsBtnImport)),
+        ),
+        (
+            Collection,
+            styled_button_width(ui, true, t.get(TranslationKey::SetsBtnCollection)),
+        ),
+    ];
+    let buttons_w: f32 = sizes.iter().map(|(_, w)| w + gap).sum();
+    // Search and the buttons in one row while the search keeps 160 px: the buttons go from
+    // the right edge and the search takes what is left. Otherwise the buttons go in rows
+    // of what fits (the widths are exact: the same font and padding the buttons use), and
+    // the search under them over the whole column.
+    if width - buttons_w >= 160.0 {
+        let row = Vec2::new(width, 32.0);
         ui.allocate_ui_with_layout(row, egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            header_buttons(app, ui, actions, true);
+            ui.spacing_mut().item_spacing.x = gap;
+            header_buttons(app, ui, actions, &[Spinner, Collection, Import, New]);
             let search_w = ui.available_width();
             search_input_width(ui, &mut app.sets_search, t.get(TranslationKey::SetsSearch), search_w);
         });
     } else {
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
-            header_buttons(app, ui, actions, false);
-        });
+        let mut rows: Vec<Vec<HeaderItem>> = vec![Vec::new()];
+        let mut used = 0.0;
+        for (item, w) in sizes {
+            let need = if used > 0.0 { gap + w } else { w };
+            if used > 0.0 && used + need > width {
+                rows.push(Vec::new());
+                used = 0.0;
+            }
+            used += if used > 0.0 { gap + w } else { w };
+            rows.last_mut().expect("a row is always there").push(item);
+        }
+        rows.last_mut().expect("a row is always there").push(Spinner);
+        for (i, row) in rows.iter().enumerate() {
+            if i > 0 {
+                ui.add_space(gap);
+            }
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                header_buttons(app, ui, actions, row);
+            });
+        }
         ui.add_space(6.0);
-        let width = ui.available_width();
         search_input_width(ui, &mut app.sets_search, t.get(TranslationKey::SetsSearch), width);
     }
     ui.add_space(10.0);
     render_card_grid(app, ui, actions);
 }
 
-/// "New from current", "Import…", "Collection…" above the cards (and a spinner while a
-/// collection loads). `from_right`: the row is laid right to left, so they are added in
-/// reverse to read in the same order.
-fn header_buttons(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, from_right: bool) {
-    #[derive(Clone, Copy)]
-    enum Item {
-        New,
-        Import,
-        Collection,
-        Spinner,
-    }
-    let order = [Item::New, Item::Import, Item::Collection, Item::Spinner];
+/// Draws `items` in the given order ("New from current", "Import…", "Collection…", the
+/// spinner while a collection loads).
+fn header_buttons(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, items: &[HeaderItem]) {
+    use HeaderItem as Item;
     let t = app.i18n;
     let mut draw = |ui: &mut Ui, item: Item| match item {
         Item::New => {
@@ -304,10 +337,8 @@ fn header_buttons(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, from_rig
             }
         }
     };
-    if from_right {
-        order.iter().rev().for_each(|item| draw(ui, *item));
-    } else {
-        order.iter().for_each(|item| draw(ui, *item));
+    for item in items {
+        draw(ui, *item);
     }
 }
 
@@ -687,9 +718,11 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, with_mod
             .num_columns(2)
             .spacing([16.0, 6.0])
             .show(ui, |ui| {
+                // A value too long for a narrow column is cut with "…" (full text on hover)
+                // instead of widening the card past the column.
                 let row = |ui: &mut Ui, key: TranslationKey, value: String, color: Color32| {
                     ui.label(egui::RichText::new(t.get(key)).color(THEME.text_muted));
-                    ui.label(egui::RichText::new(value).color(color));
+                    ui.add(egui::Label::new(egui::RichText::new(value).color(color)).truncate());
                     ui.end_row();
                 };
                 row(
