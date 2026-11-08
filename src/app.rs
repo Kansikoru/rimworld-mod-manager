@@ -94,6 +94,9 @@ pub struct DeleteDone {
     pub steam_ok: bool,
 }
 
+/// A Workshop collection's ID and its mods (or why they didn't load).
+pub type CollectionMods = (String, Result<Vec<crate::workshop_browse::WorkshopItem>, String>);
+
 /// Workshop ID of a mod: from the Workshop folder, or a local copy kept in a folder named
 /// by its ID (SteamCMD downloads).
 pub fn workshop_id_of(m: &ModInfo) -> Option<String> {
@@ -514,6 +517,9 @@ pub struct App {
     pub ws_error: Option<String>,
     ws_rx: Option<Receiver<Result<Vec<crate::workshop_browse::WorkshopItem>, String>>>,
     ws_loaded: bool,
+    /// The picked collection's mods: its ID and the result.
+    pub ws_collection: Option<CollectionMods>,
+    ws_collection_rx: Option<Receiver<CollectionMods>>,
     /// Items sent to Steam or SteamCMD from the tab this session.
     pub ws_requested: std::collections::HashSet<String>,
     ws_previews: std::collections::HashMap<String, PreviewSlot>,
@@ -836,6 +842,8 @@ impl App {
             ws_error: None,
             ws_rx: None,
             ws_loaded: false,
+            ws_collection: None,
+            ws_collection_rx: None,
             ws_requested: std::collections::HashSet::new(),
             ws_previews: std::collections::HashMap::new(),
             ws_preview_tx: None,
@@ -2037,6 +2045,7 @@ impl App {
     /// opens even when it's hidden in Settings.
     pub fn open_workshop_search(&mut self, name: &str) {
         self.ws_search = crate::name_search::clean_name(name);
+        self.ws_query.section = crate::workshop_browse::Section::Mods;
         self.ws_selected = None;
         self.ws_loaded = true;
         self.current_tab = AppTab::Workshop;
@@ -2115,8 +2124,51 @@ impl App {
         self.ws_selected = Some(first.clone());
         self.ws_loaded = true;
         self.ws_error = None;
+        self.ws_query.section = crate::workshop_browse::Section::Mods;
         self.current_tab = AppTab::Workshop;
         self.ws_rx = Some(self.spawn_task(move || crate::workshop_browse::fetch_items(&item_ids)));
+    }
+
+    /// "Mods" / "Collections": page 1 of the other section (a page still loading is dropped).
+    pub fn set_workshop_section(&mut self, section: crate::workshop_browse::Section) {
+        if self.ws_query.section == section {
+            return;
+        }
+        self.ws_query.section = section;
+        self.ws_selected = None;
+        self.ws_items.clear();
+        self.ws_rx = None;
+        self.search_workshop_tab();
+    }
+
+    /// Loads the picked collection's mods once (in the background).
+    pub fn ensure_collection_mods(&mut self) {
+        let Some(item) = self
+            .ws_selected
+            .as_ref()
+            .and_then(|id| self.ws_items.iter().find(|i| &i.id == id))
+            .filter(|i| i.is_collection)
+        else {
+            return;
+        };
+        let loaded = self.ws_collection.as_ref().is_some_and(|(id, _)| id == &item.id);
+        if loaded || self.ws_collection_rx.is_some() {
+            return;
+        }
+        let (id, children) = (item.id.clone(), item.children.clone());
+        self.ws_collection_rx =
+            Some(self.spawn_task(move || (id, crate::workshop_browse::fetch_collection_mods(&children))));
+    }
+
+    pub fn collection_mods_loading(&self) -> bool {
+        self.ws_collection_rx.is_some()
+    }
+
+    /// "Save as a modpack" on the Workshop tab: the collection becomes a new modpack.
+    pub fn import_workshop_collection(&mut self, id: &str) {
+        if let Err(e) = self.import_steam_collection(id) {
+            self.status_message = e;
+        }
     }
 
     /// A new search or sort: back to page 1.
@@ -2151,6 +2203,12 @@ impl App {
                     }
                     Err(e) => self.ws_error = Some(e),
                 }
+            }
+        }
+        if let Some(rx) = &self.ws_collection_rx {
+            if let Ok(result) = rx.try_recv() {
+                self.ws_collection_rx = None;
+                self.ws_collection = Some(result);
             }
         }
         if let Some(rx) = &self.ws_preview_rx {

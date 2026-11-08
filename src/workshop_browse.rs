@@ -8,6 +8,7 @@ use std::time::Duration;
 
 const BROWSE_URL: &str = "https://steamcommunity.com/workshop/browse/";
 const DETAILS_URL: &str = "https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/";
+const COLLECTION_URL: &str = "https://api.steampowered.com/ISteamRemoteStorage/GetCollectionDetails/v1/";
 pub const PER_PAGE: usize = 30;
 
 /// How the catalog is sorted (a search is always by relevance).
@@ -42,9 +43,27 @@ impl BrowseSort {
     }
 }
 
+/// Mods or collections (lists of mods people put together).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Section {
+    #[default]
+    Mods,
+    Collections,
+}
+
+impl Section {
+    fn param(self) -> &'static str {
+        match self {
+            Section::Mods => "readytouseitems",
+            Section::Collections => "collections",
+        }
+    }
+}
+
 /// What to show: one page of a search or of the sorted catalog.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct BrowseQuery {
+    pub section: Section,
     pub text: String,
     pub sort: BrowseSort,
     /// Only items tagged with this game version ("1.6"...).
@@ -68,6 +87,11 @@ pub struct WorkshopItem {
     pub versions: Vec<String>,
     /// Other tags ("Mod", "Translation"...).
     pub tags: Vec<String>,
+    /// How many people added it to favorites (collections have no subscriber count).
+    pub favorited: u64,
+    pub is_collection: bool,
+    /// A collection's items in its order.
+    pub children: Vec<String>,
 }
 
 fn encode(s: &str) -> String {
@@ -86,7 +110,10 @@ fn encode(s: &str) -> String {
 }
 
 pub fn browse_url(q: &BrowseQuery) -> String {
-    let mut url = format!("{BROWSE_URL}?appid=294100&section=readytouseitems&numperpage={PER_PAGE}");
+    let mut url = format!(
+        "{BROWSE_URL}?appid=294100&section={}&numperpage={PER_PAGE}",
+        q.section.param()
+    );
     let text = q.text.trim();
     if text.is_empty() {
         let (sort, days) = q.sort.param();
@@ -126,6 +153,69 @@ pub fn parse_browse_ids(html: &str) -> Vec<String> {
     }
     ids.truncate(PER_PAGE);
     ids
+}
+
+/// The collections page embeds each collection's items too, so only the top-level entries
+/// (followed by `creator`) are taken; older pages had links.
+pub fn parse_collection_ids(html: &str) -> Vec<String> {
+    static TOP_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"\\"publishedfileid\\":\\"(\d+)\\",\\"creator\\""#).unwrap());
+    static HREF_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"href="https://steamcommunity\.com/sharedfiles/filedetails/\?id=(\d+)""#).unwrap()
+    });
+    let mut seen = std::collections::HashSet::new();
+    let mut ids: Vec<String> = TOP_RE
+        .captures_iter(html)
+        .map(|c| c[1].to_string())
+        .filter(|id| seen.insert(id.clone()))
+        .collect();
+    if ids.is_empty() {
+        ids = HREF_RE
+            .captures_iter(html)
+            .map(|c| c[1].to_string())
+            .filter(|id| seen.insert(id.clone()))
+            .collect();
+    }
+    ids.truncate(PER_PAGE);
+    ids
+}
+
+/// Every collection of a `GetCollectionDetails` answer: its items by `sortorder`, each once.
+pub fn parse_collections(json: &str) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
+    let value: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    let list = value["response"]["collectiondetails"]
+        .as_array()
+        .ok_or("no collectiondetails")?;
+    let mut out = std::collections::HashMap::new();
+    for col in list {
+        let Some(id) = col["publishedfileid"].as_str() else {
+            continue;
+        };
+        if col["result"].as_i64() != Some(1) {
+            continue;
+        }
+        let mut children: Vec<(i64, usize, String)> = col["children"]
+            .as_array()
+            .map(|c| {
+                c.iter()
+                    .enumerate()
+                    .filter_map(|(i, c)| {
+                        let child = c["publishedfileid"].as_str()?;
+                        Some((c["sortorder"].as_i64().unwrap_or(i as i64), i, child.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        children.sort();
+        let mut seen = std::collections::HashSet::new();
+        let children = children
+            .into_iter()
+            .map(|(_, _, c)| c)
+            .filter(|c| seen.insert(c.clone()))
+            .collect();
+        out.insert(id.to_string(), children);
+    }
+    Ok(out)
 }
 
 /// BBCode -> plain text: tags dropped, `[url=x]text[/url]` keeps the text, images and
@@ -197,6 +287,9 @@ pub fn parse_items(json: &str, ids: &[String]) -> Result<Vec<WorkshopItem>, Stri
                 time_updated: number("time_updated"),
                 versions,
                 tags,
+                favorited: number("favorited"),
+                is_collection: false,
+                children: Vec::new(),
             },
         );
     }
@@ -213,7 +306,41 @@ pub fn fetch_page(q: &BrowseQuery) -> Result<Vec<WorkshopItem>, String> {
         .map_err(|e| e.to_string())?
         .into_string()
         .map_err(|e| e.to_string())?;
-    fetch_details(&agent, &parse_browse_ids(&html))
+    if q.section == Section::Mods {
+        return fetch_details(&agent, &parse_browse_ids(&html));
+    }
+    let ids = parse_collection_ids(&html);
+    let mut items = fetch_details(&agent, &ids)?;
+    let mut children = fetch_children(&agent, &ids)?;
+    for item in &mut items {
+        item.is_collection = true;
+        item.children = children.remove(&item.id).unwrap_or_default();
+    }
+    Ok(items)
+}
+
+/// `GetCollectionDetails` for the given collections.
+fn fetch_children(
+    agent: &ureq::Agent,
+    ids: &[String],
+) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
+    if ids.is_empty() {
+        return Ok(Default::default());
+    }
+    let mut form: Vec<(String, String)> = vec![("collectioncount".into(), ids.len().to_string())];
+    form.extend(
+        ids.iter()
+            .enumerate()
+            .map(|(i, id)| (format!("publishedfileids[{i}]"), id.clone())),
+    );
+    let pairs: Vec<(&str, &str)> = form.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let json = agent
+        .post(COLLECTION_URL)
+        .send_form(&pairs)
+        .map_err(|e| e.to_string())?
+        .into_string()
+        .map_err(|e| e.to_string())?;
+    parse_collections(&json)
 }
 
 /// Given items by their IDs (a mod opened from another tab).
@@ -222,24 +349,32 @@ pub fn fetch_items(ids: &[String]) -> Result<Vec<WorkshopItem>, String> {
     fetch_details(&agent, ids)
 }
 
+/// A collection's mods in its order (hidden or removed ones left out), 100 per request.
+pub fn fetch_collection_mods(children: &[String]) -> Result<Vec<WorkshopItem>, String> {
+    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(30)).build();
+    fetch_details(&agent, children)
+}
+
 fn fetch_details(agent: &ureq::Agent, ids: &[String]) -> Result<Vec<WorkshopItem>, String> {
-    if ids.is_empty() {
-        return Ok(Vec::new());
+    let mut out = Vec::new();
+    for chunk in ids.chunks(100) {
+        let mut form: Vec<(String, String)> = vec![("itemcount".into(), chunk.len().to_string())];
+        form.extend(
+            chunk
+                .iter()
+                .enumerate()
+                .map(|(i, id)| (format!("publishedfileids[{i}]"), id.clone())),
+        );
+        let pairs: Vec<(&str, &str)> = form.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let json = agent
+            .post(DETAILS_URL)
+            .send_form(&pairs)
+            .map_err(|e| e.to_string())?
+            .into_string()
+            .map_err(|e| e.to_string())?;
+        out.extend(parse_items(&json, chunk)?);
     }
-    let mut form: Vec<(String, String)> = vec![("itemcount".into(), ids.len().to_string())];
-    form.extend(
-        ids.iter()
-            .enumerate()
-            .map(|(i, id)| (format!("publishedfileids[{i}]"), id.clone())),
-    );
-    let pairs: Vec<(&str, &str)> = form.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    let json = agent
-        .post(DETAILS_URL)
-        .send_form(&pairs)
-        .map_err(|e| e.to_string())?
-        .into_string()
-        .map_err(|e| e.to_string())?;
-    parse_items(&json, ids)
+    Ok(out)
 }
 
 /// The preview at a given width (Steam's image server scales it), for thumbnails.
@@ -331,6 +466,28 @@ mod tests {
     }
 
     #[test]
+    fn collections_page_and_items() {
+        let q = BrowseQuery {
+            section: Section::Collections,
+            page: 1,
+            ..Default::default()
+        };
+        assert!(browse_url(&q).contains("&section=collections&"));
+        // A collection's items sit inside it with `sortorder`, not `creator`.
+        let html = r#"\"results\":[{\"publishedfileid\":\"10\",\"creator\":\"7\",\"children\":[{\"publishedfileid\":\"2009463077\",\"sortorder\":1}]},{\"publishedfileid\":\"11\",\"creator\":\"8\"}]"#;
+        assert_eq!(parse_collection_ids(html), ["10", "11"]);
+        let json = r#"{"response":{"collectiondetails":[
+            {"publishedfileid":"10","result":1,"children":[
+                {"publishedfileid":"3","sortorder":2},{"publishedfileid":"1","sortorder":0},
+                {"publishedfileid":"2","sortorder":1},{"publishedfileid":"1","sortorder":3}]},
+            {"publishedfileid":"11","result":9}
+        ]}}"#;
+        let cols = parse_collections(json).unwrap();
+        assert_eq!(cols["10"], ["1", "2", "3"]);
+        assert!(!cols.contains_key("11"));
+    }
+
+    #[test]
     fn details_in_page_order() {
         let json = r#"{"response":{"publishedfiledetails":[
             {"publishedfileid":"2","result":1,"title":"Two","description":"[h1]Hi[/h1]\r\n[url=https://x]link[/url]","preview_url":"https://img/2.png","subscriptions":1500,"file_size":"2048","time_updated":100,"tags":[{"tag":"Mod"},{"tag":"1.6"}]},
@@ -401,5 +558,26 @@ mod tests {
         })
         .unwrap();
         assert!(found.iter().any(|i| i.id == "818773962"));
+        let cols = fetch_page(&BrowseQuery {
+            section: Section::Collections,
+            page: 1,
+            ..Default::default()
+        })
+        .unwrap();
+        println!("{} collections", cols.len());
+        for c in cols.iter().take(3) {
+            println!(
+                "{} | {} | {} mods | {} favorites",
+                c.id,
+                c.title,
+                c.children.len(),
+                c.favorited
+            );
+        }
+        assert!(cols.len() >= 20 && cols.iter().all(|c| c.is_collection));
+        let first = cols.iter().find(|c| !c.children.is_empty()).unwrap();
+        let mods = fetch_collection_mods(&first.children).unwrap();
+        println!("first collection: {} of {} mods", mods.len(), first.children.len());
+        assert!(!mods.is_empty());
     }
 }

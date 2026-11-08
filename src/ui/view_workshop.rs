@@ -10,7 +10,7 @@ use super::icons::*;
 use super::theme::THEME;
 use crate::app::App;
 use crate::i18n::{fmt, I18n, TranslationKey};
-use crate::workshop_browse::{human_size, short_count, BrowseSort, WorkshopItem, PER_PAGE};
+use crate::workshop_browse::{human_size, short_count, BrowseSort, Section, WorkshopItem, PER_PAGE};
 
 const CARD_W: f32 = 210.0;
 const GAP: f32 = 10.0;
@@ -19,6 +19,8 @@ const BIG_W: u32 = 640;
 const VERSIONS: [&str; 4] = ["1.7", "1.6", "1.5", "1.4"];
 
 enum WsAction {
+    Section(Section),
+    ImportCollection(String),
     Search,
     Sort(BrowseSort),
     Version(Option<String>),
@@ -58,6 +60,7 @@ fn sorted_versions(versions: &[String]) -> Vec<String> {
 pub fn render_workshop_view(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
     app.ensure_workshop_loaded();
+    app.ensure_collection_mods();
     section_header(ui, t.get(TranslationKey::WsTitle), t.get(TranslationKey::WsHint), None);
     ui.add_space(8.0);
 
@@ -135,11 +138,13 @@ pub fn render_workshop_view(app: &mut App, ui: &mut Ui) {
                                 });
                         }
                         None => {
+                            let hint = match app.ws_query.section {
+                                Section::Mods => TranslationKey::WsPickHint,
+                                Section::Collections => TranslationKey::WsPickCollectionHint,
+                            };
                             card_container(ui, |ui| {
                                 ui.set_width(ui.available_width());
-                                ui.label(
-                                    egui::RichText::new(t.get(TranslationKey::WsPickHint)).color(THEME.text_muted),
-                                );
+                                ui.label(egui::RichText::new(t.get(hint)).color(THEME.text_muted));
                             });
                         }
                     }
@@ -153,6 +158,8 @@ pub fn render_workshop_view(app: &mut App, ui: &mut Ui) {
 fn apply(app: &mut App, actions: Vec<WsAction>) {
     for action in actions {
         match action {
+            WsAction::Section(s) => app.set_workshop_section(s),
+            WsAction::ImportCollection(id) => app.import_workshop_collection(&id),
             WsAction::Search => app.search_workshop_tab(),
             WsAction::Sort(sort) => {
                 app.ws_query.sort = sort;
@@ -176,8 +183,29 @@ fn render_toolbar(app: &mut App, ui: &mut Ui, actions: &mut Vec<WsAction>) {
     let t = app.i18n;
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+        // Mods / Collections: the picked one is filled.
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for (section, key) in [
+                (Section::Mods, TranslationKey::WsSectionMods),
+                (Section::Collections, TranslationKey::WsSectionCollections),
+            ] {
+                let style = if app.ws_query.section == section {
+                    ButtonStyle::Primary
+                } else {
+                    ButtonStyle::Secondary
+                };
+                if styled_button(ui, None, t.get(key), style).clicked() {
+                    actions.push(WsAction::Section(section));
+                }
+            }
+        });
+        let placeholder = match app.ws_query.section {
+            Section::Mods => TranslationKey::WsSearch,
+            Section::Collections => TranslationKey::WsSearchCollections,
+        };
         let field_w = ui.available_width().clamp(180.0, 340.0);
-        if search_input_width(ui, &mut app.ws_search, t.get(TranslationKey::WsSearch), field_w) {
+        if search_input_width(ui, &mut app.ws_search, t.get(placeholder), field_w) {
             actions.push(WsAction::Search);
         }
         if primary_button_icon(ui, ICON_SEARCH, t.get(TranslationKey::WsBtnSearch)).clicked() {
@@ -234,6 +262,31 @@ fn render_toolbar(app: &mut App, ui: &mut Ui, actions: &mut Vec<WsAction>) {
     });
 }
 
+/// The Workshop item is on disk: by its ID, or by its package ID from the Workshop database
+/// (a copy in a folder with another name).
+fn on_disk(app: &App, installed: &HashSet<String>, id: &str) -> bool {
+    installed.contains(id)
+        || app
+            .workshop_index
+            .as_ref()
+            .and_then(|idx| idx.package_for_id(id))
+            .is_some_and(|pkg| app.find_mod(pkg).is_some())
+}
+
+/// A collection's items on disk and the ones neither on disk nor sent for download.
+fn collection_state(app: &App, installed: &HashSet<String>, item: &WorkshopItem) -> (usize, Vec<String>) {
+    let mut have = 0;
+    let mut missing = Vec::new();
+    for id in &item.children {
+        if on_disk(app, installed, id) {
+            have += 1;
+        } else if !app.ws_requested.contains(id) {
+            missing.push(id.clone());
+        }
+    }
+    (have, missing)
+}
+
 fn have(item: &WorkshopItem, installed: &HashSet<String>, app: &App) -> Have {
     if installed.contains(&item.id) {
         Have::Installed
@@ -276,7 +329,12 @@ fn render_grid(
 
     let pager_h = 44.0;
     egui::ScrollArea::vertical()
-        .id_salt(("ws_grid", app.ws_query.page, &app.ws_query.text))
+        .id_salt((
+            "ws_grid",
+            app.ws_query.section == Section::Mods,
+            app.ws_query.page,
+            &app.ws_query.text,
+        ))
         .auto_shrink([false, false])
         .max_height((ui.available_height() - pager_h).max(120.0))
         .show(ui, |ui| {
@@ -288,7 +346,11 @@ fn render_grid(
                     ui.spacing_mut().item_spacing.x = GAP;
                     for item in row {
                         let selected = app.ws_selected.as_deref() == Some(item.id.as_str());
-                        let state = have(item, installed, app);
+                        let state = if item.is_collection {
+                            CardState::Collection(collection_state(app, installed, item).0)
+                        } else {
+                            CardState::Mod(have(item, installed, app))
+                        };
                         if card(ui, t, item, thumbs.get(&item.id), card_w, selected, state).clicked() {
                             actions.push(WsAction::Select(Some(item.id.clone())));
                         }
@@ -363,6 +425,13 @@ fn paint_preview(ui: &Ui, rect: egui::Rect, tex: Option<&egui::TextureHandle>, r
     );
 }
 
+/// What a card says under the title: a mod's state, or how many of a collection's mods are on disk.
+#[derive(Clone, Copy)]
+enum CardState {
+    Mod(Have),
+    Collection(usize),
+}
+
 fn card(
     ui: &mut Ui,
     t: I18n,
@@ -370,7 +439,7 @@ fn card(
     thumb: Option<&egui::TextureHandle>,
     width: f32,
     selected: bool,
-    state: Have,
+    state: CardState,
 ) -> egui::Response {
     let pad = 8.0;
     let preview_h = ((width - pad * 2.0) * 9.0 / 16.0).round();
@@ -415,22 +484,31 @@ fn card(
     child.add_space(4.0);
     child.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(short_count(item.subscriptions))
-                    .color(THEME.text_muted)
-                    .size(11.0),
-            )
-            .selectable(false),
-        );
+        let count = match state {
+            CardState::Collection(_) => fmt(
+                t.get(TranslationKey::WsCollectionMods),
+                &[&item.children.len().to_string()],
+            ),
+            CardState::Mod(_) => short_count(item.subscriptions),
+        };
+        ui.add(egui::Label::new(egui::RichText::new(count).color(THEME.text_muted).size(11.0)).selectable(false));
         match state {
-            Have::Installed => {
+            CardState::Mod(Have::Installed) => {
                 tag(ui, t.get(TranslationKey::WsInstalled), THEME.accent_emerald);
             }
-            Have::Requested => {
+            CardState::Mod(Have::Requested) => {
                 tag(ui, t.get(TranslationKey::WsRequested), THEME.accent_cyan);
             }
-            Have::No => {}
+            CardState::Collection(have) if have > 0 => {
+                let total = item.children.len();
+                let color = if have >= total {
+                    THEME.accent_emerald
+                } else {
+                    THEME.accent_cyan
+                };
+                tag(ui, &format!("{have}/{total}"), color);
+            }
+            _ => {}
         }
         for v in sorted_versions(&item.versions).iter().rev().take(2) {
             tag(ui, v, THEME.accent_purple);
@@ -447,23 +525,14 @@ fn render_details(
     installed: &HashSet<String>,
     actions: &mut Vec<WsAction>,
 ) {
+    if item.is_collection {
+        render_collection_details(app, ui, item, preview, installed, actions);
+        return;
+    }
     let t = app.i18n;
     card_container(ui, |ui| {
         ui.set_width(ui.available_width());
-        let w = ui.available_width();
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(w, (w * 9.0 / 16.0).round()), Sense::hover());
-        paint_preview(ui, rect, preview, CornerRadius::same(6));
-        ui.add_space(8.0);
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(&item.title)
-                    .color(THEME.text_primary)
-                    .size(17.0)
-                    .strong(),
-            )
-            .wrap(),
-        );
-        ui.add_space(6.0);
+        details_head(ui, item, preview);
 
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
@@ -602,9 +671,6 @@ fn render_details(
             ui.add_space(4.0);
         }
 
-        let muted = |ui: &mut Ui, text: String| {
-            ui.label(egui::RichText::new(text).color(THEME.text_secondary).size(12.0));
-        };
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 14.0;
             muted(
@@ -621,27 +687,191 @@ fn render_details(
                 );
             }
         });
+        details_tail(ui, item);
+    });
+}
+
+/// The big preview and the title.
+fn details_head(ui: &mut Ui, item: &WorkshopItem, preview: Option<&egui::TextureHandle>) {
+    let w = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, (w * 9.0 / 16.0).round()), Sense::hover());
+    paint_preview(ui, rect, preview, CornerRadius::same(6));
+    ui.add_space(8.0);
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(&item.title)
+                .color(THEME.text_primary)
+                .size(17.0)
+                .strong(),
+        )
+        .wrap(),
+    );
+    ui.add_space(6.0);
+}
+
+fn muted(ui: &mut Ui, text: String) {
+    ui.label(egui::RichText::new(text).color(THEME.text_secondary).size(12.0));
+}
+
+/// Version and other tags, then the description.
+fn details_tail(ui: &mut Ui, item: &WorkshopItem) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+        for v in sorted_versions(&item.versions).iter().rev() {
+            tag(ui, v, THEME.accent_purple);
+        }
+        for tg in &item.tags {
+            tag(ui, tg, THEME.text_muted);
+        }
+    });
+    if !item.description.is_empty() {
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(4.0);
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(&item.description)
+                    .color(THEME.text_secondary)
+                    .size(12.5),
+            )
+            .wrap(),
+        );
+    }
+}
+
+/// A collection: "Download missing", "Save as a modpack", the counts, and its mods (each
+/// opens in the tab).
+fn render_collection_details(
+    app: &App,
+    ui: &mut Ui,
+    item: &WorkshopItem,
+    preview: Option<&egui::TextureHandle>,
+    installed: &HashSet<String>,
+    actions: &mut Vec<WsAction>,
+) {
+    let t = app.i18n;
+    let (have_count, missing) = collection_state(app, installed, item);
+    let total = item.children.len();
+    card_container(ui, |ui| {
+        ui.set_width(ui.available_width());
+        details_head(ui, item, preview);
+
         ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
-            for v in sorted_versions(&item.versions).iter().rev() {
-                tag(ui, v, THEME.accent_purple);
+            ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+            if !missing.is_empty() {
+                let label = fmt(t.get(TranslationKey::DepDownloadMissing), &[&missing.len().to_string()]);
+                let via = if app.steamcmd_active() {
+                    t.get(TranslationKey::WsViaSteamCmd)
+                } else {
+                    t.get(TranslationKey::WsViaSteam)
+                };
+                wrap_before_button(ui, &label, 48.0);
+                if ui
+                    .add_enabled_ui(!app.steam_busy(), |ui| primary_button_icon(ui, ICON_STEAM, &label))
+                    .inner
+                    .on_hover_text(format!("{}\n{via}", t.get(TranslationKey::WsCollectionMissingHint)))
+                    .clicked()
+                {
+                    actions.push(WsAction::DownloadMany(missing.clone()));
+                }
+            } else if total > 0 && have_count >= total {
+                tag(ui, t.get(TranslationKey::WsInstalled), THEME.accent_emerald);
             }
-            for tg in &item.tags {
-                tag(ui, tg, THEME.text_muted);
+            wrap_before_button(ui, t.get(TranslationKey::WsSaveAsModpack), 24.0);
+            if ui
+                .add_enabled_ui(total > 0 && !app.collection_busy(), |ui| {
+                    secondary_button(ui, t.get(TranslationKey::WsSaveAsModpack))
+                })
+                .inner
+                .on_hover_text(t.get(TranslationKey::WsSaveAsModpackHint))
+                .clicked()
+            {
+                actions.push(WsAction::ImportCollection(item.id.clone()));
+            }
+            wrap_before_button(ui, t.get(TranslationKey::NameSearchOpenSteam), 24.0);
+            if secondary_button(ui, t.get(TranslationKey::NameSearchOpenSteam)).clicked() {
+                open_external(crate::steam::workshop_url(&item.id));
+            }
+            if app.steam_busy() || app.collection_busy() {
+                ui.spinner();
             }
         });
-        if !item.description.is_empty() {
-            ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(4.0);
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(&item.description)
-                        .color(THEME.text_secondary)
-                        .size(12.5),
-                )
-                .wrap(),
+        ui.add_space(6.0);
+
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 14.0;
+            muted(ui, fmt(t.get(TranslationKey::WsCollectionMods), &[&total.to_string()]));
+            muted(
+                ui,
+                fmt(
+                    t.get(TranslationKey::WsCollectionHave),
+                    &[&have_count.to_string(), &total.to_string()],
+                ),
             );
+            if item.favorited > 0 {
+                muted(
+                    ui,
+                    fmt(t.get(TranslationKey::WsFavorited), &[&item.favorited.to_string()]),
+                );
+            }
+            if item.time_updated > 0 {
+                muted(
+                    ui,
+                    fmt(t.get(TranslationKey::WsUpdated), &[&local_date_time(item.time_updated)]),
+                );
+            }
+        });
+        details_tail(ui, item);
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(t.get(TranslationKey::WsCollectionModsTitle))
+                .color(THEME.text_primary)
+                .strong(),
+        );
+        ui.add_space(4.0);
+        match app.ws_collection.as_ref().filter(|(id, _)| id == &item.id) {
+            Some((_, Ok(mods))) => {
+                for m in mods {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        if on_disk(app, installed, &m.id) {
+                            tag(ui, t.get(TranslationKey::WsInstalled), THEME.accent_emerald);
+                        } else if app.ws_requested.contains(&m.id) {
+                            tag(ui, t.get(TranslationKey::WsRequested), THEME.accent_cyan);
+                        }
+                        if ui
+                            .add(
+                                egui::Label::new(egui::RichText::new(&m.title).color(THEME.text_secondary).size(12.5))
+                                    .truncate()
+                                    .sense(Sense::click()),
+                            )
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .on_hover_text(format!("{} (#{})", m.title, m.id))
+                            .clicked()
+                        {
+                            open_in_workshop_tab(ui.ctx(), &m.id);
+                        }
+                    });
+                }
+            }
+            Some((_, Err(e))) => {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(fmt(t.get(TranslationKey::WsCollectionError), &[e]))
+                            .color(THEME.accent_rose),
+                    )
+                    .wrap(),
+                );
+            }
+            None => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(egui::RichText::new(t.get(TranslationKey::WsCollectionLoading)).color(THEME.text_muted));
+                });
+            }
         }
     });
 }
