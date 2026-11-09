@@ -296,16 +296,78 @@ pub fn parse_items(json: &str, ids: &[String]) -> Result<Vec<WorkshopItem>, Stri
     Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
 }
 
+/// What a failed request shows: "HTTP 500" for an answer with an error status (the whole
+/// URL is in the "Open in the browser" button anyway), ureq's text otherwise.
+fn request_error(e: &ureq::Error) -> String {
+    match e {
+        ureq::Error::Status(code, _) => format!("HTTP {code}"),
+        ureq::Error::Transport(t) => t.to_string(),
+    }
+}
+
+/// Steam's own server failed (5xx): usually it passes in a few minutes.
+pub fn is_server_error(message: &str) -> bool {
+    message.starts_with("HTTP 5")
+}
+
+/// One try of a request: the body, or what went wrong and whether another try may help.
+enum Attempt {
+    Body(String),
+    Again(String),
+    Stop(String),
+}
+
+/// A 4xx answer won't change on a retry; a 5xx, a dropped connection or a cut body may.
+fn attempt(result: Result<ureq::Response, ureq::Error>) -> Attempt {
+    match result {
+        Ok(resp) => match resp.into_string() {
+            Ok(body) => Attempt::Body(body),
+            Err(e) => Attempt::Again(e.to_string()),
+        },
+        Err(e @ ureq::Error::Status(code, _)) if code < 500 => Attempt::Stop(request_error(&e)),
+        Err(e) => Attempt::Again(request_error(&e)),
+    }
+}
+
+/// Steam's sites now and then answer 5xx or drop the connection for a moment: up to
+/// three tries a second or two apart.
+fn with_retries(call: impl FnMut() -> Attempt) -> Result<String, String> {
+    retry_every(Duration::from_millis(800), call)
+}
+
+fn retry_every(pause: Duration, mut call: impl FnMut() -> Attempt) -> Result<String, String> {
+    let mut last = String::new();
+    for n in 0..3u32 {
+        if n > 0 {
+            std::thread::sleep(pause * n);
+        }
+        match call() {
+            Attempt::Body(body) => return Ok(body),
+            Attempt::Stop(e) => return Err(e),
+            Attempt::Again(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
 /// One page: the browse page for the IDs, then their details.
 pub fn fetch_page(q: &BrowseQuery) -> Result<Vec<WorkshopItem>, String> {
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).build();
-    let html = agent
-        .get(&browse_url(q))
-        .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-        .call()
-        .map_err(|e| e.to_string())?
-        .into_string()
-        .map_err(|e| e.to_string())?;
+    let url = browse_url(q);
+    // The headers a browser sends: the page is made for one.
+    let html = with_retries(|| {
+        attempt(
+            agent
+                .get(&url)
+                .set(
+                    "User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                )
+                .set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                .set("Accept-Language", "en-US,en;q=0.9")
+                .call(),
+        )
+    })?;
     if q.section == Section::Mods {
         return fetch_details(&agent, &parse_browse_ids(&html));
     }
@@ -334,12 +396,7 @@ fn fetch_children(
             .map(|(i, id)| (format!("publishedfileids[{i}]"), id.clone())),
     );
     let pairs: Vec<(&str, &str)> = form.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    let json = agent
-        .post(COLLECTION_URL)
-        .send_form(&pairs)
-        .map_err(|e| e.to_string())?
-        .into_string()
-        .map_err(|e| e.to_string())?;
+    let json = with_retries(|| attempt(agent.post(COLLECTION_URL).send_form(&pairs)))?;
     parse_collections(&json)
 }
 
@@ -366,12 +423,7 @@ fn fetch_details(agent: &ureq::Agent, ids: &[String]) -> Result<Vec<WorkshopItem
                 .map(|(i, id)| (format!("publishedfileids[{i}]"), id.clone())),
         );
         let pairs: Vec<(&str, &str)> = form.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        let json = agent
-            .post(DETAILS_URL)
-            .send_form(&pairs)
-            .map_err(|e| e.to_string())?
-            .into_string()
-            .map_err(|e| e.to_string())?;
+        let json = with_retries(|| attempt(agent.post(DETAILS_URL).send_form(&pairs)))?;
         out.extend(parse_items(&json, chunk)?);
     }
     Ok(out)
@@ -463,6 +515,43 @@ mod tests {
         assert_eq!(parse_browse_ids(html), ["111", "222"]);
         let old = r#"<a href="https://steamcommunity.com/sharedfiles/filedetails/?id=5"></a><a href="https://steamcommunity.com/sharedfiles/filedetails/?id=6">"#;
         assert_eq!(parse_browse_ids(old), ["5", "6"]);
+    }
+
+    #[test]
+    fn steam_server_errors_are_tried_again() {
+        let status = |code: u16| {
+            attempt(Err(ureq::Error::Status(
+                code,
+                ureq::Response::new(code, "x", "").unwrap(),
+            )))
+        };
+        let mut calls = 0;
+        let got = retry_every(Duration::ZERO, || {
+            calls += 1;
+            if calls < 3 {
+                status(500)
+            } else {
+                attempt(ureq::Response::new(200, "OK", "page"))
+            }
+        });
+        assert_eq!((got, calls), (Ok("page".into()), 3));
+
+        let mut calls = 0;
+        let got = retry_every(Duration::ZERO, || {
+            calls += 1;
+            status(503)
+        });
+        assert_eq!(calls, 3);
+        assert!(is_server_error(&got.unwrap_err()));
+
+        // A client error won't change on a retry.
+        let mut calls = 0;
+        let got = retry_every(Duration::ZERO, || {
+            calls += 1;
+            status(404)
+        });
+        assert_eq!((got, calls), (Err("HTTP 404".into()), 1));
+        assert!(!is_server_error("HTTP 404"));
     }
 
     #[test]

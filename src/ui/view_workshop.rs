@@ -314,9 +314,36 @@ fn render_grid(
                 )
                 .wrap(),
             );
-            if secondary_button_icon(ui, ICON_REFRESH, t.get(TranslationKey::WsBtnSearch)).clicked() {
-                actions.push(WsAction::Page(app.ws_query.page));
+            if crate::workshop_browse::is_server_error(e) {
+                ui.add_space(4.0);
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(t.get(TranslationKey::WsSteamServerError))
+                            .color(THEME.text_secondary)
+                            .size(12.5),
+                    )
+                    .wrap(),
+                );
             }
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+                if ui
+                    .add_enabled_ui(!app.workshop_loading(), |ui| {
+                        secondary_button_icon(ui, ICON_REFRESH, t.get(TranslationKey::WsRetry))
+                    })
+                    .inner
+                    .clicked()
+                {
+                    actions.push(WsAction::Page(app.ws_query.page));
+                }
+                if secondary_button(ui, t.get(TranslationKey::WsOpenInBrowser)).clicked() {
+                    open_external(crate::workshop_browse::browse_url(&app.ws_query));
+                }
+                if app.workshop_loading() {
+                    ui.spinner();
+                }
+            });
         });
         return;
     }
