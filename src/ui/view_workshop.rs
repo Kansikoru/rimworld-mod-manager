@@ -414,6 +414,15 @@ fn render_grid(
         {
             actions.push(WsAction::Page(page + 1));
         }
+        if app.ws_source == crate::workshop_browse::Source::SteamClient {
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(t.get(TranslationKey::WsViaSteamClient))
+                    .color(THEME.text_muted)
+                    .size(12.5),
+            )
+            .on_hover_text(t.get(TranslationKey::WsViaSteamClientHint));
+        }
     });
 }
 

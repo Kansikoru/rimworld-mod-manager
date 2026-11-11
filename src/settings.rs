@@ -46,6 +46,9 @@ pub struct AppSettings {
     /// Number of save backups to retain per save stem (F12).
     #[serde(default = "default_save_backups_to_keep")]
     pub save_backups_to_keep: usize,
+    /// Workshop tab: when the Steam website refuses, ask the Steam client (off unless turned on).
+    #[serde(default)]
+    pub workshop_via_steam_client: bool,
 }
 
 fn default_true() -> bool {
@@ -72,6 +75,7 @@ impl Default for AppSettings {
             steamcmd_dir: None,
             backup_save_before_launch: true,
             save_backups_to_keep: 5,
+            workshop_via_steam_client: false,
         }
     }
 }
@@ -124,6 +128,7 @@ mod tests {
         assert_eq!(old.use_steamcmd, None);
         assert!(old.backup_save_before_launch);
         assert_eq!(old.save_backups_to_keep, 5);
+        assert!(!old.workshop_via_steam_client);
         // 2.1.0 wrote a plain true/false.
         std::fs::write(&path, r#"{"language":"English","use_steamcmd":false}"#).unwrap();
         assert_eq!(AppSettings::load_from(&path).unwrap().use_steamcmd, Some(false));

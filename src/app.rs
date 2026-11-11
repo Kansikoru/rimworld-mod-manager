@@ -493,6 +493,8 @@ pub struct App {
     pub history: Option<Vec<crate::mods_config::ConfigBackup>>,
     /// Look for a new version on GitHub once a day (Settings).
     pub check_updates: bool,
+    /// Workshop tab may ask the Steam client when the website refuses (Settings).
+    pub workshop_via_steam_client: bool,
     /// SteamCMD: download mods with it instead of the Steam client (Settings).
     pub use_steamcmd: bool,
     /// The user set the checkbox; until then it follows "SteamCMD is installed".
@@ -515,7 +517,9 @@ pub struct App {
     pub ws_items: Vec<crate::workshop_browse::WorkshopItem>,
     pub ws_selected: Option<String>,
     pub ws_error: Option<String>,
-    ws_rx: Option<Receiver<Result<Vec<crate::workshop_browse::WorkshopItem>, String>>>,
+    ws_rx: Option<Receiver<Result<crate::workshop_browse::Loaded, String>>>,
+    /// Where the last list came from: once the website refuses, the Steam client goes first.
+    pub ws_source: crate::workshop_browse::Source,
     ws_loaded: bool,
     /// The picked collection's mods: its ID and the result.
     pub ws_collection: Option<CollectionMods>,
@@ -612,6 +616,7 @@ impl App {
             ["-logfile".to_string()].into_iter().collect()
         };
         let last_check_updates = s.check_updates;
+        let workshop_via_steam_client = s.workshop_via_steam_client;
         let custom_steamcmd_dir = s.steamcmd_dir.clone();
         let use_steamcmd_set = s.use_steamcmd.is_some();
         // Never set: SteamCMD installed means downloads go through it.
@@ -822,6 +827,7 @@ impl App {
             bisect_note: None,
             bisect_watch_rx: None,
             check_updates: last_check_updates,
+            workshop_via_steam_client,
             use_steamcmd,
             use_steamcmd_set,
             custom_steamcmd_dir,
@@ -841,6 +847,7 @@ impl App {
             ws_selected: None,
             ws_error: None,
             ws_rx: None,
+            ws_source: crate::workshop_browse::Source::Web,
             ws_loaded: false,
             ws_collection: None,
             ws_collection_rx: None,
@@ -1434,6 +1441,7 @@ impl App {
             steamcmd_dir: self.custom_steamcmd_dir.clone(),
             backup_save_before_launch: self.backup_save_before_launch,
             save_backups_to_keep: self.save_backups_to_keep,
+            workshop_via_steam_client: self.workshop_via_steam_client,
         }
     }
 
@@ -2034,7 +2042,20 @@ impl App {
         }
         self.ws_error = None;
         let query = self.ws_query.clone();
-        self.ws_rx = Some(self.spawn_task(move || crate::workshop_browse::fetch_page(&query)));
+        let route = self.workshop_route();
+        self.ws_rx = Some(self.spawn_task(move || crate::workshop_browse::load_page(&query, &route)));
+    }
+
+    /// With the setting on, the Steam client is the other way to the Workshop (the game's
+    /// `steam_api64.dll` is needed for it), and goes first once the website has refused.
+    fn workshop_route(&self) -> crate::workshop_browse::Route {
+        crate::workshop_browse::Route {
+            steam_dll: self
+                .workshop_via_steam_client
+                .then(|| self.steam_paths.steam_dll_path.clone())
+                .flatten(),
+            prefer_steam: self.ws_source == crate::workshop_browse::Source::SteamClient,
+        }
     }
 
     pub fn workshop_loading(&self) -> bool {
@@ -2126,7 +2147,8 @@ impl App {
         self.ws_error = None;
         self.ws_query.section = crate::workshop_browse::Section::Mods;
         self.current_tab = AppTab::Workshop;
-        self.ws_rx = Some(self.spawn_task(move || crate::workshop_browse::fetch_items(&item_ids)));
+        let route = self.workshop_route();
+        self.ws_rx = Some(self.spawn_task(move || crate::workshop_browse::load_items(&item_ids, &route)));
     }
 
     /// "Mods" / "Collections": page 1 of the other section (a page still loading is dropped).
@@ -2156,8 +2178,9 @@ impl App {
             return;
         }
         let (id, children) = (item.id.clone(), item.children.clone());
+        let route = self.workshop_route();
         self.ws_collection_rx =
-            Some(self.spawn_task(move || (id, crate::workshop_browse::fetch_collection_mods(&children))));
+            Some(self.spawn_task(move || (id, crate::workshop_browse::load_collection_mods(&children, &route))));
     }
 
     pub fn collection_mods_loading(&self) -> bool {
@@ -2191,7 +2214,8 @@ impl App {
             if let Ok(result) = rx.try_recv() {
                 self.ws_rx = None;
                 match result {
-                    Ok(items) => {
+                    Ok(loaded) => {
+                        let items = loaded.items;
                         if !self
                             .ws_selected
                             .as_ref()
@@ -2200,8 +2224,14 @@ impl App {
                             self.ws_selected = None;
                         }
                         self.ws_items = items;
+                        self.ws_source = loaded.source;
                     }
-                    Err(e) => self.ws_error = Some(e),
+                    Err(e) => {
+                        // The site refused and the other way is turned off: say where it is.
+                        let hint = (!self.workshop_via_steam_client && self.steam_paths.steam_dll_path.is_some())
+                            .then(|| format!("\n{}", crate::i18n::text(crate::i18n::TranslationKey::WsSteamClientOff)));
+                        self.ws_error = Some(e + hint.as_deref().unwrap_or(""));
+                    }
                 }
             }
         }

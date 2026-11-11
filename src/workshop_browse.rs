@@ -1,10 +1,15 @@
 //! The Workshop tab: RimWorld's Steam Workshop browsed inside the manager. The browse page
 //! (search, sort, game version, page) gives the item IDs; `GetPublishedFileDetails` (no key
 //! needed) gives titles, descriptions, previews, subscriber counts and version tags.
+//! When the website refuses (see `steam::ugc_query_pages`), the same lists come through the
+//! Steam client.
 
 use regex::Regex;
+use std::path::Path;
 use std::sync::LazyLock;
 use std::time::Duration;
+
+use crate::steam;
 
 const BROWSE_URL: &str = "https://steamcommunity.com/workshop/browse/";
 const DETAILS_URL: &str = "https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/";
@@ -350,6 +355,169 @@ fn retry_every(pause: Duration, mut call: impl FnMut() -> Attempt) -> Result<Str
     Err(last)
 }
 
+/// Where a list came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Source {
+    /// The Steam website and Web API, without signing in.
+    #[default]
+    Web,
+    /// The Steam client, as the signed-in user.
+    SteamClient,
+}
+
+/// Items and where they came from.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Loaded {
+    pub items: Vec<WorkshopItem>,
+    pub source: Source,
+}
+
+/// How to reach Steam: the game's `steam_api64.dll` (no Steam client route without it), and
+/// whether the client goes first (the website already refused this session).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Route {
+    pub steam_dll: Option<std::path::PathBuf>,
+    pub prefer_steam: bool,
+}
+
+/// The website (or the client first, when it refused before); the other one when the first
+/// fails. With both failing the error says what each answered.
+fn with_fallback(
+    route: &Route,
+    web: impl FnOnce() -> Result<Vec<WorkshopItem>, String>,
+    client: impl FnOnce(&Path) -> Result<Vec<WorkshopItem>, String>,
+) -> Result<Loaded, String> {
+    let Some(dll) = route.steam_dll.as_deref() else {
+        return web().map(|items| Loaded {
+            items,
+            source: Source::Web,
+        });
+    };
+    let loaded = |source| move |items| Loaded { items, source };
+    let both_failed = |web_error: String, client_error: String| {
+        format!(
+            "{web_error}\n{}",
+            crate::i18n::fmt(
+                crate::i18n::text(crate::i18n::TranslationKey::WsSteamClientAlsoFailed),
+                &[&client_error]
+            )
+        )
+    };
+    if route.prefer_steam {
+        match client(dll) {
+            Ok(items) => Ok(loaded(Source::SteamClient)(items)),
+            Err(client_error) => web()
+                .map(loaded(Source::Web))
+                .map_err(|web_error| both_failed(web_error, client_error)),
+        }
+    } else {
+        match web() {
+            Ok(items) => Ok(loaded(Source::Web)(items)),
+            Err(web_error) => client(dll)
+                .map(loaded(Source::SteamClient))
+                .map_err(|client_error| both_failed(web_error, client_error)),
+        }
+    }
+}
+
+/// One page of the tab, from the website or through the Steam client.
+pub fn load_page(q: &BrowseQuery, route: &Route) -> Result<Loaded, String> {
+    with_fallback(route, || fetch_page(q), |dll| fetch_page_via_steam(dll, q))
+}
+
+/// Given items (a mod opened from another tab), from the Web API or through the Steam client.
+pub fn load_items(ids: &[String], route: &Route) -> Result<Loaded, String> {
+    with_fallback(route, || fetch_items(ids), |dll| fetch_items_via_steam(dll, ids))
+}
+
+/// A collection's mods in its order, from the Web API or through the Steam client.
+pub fn load_collection_mods(children: &[String], route: &Route) -> Result<Vec<WorkshopItem>, String> {
+    with_fallback(
+        route,
+        || fetch_collection_mods(children),
+        |dll| fetch_items_via_steam(dll, children),
+    )
+    .map(|loaded| loaded.items)
+}
+
+/// The Steam client query for a page of the tab, and which of its pages (50 items each)
+/// hold the tab's page (30 items): one or two of them, and how many items to skip in the first.
+fn steam_query(q: &BrowseQuery) -> (steam::UgcPageQuery<'_>, std::ops::RangeInclusive<u32>, usize) {
+    let text = q.text.trim();
+    let (query_type, trend_days) = if !text.is_empty() {
+        (steam::UGC_RANKED_BY_TEXT_SEARCH, 0)
+    } else {
+        match q.sort {
+            BrowseSort::TrendWeek => (steam::UGC_RANKED_BY_TREND, 7),
+            BrowseSort::TrendMonth => (steam::UGC_RANKED_BY_TREND, 30),
+            BrowseSort::MostSubscribed => (steam::UGC_RANKED_BY_TOTAL_UNIQUE_SUBSCRIPTIONS, 0),
+            BrowseSort::Recent => (steam::UGC_RANKED_BY_PUBLICATION_DATE, 0),
+            BrowseSort::Updated => (steam::UGC_RANKED_BY_LAST_UPDATED_DATE, 0),
+        }
+    };
+    let matching = match q.section {
+        Section::Mods => steam::UGC_MATCHING_READY_TO_USE,
+        Section::Collections => steam::UGC_MATCHING_COLLECTIONS,
+    };
+    let start = (q.page.max(1) as usize - 1) * PER_PAGE;
+    let first = start / steam::UGC_PER_PAGE + 1;
+    let last = (start + PER_PAGE - 1) / steam::UGC_PER_PAGE + 1;
+    (
+        steam::UgcPageQuery {
+            query_type,
+            matching,
+            trend_days,
+            text,
+            required_tag: q.version.as_deref(),
+        },
+        first as u32..=last as u32,
+        start % steam::UGC_PER_PAGE,
+    )
+}
+
+fn item_from_steam(item: steam::UgcItem) -> WorkshopItem {
+    let (versions, tags) = item.tags.into_iter().partition(|t| is_version_tag(t));
+    WorkshopItem {
+        id: item.id.to_string(),
+        title: item.title,
+        description: bbcode_to_text(&item.description),
+        preview_url: item.preview_url.filter(|u| u.starts_with("https://")),
+        subscriptions: item.subscriptions,
+        file_size: item.file_size,
+        time_updated: item.time_updated,
+        versions,
+        tags,
+        favorited: item.favorited,
+        is_collection: item.is_collection,
+        children: item.children.iter().map(u64::to_string).collect(),
+    }
+}
+
+fn fetch_page_via_steam(dll: &Path, q: &BrowseQuery) -> Result<Vec<WorkshopItem>, String> {
+    let (query, pages, skip) = steam_query(q);
+    let found = steam::ugc_query_pages(dll, &query, pages)?;
+    Ok(found
+        .into_iter()
+        .skip(skip)
+        .take(PER_PAGE)
+        .map(item_from_steam)
+        .map(|mut item| {
+            item.is_collection |= q.section == Section::Collections;
+            item
+        })
+        .collect())
+}
+
+/// In the order of `ids`, like the Web API's answer.
+fn fetch_items_via_steam(dll: &Path, ids: &[String]) -> Result<Vec<WorkshopItem>, String> {
+    let numbers: Vec<u64> = ids.iter().filter_map(|id| id.parse().ok()).collect();
+    let mut by_id: std::collections::HashMap<String, WorkshopItem> = steam::ugc_item_details(dll, &numbers)?
+        .into_iter()
+        .map(|item| (item.id.to_string(), item_from_steam(item)))
+        .collect();
+    Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
+}
+
 /// One page: the browse page for the IDs, then their details.
 pub fn fetch_page(q: &BrowseQuery) -> Result<Vec<WorkshopItem>, String> {
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).build();
@@ -368,10 +536,17 @@ pub fn fetch_page(q: &BrowseQuery) -> Result<Vec<WorkshopItem>, String> {
                 .call(),
         )
     })?;
-    if q.section == Section::Mods {
-        return fetch_details(&agent, &parse_browse_ids(&html));
+    let ids = match q.section {
+        Section::Mods => parse_browse_ids(&html),
+        Section::Collections => parse_collection_ids(&html),
+    };
+    // The catalog's first page is never empty: this is some other page (an age check, say).
+    if ids.is_empty() && q.text.trim().is_empty() && q.page <= 1 {
+        return Err(crate::i18n::text(crate::i18n::TranslationKey::WsPageWithoutItems).to_string());
     }
-    let ids = parse_collection_ids(&html);
+    if q.section == Section::Mods {
+        return fetch_details(&agent, &ids);
+    }
     let mut items = fetch_details(&agent, &ids)?;
     let mut children = fetch_children(&agent, &ids)?;
     for item in &mut items {
@@ -552,6 +727,197 @@ mod tests {
         });
         assert_eq!((got, calls), (Err("HTTP 404".into()), 1));
         assert!(!is_server_error("HTTP 404"));
+    }
+
+    #[test]
+    fn steam_client_pages_cover_the_tab_page() {
+        // The tab shows 30 items a page, a Steam client query gives 50.
+        let page = |n: u32| {
+            let q = BrowseQuery {
+                page: n,
+                ..Default::default()
+            };
+            let (_, pages, skip) = steam_query(&q);
+            (pages, skip)
+        };
+        assert_eq!(page(0), (1..=1, 0));
+        assert_eq!(page(1), (1..=1, 0));
+        assert_eq!(page(2), (1..=2, 30));
+        assert_eq!(page(3), (2..=2, 10));
+        assert_eq!(page(5), (3..=3, 20));
+        assert_eq!(page(6), (4..=4, 0));
+
+        let q = BrowseQuery {
+            section: Section::Collections,
+            sort: BrowseSort::TrendMonth,
+            version: Some("1.6".into()),
+            page: 1,
+            ..Default::default()
+        };
+        let (query, _, _) = steam_query(&q);
+        assert_eq!(
+            query,
+            steam::UgcPageQuery {
+                query_type: steam::UGC_RANKED_BY_TREND,
+                matching: steam::UGC_MATCHING_COLLECTIONS,
+                trend_days: 30,
+                text: "",
+                required_tag: Some("1.6"),
+            }
+        );
+        // A search is by relevance whatever the sort.
+        let q = BrowseQuery {
+            text: " HugsLib ".into(),
+            sort: BrowseSort::Updated,
+            ..Default::default()
+        };
+        let (query, _, _) = steam_query(&q);
+        assert_eq!(
+            (query.query_type, query.matching, query.text),
+            (
+                steam::UGC_RANKED_BY_TEXT_SEARCH,
+                steam::UGC_MATCHING_READY_TO_USE,
+                "HugsLib"
+            )
+        );
+    }
+
+    #[test]
+    fn steam_client_when_the_site_refuses() {
+        let item = |id: &str| WorkshopItem {
+            id: id.into(),
+            ..Default::default()
+        };
+        let ok = |id: &'static str| move || -> Result<Vec<WorkshopItem>, String> { Ok(vec![item(id)]) };
+        let fail = |e: &'static str| move || -> Result<Vec<WorkshopItem>, String> { Err(e.into()) };
+        let dll = Some(std::path::PathBuf::from("steam_api64.dll"));
+        let web_first = Route {
+            steam_dll: dll.clone(),
+            prefer_steam: false,
+        };
+
+        let got = with_fallback(&web_first, ok("web"), |_| ok("client")()).unwrap();
+        assert_eq!((got.items[0].id.as_str(), got.source), ("web", Source::Web));
+
+        let got = with_fallback(&web_first, fail("HTTP 500"), |_| ok("client")()).unwrap();
+        assert_eq!((got.items[0].id.as_str(), got.source), ("client", Source::SteamClient));
+
+        // Once the site refused, the client goes first, and the site is still the way back.
+        let client_first = Route {
+            steam_dll: dll,
+            prefer_steam: true,
+        };
+        let got = with_fallback(&client_first, ok("web"), |_| ok("client")()).unwrap();
+        assert_eq!(got.source, Source::SteamClient);
+        let got = with_fallback(&client_first, ok("web"), |_| fail("no Steam")()).unwrap();
+        assert_eq!(got.source, Source::Web);
+
+        let both = with_fallback(&web_first, fail("HTTP 500"), |_| fail("no Steam")()).unwrap_err();
+        assert!(both.starts_with("HTTP 500\n") && both.ends_with("no Steam"), "{both}");
+        assert!(is_server_error(&both));
+
+        // Without the game's Steam DLL there is only the site.
+        let got = with_fallback(&Route::default(), fail("HTTP 500"), |_| ok("client")());
+        assert_eq!(got, Err("HTTP 500".into()));
+    }
+
+    #[test]
+    fn items_from_the_steam_client() {
+        let item = item_from_steam(steam::UgcItem {
+            id: 10,
+            title: "Pack".into(),
+            description: "[b]Best[/b] mods".into(),
+            tags: vec!["Mod".into(), "1.6".into(), "1.5".into()],
+            preview_url: Some("http://insecure/x.png".into()),
+            is_collection: true,
+            children: vec![3, 1],
+            ..Default::default()
+        });
+        assert_eq!(item.id, "10");
+        assert_eq!(item.description, "Best mods");
+        assert_eq!(
+            (item.versions, item.tags),
+            (vec!["1.6".to_string(), "1.5".into()], vec!["Mod".to_string()])
+        );
+        assert_eq!(item.preview_url, None);
+        assert!(item.is_collection);
+        assert_eq!(item.children, ["3", "1"]);
+    }
+
+    /// Through the real Steam client, read-only (Steam shows "playing RimWorld" for a few
+    /// seconds): `cargo test live_workshop_via_steam_client -- --ignored --nocapture`.
+    /// The same items from the Web API check the layout of Steam's structures.
+    #[test]
+    #[ignore]
+    fn live_workshop_via_steam_client() {
+        let dll = steam::detect_steam_paths().steam_dll_path.expect("steam_api64.dll");
+        let q = BrowseQuery {
+            page: 2,
+            ..Default::default()
+        };
+        let items = fetch_page_via_steam(&dll, &q).unwrap();
+        println!("{} items on page 2", items.len());
+        assert_eq!(items.len(), PER_PAGE);
+        let ids: Vec<String> = items.iter().map(|i| i.id.clone()).collect();
+        let web = fetch_items(&ids).unwrap();
+        assert_eq!(items.len(), web.len());
+        for (client, web) in items.iter().zip(&web).take(5) {
+            println!(
+                "{} | {} | {} subs (web {}) | {} | {:?} | {}",
+                client.id,
+                client.title,
+                client.subscriptions,
+                web.subscriptions,
+                human_size(client.file_size),
+                client.versions,
+                client
+                    .description
+                    .chars()
+                    .take(60)
+                    .collect::<String>()
+                    .replace('\n', " ")
+            );
+        }
+        for (client, web) in items.iter().zip(&web) {
+            assert_eq!(client.id, web.id);
+            // The client gives the title in the Steam language of the user, the Web API the
+            // author's own: only that it's there.
+            assert!(!client.title.is_empty(), "{}", client.id);
+            assert_eq!(client.time_updated, web.time_updated, "{}", client.id);
+            assert_eq!(client.file_size, web.file_size, "{}", client.id);
+            assert_eq!(client.versions, web.versions, "{}", client.id);
+            assert!(client.preview_url.is_some(), "{}", client.id);
+        }
+
+        let found = fetch_page_via_steam(
+            &dll,
+            &BrowseQuery {
+                text: "HugsLib".into(),
+                page: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(found.iter().any(|i| i.id == "818773962"));
+
+        let cols = fetch_page_via_steam(
+            &dll,
+            &BrowseQuery {
+                section: Section::Collections,
+                page: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        println!("{} collections", cols.len());
+        let first = cols
+            .iter()
+            .find(|c| !c.children.is_empty())
+            .expect("a collection with mods");
+        println!("{} | {} | {} mods", first.id, first.title, first.children.len());
+        let mods = fetch_items_via_steam(&dll, &first.children).unwrap();
+        println!("its mods through the client: {}", mods.len());
+        assert!(!mods.is_empty());
     }
 
     #[test]

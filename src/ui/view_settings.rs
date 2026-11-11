@@ -62,6 +62,12 @@ fn render_steamcmd_card(app: &mut App, ui: &mut Ui) {
                 );
             }
             ui.add_space(6.0);
+            ui.checkbox(
+                &mut app.workshop_via_steam_client,
+                t.get(TranslationKey::SettingsWsViaSteamClient),
+            );
+            hint(ui, t.get(TranslationKey::SettingsWsViaSteamClientHint));
+            ui.add_space(6.0);
             if installed {
                 ui.label(
                     egui::RichText::new(t.get(TranslationKey::SteamCmdStatusInstalled))

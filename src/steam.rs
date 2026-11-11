@@ -156,6 +156,46 @@ pub fn parse_libraryfolders_vdf(content: &str) -> Vec<PathBuf> {
 /// in the same process at once (e.g. a delete and a subscribe) is not safe.
 static STEAM_API_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// What a Steam API session is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Session {
+    /// Requests the Steam client carries out on its own (subscribe, unsubscribe...): waits
+    /// for the API however long, and gives Steam a moment to receive them before shutdown.
+    Requests,
+    /// A query that waits for its own answer: gives up when another session keeps the API
+    /// (a download holds it for minutes).
+    Query,
+}
+
+/// How long a query waits for another Steam API session to end.
+const QUERY_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+fn session_lock(session: Session) -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    session_lock_within(session, QUERY_LOCK_WAIT)
+}
+
+fn session_lock_within(
+    session: Session,
+    wait: std::time::Duration,
+) -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    if session == Session::Requests {
+        return Ok(STEAM_API_LOCK.lock().unwrap_or_else(|e| e.into_inner()));
+    }
+    let started = std::time::Instant::now();
+    loop {
+        match STEAM_API_LOCK.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(std::sync::TryLockError::Poisoned(e)) => return Ok(e.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) if started.elapsed() < wait => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(crate::i18n::text(crate::i18n::TranslationKey::WsSteamBusy).to_string());
+            }
+        }
+    }
+}
+
 struct SteamShutdownGuard<'a> {
     lib: &'a libloading::Library,
 }
@@ -187,11 +227,11 @@ type UgcFn = unsafe extern "C" fn(*mut std::ffi::c_void, u64) -> u64;
 /// - older ones (RimWorld 1.6 and 1.7 ship 6.91.21.57) export `SteamAPI_InitSafe` / `SteamAPI_Init`.
 ///
 /// The UGC accessor is versioned (`SteamAPI_SteamUGC_v016` today); several versions are tried.
-unsafe fn with_steam_ugc<F, R>(dll_path: &Path, action: F) -> Result<R, String>
+unsafe fn with_steam_ugc<F, R>(dll_path: &Path, session: Session, action: F) -> Result<R, String>
 where
     F: FnOnce(*mut std::ffi::c_void, &libloading::Library) -> Result<R, String>,
 {
-    let _session = STEAM_API_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _session = session_lock(session)?;
     let lib = libloading::Library::new(dll_path).map_err(|e| e.to_string())?;
 
     unsafe {
@@ -254,11 +294,13 @@ where
     let result = action(ugc_ptr, &lib);
 
     // Requests are asynchronous: give Steam a moment to receive them before shutting down.
-    if let Ok(run_callbacks) = lib.get::<unsafe extern "C" fn()>(b"SteamAPI_RunCallbacks") {
-        let started = std::time::Instant::now();
-        while started.elapsed() < CALLBACK_PUMP {
-            run_callbacks();
-            std::thread::sleep(std::time::Duration::from_millis(100));
+    if session == Session::Requests {
+        if let Ok(run_callbacks) = lib.get::<unsafe extern "C" fn()>(b"SteamAPI_RunCallbacks") {
+            let started = std::time::Instant::now();
+            while started.elapsed() < CALLBACK_PUMP {
+                run_callbacks();
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
         }
     }
 
@@ -273,7 +315,7 @@ fn ugc_batch(dll_path: &Path, symbol: &[u8], item_ids: &[&str]) -> Result<usize,
         return Ok(0);
     }
     unsafe {
-        with_steam_ugc(dll_path, |ugc_ptr, lib| {
+        with_steam_ugc(dll_path, Session::Requests, |ugc_ptr, lib| {
             let call: libloading::Symbol<UgcFn> = lib.get(symbol).map_err(|e| e.to_string())?;
             for id in &ids {
                 let _call_handle = call(ugc_ptr, *id);
@@ -287,7 +329,7 @@ fn ugc_batch(dll_path: &Path, symbol: &[u8], item_ids: &[&str]) -> Result<usize,
 /// the user is subscribed to for RimWorld. Changes nothing.
 pub fn steam_api_check(dll_path: &Path) -> Result<u32, String> {
     unsafe {
-        with_steam_ugc(dll_path, |ugc_ptr, lib| {
+        with_steam_ugc(dll_path, Session::Requests, |ugc_ptr, lib| {
             let count: libloading::Symbol<unsafe extern "C" fn(*mut std::ffi::c_void) -> u32> = lib
                 .get(b"SteamAPI_ISteamUGC_GetNumSubscribedItems\0")
                 .map_err(|e| e.to_string())?;
@@ -351,7 +393,7 @@ pub fn subscribe_workshop_items_with_progress(
         return Ok((0, 0));
     }
     unsafe {
-        with_steam_ugc(dll_path, |ugc_ptr, lib| {
+        with_steam_ugc(dll_path, Session::Requests, |ugc_ptr, lib| {
             let call: libloading::Symbol<UgcFn> = lib
                 .get(b"SteamAPI_ISteamUGC_SubscribeItem\0")
                 .map_err(|e| e.to_string())?;
@@ -427,6 +469,376 @@ pub fn subscribe_workshop_items_with_progress(
                 std::thread::sleep(std::time::Duration::from_millis(400));
             }
             Ok((ids.len(), last_installed))
+        })
+    }
+}
+
+// ----- Workshop queries through the Steam client -----
+//
+// When the Steam website refuses the app, the Workshop tab asks the Steam client instead:
+// the query goes out from the account the user is signed in to, the way a game's own mod
+// browser asks. (In Australia since September 2026 Steam shows the community pages of R18+
+// games, RimWorld among them, only to age-verified accounts, and the app asks the site
+// without signing in.)
+
+/// `EUGCQuery` values the Workshop tab sorts by.
+pub const UGC_RANKED_BY_PUBLICATION_DATE: i32 = 1;
+pub const UGC_RANKED_BY_TREND: i32 = 3;
+pub const UGC_RANKED_BY_TEXT_SEARCH: i32 = 11;
+pub const UGC_RANKED_BY_TOTAL_UNIQUE_SUBSCRIPTIONS: i32 = 12;
+pub const UGC_RANKED_BY_LAST_UPDATED_DATE: i32 = 19;
+/// `EUGCMatchingUGCType`: mods ready to use, collections.
+pub const UGC_MATCHING_READY_TO_USE: i32 = 2;
+pub const UGC_MATCHING_COLLECTIONS: i32 = 3;
+/// Items in one page of a Steam client query (`kNumUGCResultsPerPage`).
+pub const UGC_PER_PAGE: usize = 50;
+
+const UGC_QUERY_HANDLE_INVALID: u64 = u64::MAX;
+const API_CALL_INVALID: u64 = 0;
+/// `SteamUGCQueryCompleted_t::k_iCallback` (`k_iSteamUGCCallbacks + 1`).
+const UGC_QUERY_COMPLETED_CALLBACK: i32 = 3401;
+const E_RESULT_OK: i32 = 1;
+/// `EItemStatistic`.
+const STAT_SUBSCRIPTIONS: i32 = 0;
+const STAT_FAVORITES: i32 = 1;
+/// `EWorkshopFileType` of a collection.
+const FILE_TYPE_COLLECTION: i32 = 2;
+const UGC_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// `SteamUGCDetails_t` of the SDK the game ships (1.5x). Steam packs its structs at 8 on
+/// Windows, which is what `repr(C)` gives here: no field needs more.
+#[repr(C)]
+struct UgcDetailsRaw {
+    published_file_id: u64,
+    result: i32,
+    file_type: i32,
+    _creator_app_id: u32,
+    _consumer_app_id: u32,
+    title: [u8; 129],
+    description: [u8; 8000],
+    _steam_id_owner: u64,
+    _time_created: u32,
+    time_updated: u32,
+    _time_added_to_user_list: u32,
+    _visibility: i32,
+    _banned: u8,
+    _accepted_for_use: u8,
+    _tags_truncated: u8,
+    tags: [u8; 1025],
+    _file: u64,
+    _preview_file: u64,
+    _file_name: [u8; 260],
+    file_size: i32,
+    _preview_file_size: i32,
+    _url: [u8; 256],
+    _votes_up: u32,
+    _votes_down: u32,
+    _score: f32,
+    num_children: u32,
+}
+
+/// Newer SDKs add fields at the end: room for them, so the DLL never writes past the buffer.
+#[repr(C)]
+struct UgcDetailsBuf {
+    details: UgcDetailsRaw,
+    _spare: [u8; 4096],
+}
+
+/// `SteamUGCQueryCompleted_t`.
+#[repr(C)]
+struct UgcQueryCompleted {
+    _handle: u64,
+    result: i32,
+    num_results_returned: u32,
+    _total_matching_results: u32,
+    _cached_data: u8,
+    _next_cursor: [u8; 256],
+}
+
+const _: () = assert!(std::mem::size_of::<UgcDetailsRaw>() == 9776);
+const _: () = assert!(std::mem::size_of::<UgcQueryCompleted>() == 280);
+
+/// What to look for: a page of the catalog or of a search.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UgcPageQuery<'a> {
+    /// `UGC_RANKED_BY_*`.
+    pub query_type: i32,
+    /// `UGC_MATCHING_*`.
+    pub matching: i32,
+    /// The period of `UGC_RANKED_BY_TREND` (0 = Steam's default).
+    pub trend_days: u32,
+    pub text: &'a str,
+    pub required_tag: Option<&'a str>,
+}
+
+/// A Workshop item as the Steam client describes it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UgcItem {
+    pub id: u64,
+    pub title: String,
+    /// BBCode, as on the Workshop page.
+    pub description: String,
+    pub tags: Vec<String>,
+    pub preview_url: Option<String>,
+    pub subscriptions: u64,
+    pub favorited: u64,
+    pub file_size: u64,
+    pub time_updated: u64,
+    pub is_collection: bool,
+    /// A collection's items in its order.
+    pub children: Vec<u64>,
+}
+
+type Ptr = *mut std::ffi::c_void;
+type CText = *const std::ffi::c_char;
+type SetBoolFn = unsafe extern "C" fn(Ptr, u64, bool) -> bool;
+type CallResultFn = unsafe extern "C" fn(Ptr, u64, Ptr, i32, i32, *mut bool) -> bool;
+
+/// The ISteamUGC and ISteamUtils calls a query needs (valid while the DLL is loaded).
+struct UgcQueryApi {
+    ugc: Ptr,
+    utils: Ptr,
+    create_all: unsafe extern "C" fn(Ptr, i32, i32, u32, u32, u32) -> u64,
+    create_details: unsafe extern "C" fn(Ptr, *const u64, u32) -> u64,
+    set_search_text: unsafe extern "C" fn(Ptr, u64, CText) -> bool,
+    set_trend_days: unsafe extern "C" fn(Ptr, u64, u32) -> bool,
+    add_required_tag: unsafe extern "C" fn(Ptr, u64, CText) -> bool,
+    set_long_description: SetBoolFn,
+    set_children: SetBoolFn,
+    send: unsafe extern "C" fn(Ptr, u64) -> u64,
+    release: unsafe extern "C" fn(Ptr, u64) -> bool,
+    result: unsafe extern "C" fn(Ptr, u64, u32, *mut UgcDetailsRaw) -> bool,
+    preview_url: unsafe extern "C" fn(Ptr, u64, u32, *mut std::ffi::c_char, u32) -> bool,
+    statistic: unsafe extern "C" fn(Ptr, u64, u32, i32, *mut u64) -> bool,
+    children: unsafe extern "C" fn(Ptr, u64, u32, *mut u64, u32) -> bool,
+    is_completed: unsafe extern "C" fn(Ptr, u64, *mut bool) -> bool,
+    call_result: CallResultFn,
+}
+
+fn no_answer() -> String {
+    crate::i18n::text(crate::i18n::TranslationKey::WsSteamNoAnswer).to_string()
+}
+
+/// Text of a C string field (up to its first zero byte).
+fn c_text(bytes: &[u8]) -> String {
+    let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    String::from_utf8_lossy(&bytes[..len]).trim().to_string()
+}
+
+/// Steam's comma-separated tag list.
+fn split_tags(list: &str) -> Vec<String> {
+    list.split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+unsafe fn steam_utils(lib: &libloading::Library) -> Option<Ptr> {
+    for version in (5..=15).rev() {
+        let name = format!("SteamAPI_SteamUtils_v{version:03}\0");
+        if let Ok(f) = lib.get::<unsafe extern "C" fn() -> Ptr>(name.as_bytes()) {
+            let utils = f();
+            if !utils.is_null() {
+                return Some(utils);
+            }
+        }
+    }
+    None
+}
+
+unsafe fn symbol<T: Copy>(lib: &libloading::Library, name: &[u8]) -> Result<T, String> {
+    lib.get::<T>(name).map(|s| *s).map_err(|e| e.to_string())
+}
+
+impl UgcQueryApi {
+    unsafe fn load(ugc: Ptr, lib: &libloading::Library) -> Result<Self, String> {
+        Ok(Self {
+            ugc,
+            utils: steam_utils(lib).ok_or_else(no_answer)?,
+            create_all: symbol(lib, b"SteamAPI_ISteamUGC_CreateQueryAllUGCRequestPage\0")?,
+            create_details: symbol(lib, b"SteamAPI_ISteamUGC_CreateQueryUGCDetailsRequest\0")?,
+            set_search_text: symbol(lib, b"SteamAPI_ISteamUGC_SetSearchText\0")?,
+            set_trend_days: symbol(lib, b"SteamAPI_ISteamUGC_SetRankedByTrendDays\0")?,
+            add_required_tag: symbol(lib, b"SteamAPI_ISteamUGC_AddRequiredTag\0")?,
+            set_long_description: symbol(lib, b"SteamAPI_ISteamUGC_SetReturnLongDescription\0")?,
+            set_children: symbol(lib, b"SteamAPI_ISteamUGC_SetReturnChildren\0")?,
+            send: symbol(lib, b"SteamAPI_ISteamUGC_SendQueryUGCRequest\0")?,
+            release: symbol(lib, b"SteamAPI_ISteamUGC_ReleaseQueryUGCRequest\0")?,
+            result: symbol(lib, b"SteamAPI_ISteamUGC_GetQueryUGCResult\0")?,
+            preview_url: symbol(lib, b"SteamAPI_ISteamUGC_GetQueryUGCPreviewURL\0")?,
+            statistic: symbol(lib, b"SteamAPI_ISteamUGC_GetQueryUGCStatistic\0")?,
+            children: symbol(lib, b"SteamAPI_ISteamUGC_GetQueryUGCChildren\0")?,
+            is_completed: symbol(lib, b"SteamAPI_ISteamUtils_IsAPICallCompleted\0")?,
+            call_result: symbol(lib, b"SteamAPI_ISteamUtils_GetAPICallResult\0")?,
+        })
+    }
+
+    /// Sends a prepared query, reads its items and releases it. Also returns how many
+    /// results Steam gave (hidden or removed items among them).
+    unsafe fn run(&self, handle: u64) -> Result<(Vec<UgcItem>, u32), String> {
+        (self.set_long_description)(self.ugc, handle, true);
+        (self.set_children)(self.ugc, handle, true);
+        let result = self.send_and_read(handle);
+        (self.release)(self.ugc, handle);
+        result
+    }
+
+    unsafe fn send_and_read(&self, handle: u64) -> Result<(Vec<UgcItem>, u32), String> {
+        let call = (self.send)(self.ugc, handle);
+        if call == API_CALL_INVALID {
+            return Err(no_answer());
+        }
+        let started = std::time::Instant::now();
+        loop {
+            let mut failed = false;
+            if (self.is_completed)(self.utils, call, &mut failed) {
+                if failed {
+                    return Err(no_answer());
+                }
+                break;
+            }
+            if started.elapsed() > UGC_QUERY_TIMEOUT {
+                return Err(no_answer());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        let mut done: UgcQueryCompleted = std::mem::zeroed();
+        let mut failed = false;
+        let known = (self.call_result)(
+            self.utils,
+            call,
+            (&mut done as *mut UgcQueryCompleted).cast(),
+            std::mem::size_of::<UgcQueryCompleted>() as i32,
+            UGC_QUERY_COMPLETED_CALLBACK,
+            &mut failed,
+        ) && !failed;
+        if known && done.result != E_RESULT_OK {
+            return Err(crate::i18n::fmt(
+                crate::i18n::text(crate::i18n::TranslationKey::WsSteamQueryFailed),
+                &[&done.result.to_string()],
+            ));
+        }
+        // Without the answer's header (a DLL with another layout of it) the results are read
+        // until they run out.
+        let count = if known {
+            done.num_results_returned.min(1000)
+        } else {
+            UGC_PER_PAGE as u32
+        };
+
+        let buf: *mut UgcDetailsBuf = Box::into_raw(Box::<UgcDetailsBuf>::new_zeroed().assume_init());
+        let mut items = Vec::new();
+        let mut returned = 0;
+        for index in 0..count {
+            if !(self.result)(self.ugc, handle, index, buf.cast()) {
+                if known {
+                    continue;
+                }
+                break;
+            }
+            returned += 1;
+            let d = &(*buf).details;
+            if d.result == E_RESULT_OK && d.published_file_id != 0 {
+                items.push(self.item(handle, index, d));
+            }
+        }
+        drop(Box::from_raw(buf));
+        Ok((items, if known { done.num_results_returned } else { returned }))
+    }
+
+    unsafe fn item(&self, handle: u64, index: u32, d: &UgcDetailsRaw) -> UgcItem {
+        let stat = |kind: i32| {
+            let mut value = 0u64;
+            if (self.statistic)(self.ugc, handle, index, kind, &mut value) {
+                value
+            } else {
+                0
+            }
+        };
+        let mut url = [0u8; 1024];
+        let preview_url = (self.preview_url)(self.ugc, handle, index, url.as_mut_ptr().cast(), url.len() as u32)
+            .then(|| c_text(&url))
+            .filter(|u| !u.is_empty());
+        let mut children = vec![0u64; d.num_children.min(10_000) as usize];
+        if !children.is_empty()
+            && !(self.children)(self.ugc, handle, index, children.as_mut_ptr(), children.len() as u32)
+        {
+            children.clear();
+        }
+        children.retain(|&c| c != 0);
+        UgcItem {
+            id: d.published_file_id,
+            title: c_text(&d.title),
+            description: c_text(&d.description),
+            tags: split_tags(&c_text(&d.tags)),
+            preview_url,
+            subscriptions: stat(STAT_SUBSCRIPTIONS),
+            favorited: stat(STAT_FAVORITES),
+            file_size: d.file_size.max(0) as u64,
+            time_updated: u64::from(d.time_updated),
+            is_collection: d.file_type == FILE_TYPE_COLLECTION,
+            children,
+        }
+    }
+}
+
+/// Pages `pages` (from 1, `UGC_PER_PAGE` items each) of a Workshop query through the Steam
+/// client, in one Steam API session; stops after a page that isn't full.
+pub fn ugc_query_pages(
+    dll_path: &Path,
+    q: &UgcPageQuery,
+    pages: std::ops::RangeInclusive<u32>,
+) -> Result<Vec<UgcItem>, String> {
+    let text = std::ffi::CString::new(q.text.trim()).unwrap_or_default();
+    let tag = q.required_tag.and_then(|t| std::ffi::CString::new(t).ok());
+    unsafe {
+        with_steam_ugc(dll_path, Session::Query, |ugc, lib| {
+            let api = UgcQueryApi::load(ugc, lib)?;
+            let mut out = Vec::new();
+            for page in pages {
+                let handle = (api.create_all)(ugc, q.query_type, q.matching, RIMWORLD_APP_ID, RIMWORLD_APP_ID, page);
+                if handle == UGC_QUERY_HANDLE_INVALID {
+                    return Err(no_answer());
+                }
+                if !text.as_bytes().is_empty() {
+                    (api.set_search_text)(ugc, handle, text.as_ptr());
+                }
+                if q.trend_days > 0 {
+                    (api.set_trend_days)(ugc, handle, q.trend_days);
+                }
+                if let Some(tag) = &tag {
+                    (api.add_required_tag)(ugc, handle, tag.as_ptr());
+                }
+                let (items, returned) = api.run(handle)?;
+                out.extend(items);
+                if (returned as usize) < UGC_PER_PAGE {
+                    break;
+                }
+            }
+            Ok(out)
+        })
+    }
+}
+
+/// Given items through the Steam client (hidden or removed ones left out), 50 per query.
+pub fn ugc_item_details(dll_path: &Path, ids: &[u64]) -> Result<Vec<UgcItem>, String> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    unsafe {
+        with_steam_ugc(dll_path, Session::Query, |ugc, lib| {
+            let api = UgcQueryApi::load(ugc, lib)?;
+            let mut out = Vec::new();
+            for chunk in ids.chunks(UGC_PER_PAGE) {
+                let handle = (api.create_details)(ugc, chunk.as_ptr(), chunk.len() as u32);
+                if handle == UGC_QUERY_HANDLE_INVALID {
+                    return Err(no_answer());
+                }
+                out.extend(api.run(handle)?.0);
+            }
+            Ok(out)
         })
     }
 }
@@ -526,6 +938,30 @@ mod tests {
         let flag = Arc::new(AtomicBool::new(false));
         let res = subscribe_workshop_items_with_progress(Path::new("dummy.dll"), &[], Some(flag), false, |_| {});
         assert_eq!(res, Ok((0, 0)));
+    }
+
+    #[test]
+    fn text_fields_of_steam_structures() {
+        let mut title = [0u8; 16];
+        title[..9].copy_from_slice(b" HugsLib ");
+        assert_eq!(c_text(&title), "HugsLib");
+        assert_eq!(c_text(b"no zero at the end"), "no zero at the end");
+        assert_eq!(split_tags("Mod, 1.5,1.6,,"), ["Mod", "1.5", "1.6"]);
+        assert!(split_tags("").is_empty());
+    }
+
+    #[test]
+    fn a_query_gives_up_on_a_busy_steam_api() {
+        let wait = std::time::Duration::from_millis(300);
+        let download = STEAM_API_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let started = std::time::Instant::now();
+        std::thread::scope(|s| {
+            let query = s.spawn(|| session_lock_within(Session::Query, wait).map(|_| ()));
+            assert!(query.join().unwrap().is_err());
+        });
+        assert!(started.elapsed() >= wait);
+        drop(download);
+        assert!(session_lock_within(Session::Query, wait).is_ok());
     }
 
     /// Live, read-only: `cargo test real_steam_api_check -- --ignored --nocapture`
