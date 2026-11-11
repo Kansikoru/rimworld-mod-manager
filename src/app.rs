@@ -81,6 +81,10 @@ pub enum DeleteKind {
     Unsubscribe,
     /// Folders to the Recycle Bin, then the mods are downloaded again
     Reinstall,
+    /// Not a deletion: keep the installed version (`freeze.rs`)
+    Freeze,
+    /// Not a deletion either: let the mod update again
+    Unfreeze,
 }
 
 /// A mod a background deletion works on: package ID, folder, Workshop ID.
@@ -107,6 +111,22 @@ pub fn workshop_id_of(m: &ModInfo) -> Option<String> {
             .filter(|n| crate::modlists::is_workshop_id(n))
             .map(str::to_string)
     })
+}
+
+/// Workshop ID to read a mod's change notes by: `workshop_id_of`, and for a frozen copy
+/// (its folder has the mod's name) the ID its freeze mark remembers.
+pub fn changelog_id_of(m: &ModInfo) -> Option<String> {
+    workshop_id_of(m).or_else(|| {
+        m.frozen
+            .then(|| crate::freeze::read(&m.dir_path))
+            .flatten()
+            .and_then(|f| f.workshop_id)
+    })
+}
+
+/// A mod that came from the Workshop and isn't frozen yet can be frozen.
+pub fn can_freeze(m: &ModInfo) -> bool {
+    !m.frozen && workshop_id_of(m).is_some()
 }
 
 /// Deletion waiting for the user's confirmation in a modal window.
@@ -159,6 +179,40 @@ pub enum ModListDialog {
         error: Option<String>,
     },
 }
+
+/// What a modpack is compared with in the "Compare" window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompareWith {
+    /// The list on the Mods tab.
+    Current,
+    Modpack(String),
+    Save(String),
+}
+
+/// The "Compare" window of the Modpacks tab: a modpack against another list.
+#[derive(Debug, Clone)]
+pub struct SetCompare {
+    pub first: String,
+    pub with: CompareWith,
+    pub result: crate::modlists::Comparison,
+    /// Mod names by lowercase package ID.
+    pub names: HashMap<String, String>,
+}
+
+/// The "What changed" window: a Workshop mod's change notes.
+#[derive(Debug, Clone)]
+pub struct ChangelogWindow {
+    pub workshop_id: String,
+    pub title: String,
+    /// When the installed copy was published (unix seconds), if the mod is installed and
+    /// Steam's record (or the freeze mark) says so: later notes are what an update brings.
+    pub installed: Option<u64>,
+    /// `None` while the page is downloaded.
+    pub notes: Option<Result<Vec<crate::changelog::ChangeNote>, String>>,
+}
+
+/// A downloaded change notes page: Workshop ID, the installed copy's time, the notes.
+type ChangelogLoaded = (String, Option<u64>, Result<Vec<crate::changelog::ChangeNote>, String>);
 
 /// F7: window for renaming or deleting a save file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -445,6 +499,13 @@ pub struct App {
     pub sets_search: String,
     pub modlist_dialog: Option<ModListDialog>,
     collection_rx: Option<Receiver<Result<crate::mod_updates::RemoteCollection, String>>>,
+    /// Mod settings kept with the sets, by set name (`modlist_settings.rs`).
+    pub modlist_settings: HashMap<String, crate::modlist_settings::Saved>,
+    /// Modpacks tab: the "Compare" window.
+    pub set_compare: Option<SetCompare>,
+    /// The "What changed" window of a Workshop mod, and its notes being downloaded.
+    pub changelog: Option<ChangelogWindow>,
+    changelog_rx: Option<Receiver<ChangelogLoaded>>,
 
     // Saves (F7): headers of the game's saves, read in the background.
     pub saves: Vec<crate::saves::SaveInfo>,
@@ -800,6 +861,10 @@ impl App {
             sets_search: String::new(),
             modlist_dialog: None,
             collection_rx: None,
+            modlist_settings: HashMap::new(),
+            set_compare: None,
+            changelog: None,
+            changelog_rx: None,
             saves: Vec::new(),
             saves_rx: None,
             saves_loaded_at: None,
@@ -970,6 +1035,13 @@ impl App {
                         };
                         if n == 0 {
                             self.filter_updates = false;
+                        }
+                        if !report.gone.is_empty() {
+                            self.status_message.push_str(" | ");
+                            self.status_message.push_str(&fmt(
+                                t.get(TranslationKey::UpdatesGone),
+                                &[&report.gone.len().to_string()],
+                            ));
                         }
                         self.mod_updates = Some(report);
                     }
@@ -1151,6 +1223,14 @@ impl App {
         {
             self.open_workshop_items(ids);
         }
+        if let Some(id) = self
+            .repaint_ctx
+            .as_ref()
+            .and_then(crate::ui::components::take_changelog_request)
+        {
+            self.open_changelog(&id);
+        }
+        self.poll_changelog();
         self.poll_last_good_diff();
         self.poll_last_good_save();
         self.poll_save_backup();
@@ -1243,6 +1323,37 @@ pub fn is_official_content(m: &ModInfo, game_data: Option<&std::path::Path>) -> 
         return true;
     }
     game_data.is_some_and(|data| m.dir_path.starts_with(data))
+}
+
+/// A Workshop collection as a modpack: Core and the DLCs installed with the game go in
+/// (a collection can't list them, and the game doesn't start without Core), and the whole
+/// list is put in load order. Mods that aren't downloaded yet are sorted by the community
+/// rules alone, so the order is worth another sort once they are on disk.
+pub fn modpack_from_collection(
+    entries: Vec<crate::modlists::ModListEntry>,
+    all_mods: &[ModInfo],
+    db: Option<&crate::community_rules::CommunityDatabase>,
+) -> Vec<crate::modlists::ModListEntry> {
+    let listed = |id: &str| entries.iter().any(|e| e.id.eq_ignore_ascii_case(id));
+    let mut all: Vec<crate::modlists::ModListEntry> = all_mods
+        .iter()
+        .filter(|m| m.package_id.to_lowercase().starts_with("ludeon.rimworld"))
+        .filter(|m| !listed(&m.package_id))
+        .map(|m| crate::modlists::ModListEntry {
+            id: m.package_id.to_lowercase(),
+            name: m.name.clone(),
+            steam_id: None,
+        })
+        .collect();
+    all.extend(entries);
+    let ids: Vec<String> = all.iter().map(|e| e.id.clone()).collect();
+    let place: std::collections::HashMap<String, usize> = sort_load_order_with_db(&ids, all_mods, db)
+        .into_iter()
+        .enumerate()
+        .map(|(i, id)| (id.to_lowercase(), i))
+        .collect();
+    all.sort_by_key(|e| place.get(&e.id.to_lowercase()).copied().unwrap_or(usize::MAX));
+    all
 }
 
 /// Adds `id` (lower case) unless the list already has it in any letter case.
@@ -1710,6 +1821,221 @@ impl App {
             if !self.modlists.iter().any(|l| &l.name == sel) {
                 self.selected_modlist = None;
             }
+        }
+        let kept = crate::modlist_settings::root();
+        self.modlist_settings = self
+            .modlists
+            .iter()
+            .filter_map(|l| crate::modlist_settings::saved(&kept, &l.name).map(|s| (l.name.clone(), s)))
+            .collect();
+    }
+
+    // ----- Mod settings kept with a modpack (`modlist_settings.rs`) -----
+
+    /// The game's Config folder: ModsConfig.xml and the mods' `Mod_*.xml` settings.
+    fn game_config_dir(&self) -> Option<PathBuf> {
+        self.mods_config_path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+    }
+
+    /// Takes a copy of the mods' settings for the modpack (a new one replaces the old).
+    pub fn save_modlist_settings(&mut self, name: &str) {
+        let t = self.i18n;
+        let Some(config) = self.game_config_dir() else {
+            self.status_message = t.get(TranslationKey::SetsNoFolder).to_string();
+            return;
+        };
+        self.status_message = match crate::modlist_settings::save(&crate::modlist_settings::root(), name, &config) {
+            Ok(n) => fmt(t.get(TranslationKey::SetsSettingsSavedMsg), &[name, &n.to_string()]),
+            Err(e) => fmt(t.get(TranslationKey::SetsSettingsError), &[&e]),
+        };
+        self.refresh_modlists();
+    }
+
+    /// Puts the modpack's copy of the mods' settings back; says what happened.
+    fn restore_modlist_settings_text(&self, name: &str) -> Option<String> {
+        let t = self.i18n;
+        let config = self.game_config_dir()?;
+        let backup =
+            crate::modlist_settings::backup_root().join(chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string());
+        Some(
+            match crate::modlist_settings::restore(&crate::modlist_settings::root(), name, &config, &backup) {
+                Ok(done) if done.written == 0 => t.get(TranslationKey::SetsSettingsSameMsg).to_string(),
+                Ok(done) => {
+                    let mut msg = fmt(
+                        t.get(TranslationKey::SetsSettingsRestoredMsg),
+                        &[&done.written.to_string()],
+                    );
+                    if done.backed_up > 0 {
+                        msg.push_str(" | ");
+                        msg.push_str(&fmt(
+                            t.get(TranslationKey::SetsZipBackup),
+                            &[&done.backed_up.to_string(), &backup.display().to_string()],
+                        ));
+                    }
+                    msg
+                }
+                Err(e) => fmt(t.get(TranslationKey::SetsSettingsError), &[&e]),
+            },
+        )
+    }
+
+    pub fn restore_modlist_settings(&mut self, name: &str) {
+        if let Some(msg) = self.restore_modlist_settings_text(name) {
+            self.status_message = msg;
+        }
+    }
+
+    pub fn forget_modlist_settings(&mut self, name: &str) {
+        crate::modlist_settings::remove(&crate::modlist_settings::root(), name);
+        self.status_message = fmt(self.i18n.get(TranslationKey::SetsSettingsForgotMsg), &[name]);
+        self.refresh_modlists();
+    }
+
+    /// Enabling a modpack with kept settings: the modpacks the game ran until now (`live`)
+    /// get a fresh copy of the settings in use, so nothing set while playing them is lost,
+    /// and the new modpack's copy is put back. Returns what to tell the player.
+    fn switch_modlist_settings(&mut self, live: &[String], name: &str) -> Option<String> {
+        self.modlist_settings.get(name)?;
+        if let Some(config) = self.game_config_dir() {
+            let kept = crate::modlist_settings::root();
+            for other in live.iter().filter(|l| self.modlist_settings.contains_key(*l)) {
+                let _ = crate::modlist_settings::save(&kept, other, &config);
+            }
+        }
+        let msg = self.restore_modlist_settings_text(name);
+        self.refresh_modlists();
+        msg
+    }
+
+    // ----- Comparing a modpack with another list -----
+
+    /// IDs and names of the list a modpack is compared with.
+    fn compare_side(&self, with: &CompareWith) -> Option<(Vec<String>, Vec<String>)> {
+        match with {
+            CompareWith::Current => Some((self.active_mods.clone(), Vec::new())),
+            CompareWith::Modpack(name) => self
+                .modlists
+                .iter()
+                .find(|l| &l.name == name)
+                .map(|l| (l.ids.clone(), l.names.clone())),
+            CompareWith::Save(name) => self
+                .saves
+                .iter()
+                .find(|s| &s.name == name)
+                .map(|s| (s.ids.clone(), s.names.clone())),
+        }
+    }
+
+    /// Opens the "Compare" window (or changes what the modpack is compared with).
+    pub fn open_set_compare(&mut self, name: &str, with: CompareWith) {
+        let Some(list) = self.modlists.iter().find(|l| l.name == name) else {
+            return;
+        };
+        let Some((ids, their_names)) = self.compare_side(&with) else {
+            return;
+        };
+        let mut names = HashMap::new();
+        for (ids, known) in [(&list.ids, &list.names), (&ids, &their_names)] {
+            for (i, id) in ids.iter().enumerate() {
+                let name = self
+                    .find_mod(id)
+                    .map(|m| m.name.clone())
+                    .or_else(|| known.get(i).filter(|n| !n.trim().is_empty()).cloned())
+                    .unwrap_or_else(|| id.clone());
+                names.entry(id.to_lowercase()).or_insert(name);
+            }
+        }
+        self.set_compare = Some(SetCompare {
+            first: name.to_string(),
+            result: crate::modlists::compare(&list.ids, &ids),
+            with,
+            names,
+        });
+    }
+
+    // ----- Change notes of a Workshop mod (`changelog.rs`) -----
+
+    /// Steam's records of installed Workshop items: the Steam client's and SteamCMD's.
+    fn workshop_records(&self) -> Vec<PathBuf> {
+        let mut acfs = Vec::new();
+        if let Some(p) = self
+            .steam_paths
+            .workshop_path
+            .as_deref()
+            .and_then(crate::mod_updates::acf_path)
+        {
+            acfs.push(p);
+        }
+        let steamcmd_acf = self
+            .steamcmd_dir()
+            .join("steamapps")
+            .join("workshop")
+            .join("appworkshop_294100.acf");
+        if steamcmd_acf.is_file() {
+            acfs.push(steamcmd_acf);
+        }
+        acfs
+    }
+
+    /// Opens the "What changed" window for a Workshop mod and downloads its change notes.
+    pub fn open_changelog(&mut self, workshop_id: &str) {
+        let installed_mod = self
+            .all_mods
+            .iter()
+            .find(|m| {
+                workshop_id_of(m).as_deref() == Some(workshop_id)
+                    || (m.frozen
+                        && crate::freeze::read(&m.dir_path)
+                            .is_some_and(|f| f.workshop_id.as_deref() == Some(workshop_id)))
+            })
+            .cloned();
+        let title = installed_mod
+            .as_ref()
+            .map(|m| m.name.clone())
+            .or_else(|| {
+                self.ws_items
+                    .iter()
+                    .find(|i| i.id == workshop_id)
+                    .map(|i| i.title.clone())
+            })
+            .unwrap_or_else(|| format!("#{workshop_id}"));
+        self.changelog = Some(ChangelogWindow {
+            workshop_id: workshop_id.to_string(),
+            title,
+            installed: None,
+            notes: None,
+        });
+        let id = workshop_id.to_string();
+        let records = self.workshop_records();
+        self.changelog_rx = Some(self.spawn_task(move || {
+            // A frozen copy is as old as its freeze; otherwise Steam's record knows.
+            let installed = installed_mod.and_then(|m| {
+                if m.frozen {
+                    return crate::freeze::read(&m.dir_path).map(|f| f.frozen_at);
+                }
+                records
+                    .iter()
+                    .filter_map(|p| std::fs::read_to_string(p).ok())
+                    .filter_map(|text| crate::mod_updates::parse_acf_installed(&text).get(&id).copied())
+                    .max()
+            });
+            let notes = crate::changelog::fetch(&id);
+            (id, installed, notes)
+        }));
+    }
+
+    fn poll_changelog(&mut self) {
+        let Some(rx) = &self.changelog_rx else { return };
+        let Ok((id, installed, notes)) = rx.try_recv() else {
+            return;
+        };
+        self.changelog_rx = None;
+        if let Some(window) = self.changelog.as_mut().filter(|w| w.workshop_id == id) {
+            window.installed = installed;
+            window.notes = Some(notes);
         }
     }
 
@@ -2629,6 +2955,7 @@ impl App {
                 }
             })
             .collect();
+        let entries = modpack_from_collection(entries, &self.all_mods, Some(&self.community_db));
         let version = self.game_version_for_sets();
         match crate::modlists::write_rml(&crate::modlists::path_for(&dir, &name), &version, &entries) {
             Ok(()) => {
@@ -3080,23 +3407,7 @@ impl App {
             self.status_message = t.get(TranslationKey::UpdatesNothing).to_string();
             return;
         }
-        let mut acfs = Vec::new();
-        if let Some(p) = self
-            .steam_paths
-            .workshop_path
-            .as_deref()
-            .and_then(crate::mod_updates::acf_path)
-        {
-            acfs.push(p);
-        }
-        let steamcmd_acf = self
-            .steamcmd_dir()
-            .join("steamapps")
-            .join("workshop")
-            .join("appworkshop_294100.acf");
-        if steamcmd_acf.is_file() {
-            acfs.push(steamcmd_acf);
-        }
+        let acfs = self.workshop_records();
         let game = self.steam_paths.game_major_minor();
         self.status_message = fmt(t.get(TranslationKey::UpdatesChecking), &[&items.len().to_string()]);
         self.mod_updates_rx = Some(self.spawn_task(move || crate::mod_updates::check(items, acfs, game)));
@@ -3127,7 +3438,7 @@ impl App {
     /// The mod is on disk outside the Steam client's Workshop folder.
     pub fn can_update_with_steamcmd(&self, package_id: &str) -> bool {
         self.find_mod(package_id)
-            .is_some_and(|m| m.origin != crate::models::ModOrigin::Workshop)
+            .is_some_and(|m| m.origin != crate::models::ModOrigin::Workshop && !m.frozen)
     }
 
     /// SC1: downloads the outdated mods of the game's Mods folder again (SteamCMD).
@@ -3617,9 +3928,24 @@ impl App {
     /// "Enable": writes the set to ModsConfig.xml (a backup of the old order is made),
     /// and starts the game too if asked.
     pub fn apply_modlist(&mut self, name: &str, launch: bool) {
+        // The modpacks the game loads until now: the mods' settings in use are theirs.
+        let live: Vec<String> = self
+            .modlists
+            .iter()
+            .filter(|l| self.modlist_diff(l).is_same())
+            .map(|l| l.name.clone())
+            .collect();
         self.load_modlist(name);
         if self.save_config() {
-            self.status_message = fmt(self.i18n.get(TranslationKey::SetsApplied), &[name]);
+            let mut message = fmt(self.i18n.get(TranslationKey::SetsApplied), &[name]);
+            // Enabling the modpack that is on already changes nothing, its settings neither.
+            if !live.iter().any(|l| l == name) {
+                if let Some(settings) = self.switch_modlist_settings(&live, name) {
+                    message.push_str(" | ");
+                    message.push_str(&settings);
+                }
+            }
+            self.status_message = message;
             if launch {
                 self.check_vram_and_launch();
             }
@@ -3687,6 +4013,7 @@ impl App {
             Ok(_) => {
                 crate::modlist_images::copy_image(&crate::modlist_images::images_dir(), name, &copy);
                 crate::modlist_tags::copy(&mut self.modlist_tags, name, &copy);
+                crate::modlist_settings::copy(&crate::modlist_settings::root(), name, &copy);
                 self.save_modlist_tags();
                 self.refresh_modlists();
                 self.selected_modlist = Some(copy.clone());
@@ -3806,6 +4133,7 @@ impl App {
         self.modlist_pictures.remove(from);
         self.modlist_pictures.remove(&name);
         crate::modlist_tags::rename(&mut self.modlist_tags, from, &name);
+        crate::modlist_settings::rename(&crate::modlist_settings::root(), from, &name);
         self.save_modlist_tags();
         self.refresh_modlists();
         self.status_message = fmt(self.i18n.get(TranslationKey::SetsRenamed), &[from, &name]);
@@ -3818,6 +4146,7 @@ impl App {
         match trash::delete(crate::modlists::path_for(&dir, name)) {
             Ok(()) => {
                 crate::modlist_images::remove_image(&crate::modlist_images::images_dir(), name);
+                crate::modlist_settings::remove(&crate::modlist_settings::root(), name);
                 self.modlist_pictures.remove(name);
                 if self.modlist_tags.remove(name).is_some() {
                     self.save_modlist_tags();
@@ -4014,6 +4343,8 @@ impl App {
             .filter(|m| match kind {
                 DeleteKind::Unsubscribe => m.steam_item_id.is_some(),
                 DeleteKind::Reinstall => self.can_reinstall(m),
+                DeleteKind::Freeze => can_freeze(m),
+                DeleteKind::Unfreeze => m.frozen,
                 _ => true,
             })
             .collect();
@@ -4034,7 +4365,8 @@ impl App {
         if self.is_official_mod(m) {
             return false;
         }
-        m.steam_item_id.is_some() || (self.steamcmd_active() && workshop_id_of(m).is_some())
+        // A frozen mod keeps its version: unfreeze it first.
+        !m.frozen && (m.steam_item_id.is_some() || (self.steamcmd_active() && workshop_id_of(m).is_some()))
     }
 
     /// After a background deletion: deleted mods leave the active list, unsubscribed ones
@@ -4061,6 +4393,8 @@ impl App {
                     }
                 }
             }
+            // The mods stay installed and enabled; the rescan picks up the new folders.
+            DeleteKind::Freeze | DeleteKind::Unfreeze => {}
             _ => {
                 let gone: Vec<String> = targets
                     .into_iter()
@@ -4093,7 +4427,13 @@ impl App {
             return;
         }
         let steam_paths = self.steam_paths.clone();
-        self.status_message = tr!("Удаление...", "Deleting...", "正在删除...").to_string();
+        let freezing = matches!(pending.kind, DeleteKind::Freeze | DeleteKind::Unfreeze);
+        let mods_dir = self.game_mods_dir();
+        self.status_message = if freezing {
+            self.i18n.get(TranslationKey::FreezeWorking).to_string()
+        } else {
+            tr!("Удаление...", "Deleting...", "正在删除...").to_string()
+        };
         self.delete_job = Some((
             pending.kind,
             targets
@@ -4108,6 +4448,33 @@ impl App {
         };
 
         self.delete_rx = Some(self.spawn_task(move || match pending.kind {
+            DeleteKind::Freeze | DeleteKind::Unfreeze => {
+                let freeze = pending.kind == DeleteKind::Freeze;
+                let results: Vec<Result<(), String>> = targets
+                    .iter()
+                    .map(|m| {
+                        if freeze {
+                            crate::freeze::freeze(m, workshop_id_of(m), mods_dir.as_deref()).map(|_| ())
+                        } else {
+                            crate::freeze::unfreeze(&m.dir_path, steam_paths.workshop_path.as_deref()).map(|_| ())
+                        }
+                    })
+                    .collect();
+                let ok = results.iter().filter(|r| r.is_ok()).count();
+                let key = if freeze {
+                    TranslationKey::FreezeDone
+                } else {
+                    TranslationKey::UnfreezeDone
+                };
+                let mut msg = fmt(t.get(key), &[&ok.to_string()]);
+                if let Some(err) = results.iter().find_map(|r| r.as_ref().err()) {
+                    msg.push_str(&fmt(
+                        t.get(TranslationKey::FreezeErrors),
+                        &[&(results.len() - ok).to_string(), err],
+                    ));
+                }
+                done(msg)
+            }
             DeleteKind::Unsubscribe => {
                 let refs: Vec<&ModInfo> = targets.iter().collect();
                 match crate::cleaner::unsubscribe_mods(&refs, &steam_paths) {
@@ -5511,6 +5878,7 @@ impl eframe::App for App {
         self.render_save_dialog(ctx);
         crate::ui::view_bisect::render_bisect_window(self, ctx);
         crate::ui::view_name_search::render_name_search_window(self, ctx);
+        crate::ui::view_changelog::render_changelog_window(self, ctx);
         crate::ui::view_steamcmd::render_steamcmd_window(self, ctx);
         self.save_settings_if_changed();
 
@@ -5540,6 +5908,16 @@ impl App {
                 TranslationKey::ConfirmReinstallTitle,
                 TranslationKey::ConfirmReinstallBody,
                 TranslationKey::ConfirmReinstallBtn,
+            ),
+            DeleteKind::Freeze => (
+                TranslationKey::ConfirmFreezeTitle,
+                TranslationKey::ConfirmFreezeBody,
+                TranslationKey::ConfirmFreezeBtn,
+            ),
+            DeleteKind::Unfreeze => (
+                TranslationKey::ConfirmUnfreezeTitle,
+                TranslationKey::ConfirmUnfreezeBody,
+                TranslationKey::ConfirmUnfreezeBtn,
             ),
             _ => (
                 TranslationKey::ConfirmDeleteTitle,
@@ -6165,6 +6543,47 @@ pub fn is_verified_launch_log(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_collection_becomes_a_modpack_with_core_and_dlc_in_load_order() {
+        let installed = |id: &str, name: &str| ModInfo {
+            package_id: id.into(),
+            name: name.into(),
+            ..Default::default()
+        };
+        let all_mods = vec![
+            installed("Ludeon.RimWorld.Royalty", "Royalty"),
+            installed("brrainz.harmony", "Harmony"),
+            installed("Ludeon.RimWorld", "Core"),
+        ];
+        let entry = |id: &str| crate::modlists::ModListEntry {
+            id: id.into(),
+            name: id.into(),
+            steam_id: Some("1".into()),
+        };
+        // The second mod isn't downloaded yet.
+        let pack = modpack_from_collection(vec![entry("author.mod"), entry("brrainz.harmony")], &all_mods, None);
+        let ids: Vec<&str> = pack.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "brrainz.harmony",
+                "ludeon.rimworld",
+                "ludeon.rimworld.royalty",
+                "author.mod"
+            ]
+        );
+        assert_eq!((pack[1].name.as_str(), &pack[1].steam_id), ("Core", &None));
+
+        // A list that already has Core keeps its one entry.
+        let pack = modpack_from_collection(vec![entry("Ludeon.RimWorld"), entry("author.mod")], &all_mods, None);
+        assert_eq!(
+            pack.iter()
+                .filter(|e| e.id.eq_ignore_ascii_case("ludeon.rimworld"))
+                .count(),
+            1
+        );
+    }
 
     #[test]
     fn lookup_by_index_understands_case_and_steam_suffix() {

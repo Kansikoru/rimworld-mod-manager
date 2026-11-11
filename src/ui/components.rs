@@ -33,6 +33,21 @@ pub fn take_workshop_request(ctx: &egui::Context) -> Option<Vec<String>> {
     ctx.data_mut(|d| d.remove_temp::<Vec<String>>(workshop_request_id()))
 }
 
+fn changelog_request_id() -> egui::Id {
+    egui::Id::unique("open_changelog")
+}
+
+/// Asks for the "What changed" window of a Workshop mod, the same way as
+/// `open_in_workshop_tab` (`App::open_changelog` runs on the next frame).
+pub fn open_changelog_window(ctx: &egui::Context, item_id: &str) {
+    ctx.data_mut(|d| d.insert_temp(changelog_request_id(), item_id.to_string()));
+    ctx.request_repaint();
+}
+
+pub fn take_changelog_request(ctx: &egui::Context) -> Option<String> {
+    ctx.data_mut(|d| d.remove_temp::<String>(changelog_request_id()))
+}
+
 /// Unix time as a local date and time: "26.10.2026 14:32" (Russian) or "2026-10-26 14:32".
 pub fn local_date_time(unix_secs: u64) -> String {
     let Some(utc) = chrono::DateTime::from_timestamp(unix_secs as i64, 0) else {
@@ -82,6 +97,14 @@ pub fn badge(ui: &mut Ui, text: &str, bg: Color32, fg: Color32) -> Response {
 /// Badge: `color` text on the same color at 18%.
 pub fn tag(ui: &mut Ui, text: &str, color: Color32) -> Response {
     badge(ui, text, tint(color), color)
+}
+
+/// Height of a `badge` (and of an `icon_badge`) with the current font.
+pub fn badge_height(ui: &Ui) -> f32 {
+    let galley = ui
+        .painter()
+        .layout_no_wrap("Ag".to_string(), egui::FontId::proportional(12.0), Color32::WHITE);
+    galley.size().y.max(BADGE_ICON) + BADGE_PAD.y * 2.0
 }
 
 /// Width a `badge` with this text takes.

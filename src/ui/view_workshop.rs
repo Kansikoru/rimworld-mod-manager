@@ -637,6 +637,13 @@ fn render_details(
             if secondary_button(ui, t.get(TranslationKey::NameSearchOpenSteam)).clicked() {
                 open_external(crate::steam::workshop_url(&item.id));
             }
+            wrap_before_button(ui, t.get(TranslationKey::ModsCtxChangelog), 24.0);
+            if secondary_button(ui, t.get(TranslationKey::ModsCtxChangelog))
+                .on_hover_text(t.get(TranslationKey::ChangelogBtnHint))
+                .clicked()
+            {
+                open_changelog_window(ui.ctx(), &item.id);
+            }
             if app.steam_busy() {
                 ui.spinner();
             }

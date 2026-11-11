@@ -57,6 +57,12 @@ pub struct UpdateReport {
     pub checked: usize,
     /// Items Steam doesn't know (removed from the Workshop, or hidden).
     pub not_found: usize,
+    /// Those mods: lowercase package ID -> Workshop ID. They get no updates, and a deleted
+    /// copy can't be downloaded again.
+    pub gone: HashMap<String, String>,
+    /// Mods the author hasn't brought to the installed game version: neither the copy on
+    /// disk nor the Workshop one lists it. Lowercase package ID -> the Workshop copy's date.
+    pub not_for_game: HashMap<String, u64>,
     /// Unix time of the check.
     pub checked_at: u64,
 }
@@ -351,8 +357,17 @@ pub fn compare(
     for item in items {
         let Some(online) = remote.get(&item.workshop_id) else {
             report.not_found += 1;
+            report
+                .gone
+                .insert(item.package_id.to_lowercase(), item.workshop_id.clone());
             continue;
         };
+        let lists = |versions: &[String], v: &str| versions.iter().any(|t| t == v);
+        if game_version.is_some_and(|v| !lists(&online.versions, v) && !lists(&item.local_versions, v)) {
+            report
+                .not_for_game
+                .insert(item.package_id.to_lowercase(), online.time_updated);
+        }
         let (outdated, estimated) = match installed.get(&item.workshop_id) {
             Some(&local) => (online.time_updated > local, false),
             None => match file_time(&item.dir) {
@@ -468,6 +483,10 @@ mod tests {
         let report = compare(&items, &remote, &installed, Some("1.7"), |_| None);
         assert_eq!(report.checked, 3);
         assert_eq!(report.not_found, 1);
+        assert_eq!(report.gone["gone.mod"], "111");
+        // Achtung lists 1.7 neither on disk nor in the Workshop; Harmony does.
+        assert_eq!(report.not_for_game.len(), 1);
+        assert_eq!(report.not_for_game["brrainz.achtung"], 1786739756);
         assert!(!report.mods.contains_key("brrainz.harmony"), "up to date");
         let achtung = &report.mods["brrainz.achtung"];
         assert!(achtung.outdated && !achtung.estimated && !achtung.newer_supports_game);

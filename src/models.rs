@@ -80,6 +80,9 @@ pub struct ModInfo {
     /// Raw `*ByVersion` blocks from About.xml (resolved into the lists above after scanning).
     #[serde(default)]
     pub by_version: VersionedLists,
+    /// Frozen by the user (`freeze.rs`): this version stays, nothing updates it.
+    #[serde(default)]
+    pub frozen: bool,
 }
 
 /// `modDependenciesByVersion`, `loadAfterByVersion`, ... keyed by game version ("1.6").
