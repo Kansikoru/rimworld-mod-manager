@@ -3,6 +3,7 @@ pub mod icons;
 pub mod theme;
 pub mod view_analyzer;
 pub mod view_bisect;
+pub mod view_changelog;
 pub mod view_mods;
 pub mod view_name_search;
 pub mod view_optimizer;

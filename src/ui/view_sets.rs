@@ -6,7 +6,7 @@ use eframe::egui::{self, Color32, CornerRadius, Sense, Stroke, Ui, Vec2};
 use super::components::*;
 use super::icons::*;
 use super::theme::{tint, THEME};
-use crate::app::{App, AppTab, ModListDialog};
+use crate::app::{App, AppTab, CompareWith, ModListDialog};
 use crate::i18n::{fmt, TranslationKey};
 use crate::modlists::ModList;
 
@@ -36,6 +36,13 @@ enum SetAction {
     SetPicture(String, std::path::PathBuf),
     RemovePicture(String),
     ToggleTag(String, String),
+    /// Mod settings kept with the modpack: take a copy, put it back, forget it.
+    SaveSettings(String),
+    RestoreSettings(String),
+    ForgetSettings(String),
+    /// Open the "Compare" window, or change what the modpack is compared with.
+    Compare(String, CompareWith),
+    CloseCompare,
 }
 
 /// A tag as shown: built-in ones translated, own ones as typed.
@@ -91,6 +98,7 @@ pub fn render_sets_view(app: &mut App, ui: &mut Ui) {
             .id_salt("sets_details_narrow")
             .auto_shrink([false, false])
             .show(ui, |ui| render_details(app, ui, &mut actions, true));
+        render_compare_window(app, ui.ctx(), &mut actions);
         apply_actions(app, actions);
         return;
     }
@@ -144,6 +152,7 @@ pub fn render_sets_view(app: &mut App, ui: &mut Ui) {
         }
     }
     ui.allocate_rect(full, Sense::hover());
+    render_compare_window(app, ui.ctx(), &mut actions);
     apply_actions(app, actions);
 }
 
@@ -182,6 +191,11 @@ fn apply_actions(app: &mut App, actions: Vec<SetAction>) {
             SetAction::SetPicture(name, file) => app.set_modlist_picture(&name, &file),
             SetAction::RemovePicture(name) => app.remove_modlist_picture(&name),
             SetAction::ToggleTag(name, tag) => app.toggle_modlist_tag(&name, &tag),
+            SetAction::SaveSettings(name) => app.save_modlist_settings(&name),
+            SetAction::RestoreSettings(name) => app.restore_modlist_settings(&name),
+            SetAction::ForgetSettings(name) => app.forget_modlist_settings(&name),
+            SetAction::Compare(name, with) => app.open_set_compare(&name, with),
+            SetAction::CloseCompare => app.set_compare = None,
             SetAction::OpenFolder => {
                 if let Some(dir) = app.modlists_folder() {
                     let _ = std::fs::create_dir_all(&dir);
@@ -663,6 +677,12 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, with_mod
         if secondary_button_icon(ui, ICON_COPY, t.get(TranslationKey::SetsBtnDuplicate)).clicked() {
             actions.push(SetAction::Duplicate(name.clone()));
         }
+        if secondary_button(ui, t.get(TranslationKey::SetsBtnCompare))
+            .on_hover_text(t.get(TranslationKey::SetsCompareHint))
+            .clicked()
+        {
+            actions.push(SetAction::Compare(name.clone(), CompareWith::Current));
+        }
         if secondary_button(ui, t.get(TranslationKey::SetsBtnRename)).clicked() {
             actions.push(SetAction::Dialog(ModListDialog::Rename {
                 from: name.clone(),
@@ -772,6 +792,8 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, with_mod
             });
     });
 
+    render_settings_card(app, ui, &name, actions);
+
     // F6: mods of the set that are not installed
     if missing > 0 {
         let workshop = app.modlist_missing_workshop_ids(list).len();
@@ -840,6 +862,181 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, with_mod
             .min(ui.ctx().content_rect().height() * 0.7)
             .max(240.0);
         render_set_mods(app, ui, list, actions, max_h);
+    }
+}
+
+/// Mod settings kept with the modpack: whether a copy exists, and its buttons.
+fn render_settings_card(app: &App, ui: &mut Ui, name: &str, actions: &mut Vec<SetAction>) {
+    let t = app.i18n;
+    let saved = app.modlist_settings.get(name);
+    card_container(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(
+            egui::RichText::new(t.get(TranslationKey::SetsSettingsTitle))
+                .color(THEME.accent_cyan)
+                .strong(),
+        );
+        ui.add_space(4.0);
+        let (status, hint) = match saved {
+            Some(s) => (
+                fmt(
+                    t.get(TranslationKey::SetsSettingsSaved),
+                    &[
+                        &s.saved_at.map(local_date_time).unwrap_or_else(|| "—".into()),
+                        &s.files.to_string(),
+                    ],
+                ),
+                TranslationKey::SetsSettingsKeptHint,
+            ),
+            None => (
+                t.get(TranslationKey::SetsSettingsNone).to_string(),
+                TranslationKey::SetsSettingsHint,
+            ),
+        };
+        ui.add(egui::Label::new(egui::RichText::new(status).color(THEME.text_primary)).wrap());
+        ui.add(egui::Label::new(egui::RichText::new(t.get(hint)).color(THEME.text_muted).size(12.0)).wrap());
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+            let save = if saved.is_some() {
+                TranslationKey::SetsSettingsBtnUpdate
+            } else {
+                TranslationKey::SetsSettingsBtnSave
+            };
+            if secondary_button_icon(ui, ICON_SAVE, t.get(save))
+                .on_hover_text(t.get(TranslationKey::SetsSettingsSaveHint))
+                .clicked()
+            {
+                actions.push(SetAction::SaveSettings(name.to_string()));
+            }
+            if saved.is_some() {
+                if secondary_button(ui, t.get(TranslationKey::SetsSettingsBtnRestore))
+                    .on_hover_text(t.get(TranslationKey::SetsSettingsRestoreHint))
+                    .clicked()
+                {
+                    actions.push(SetAction::RestoreSettings(name.to_string()));
+                }
+                if secondary_button(ui, t.get(TranslationKey::SetsSettingsBtnForget)).clicked() {
+                    actions.push(SetAction::ForgetSettings(name.to_string()));
+                }
+            }
+        });
+    });
+}
+
+/// "Compare" window: the selected modpack against the current list, another modpack or a
+/// save: what only one of them has, and which shared mods sit elsewhere.
+fn render_compare_window(app: &App, ctx: &egui::Context, actions: &mut Vec<SetAction>) {
+    let Some(compare) = app.set_compare.as_ref() else {
+        return;
+    };
+    let t = app.i18n;
+    let mut open = !ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    let (width, max_height) = dialog_size(ctx, 640.0);
+    let with_label = |with: &CompareWith| match with {
+        CompareWith::Current => t.get(TranslationKey::SetsCompareCurrent).to_string(),
+        CompareWith::Modpack(name) => name.clone(),
+        CompareWith::Save(name) => fmt(t.get(TranslationKey::SetsCompareSave), &[name]),
+    };
+    let second = with_label(&compare.with);
+
+    egui::Window::new(t.get(TranslationKey::SetsCompareTitle))
+        .id(egui::Id::unique("set_compare_window"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .max_height(max_height)
+        .vscroll(true)
+        .show(ctx, |ui| {
+            ui.set_width(width);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.label(egui::RichText::new(&compare.first).color(THEME.accent_cyan).strong());
+                ui.label(egui::RichText::new(t.get(TranslationKey::SetsCompareWith)).color(THEME.text_muted));
+                egui::ComboBox::from_id_salt("set_compare_with")
+                    .selected_text(&second)
+                    .width(260.0)
+                    .show_ui(ui, |ui| {
+                        let mut choices = vec![CompareWith::Current];
+                        choices.extend(
+                            app.modlists
+                                .iter()
+                                .filter(|l| l.name != compare.first)
+                                .map(|l| CompareWith::Modpack(l.name.clone())),
+                        );
+                        choices.extend(app.saves.iter().map(|s| CompareWith::Save(s.name.clone())));
+                        for choice in choices {
+                            if ui
+                                .selectable_label(choice == compare.with, with_label(&choice))
+                                .clicked()
+                            {
+                                actions.push(SetAction::Compare(compare.first.clone(), choice));
+                            }
+                        }
+                    });
+            });
+            ui.add_space(6.0);
+
+            let diff = &compare.result;
+            if diff.is_same() {
+                ui.label(egui::RichText::new(t.get(TranslationKey::SetsCompareSame)).color(THEME.accent_emerald));
+                return;
+            }
+            ui.label(
+                egui::RichText::new(fmt(
+                    t.get(TranslationKey::SetsCompareShared),
+                    &[&diff.shared.to_string()],
+                ))
+                .color(THEME.text_muted),
+            );
+            let section = |ui: &mut Ui, title: String, ids: &[String], color: Color32| {
+                if ids.is_empty() {
+                    return;
+                }
+                ui.add_space(6.0);
+                card_container(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.add(egui::Label::new(egui::RichText::new(title).color(color).strong()).wrap());
+                    ui.add_space(2.0);
+                    for id in ids {
+                        let name = compare.names.get(&id.to_lowercase()).unwrap_or(id);
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(name).color(THEME.text_secondary).size(12.5))
+                                .truncate(),
+                        )
+                        .on_hover_text(id);
+                    }
+                });
+            };
+            let count = |ids: &[String]| ids.len().to_string();
+            section(
+                ui,
+                fmt(
+                    t.get(TranslationKey::SetsCompareOnly),
+                    &[&compare.first, &count(&diff.only_first)],
+                ),
+                &diff.only_first,
+                THEME.accent_amber,
+            );
+            section(
+                ui,
+                fmt(
+                    t.get(TranslationKey::SetsCompareOnly),
+                    &[&second, &count(&diff.only_second)],
+                ),
+                &diff.only_second,
+                THEME.accent_info,
+            );
+            section(
+                ui,
+                fmt(t.get(TranslationKey::SetsCompareMoved), &[&count(&diff.moved)]),
+                &diff.moved,
+                THEME.text_primary,
+            );
+        });
+    if !open {
+        actions.push(SetAction::CloseCompare);
     }
 }
 

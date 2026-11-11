@@ -291,6 +291,81 @@ pub fn write_rml(path: &Path, game_version: &str, entries: &[ModListEntry]) -> s
     })
 }
 
+/// How two mod lists differ (IDs are compared without letter case).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Comparison {
+    /// Mods only the first list has, in its order.
+    pub only_first: Vec<String>,
+    /// Mods only the second list has, in its order.
+    pub only_second: Vec<String>,
+    /// Mods both lists have that sit at another place among the shared mods: the fewest
+    /// mods that would have to move to make the two orders the same. In the first list's order.
+    pub moved: Vec<String>,
+    /// How many mods both lists have.
+    pub shared: usize,
+}
+
+impl Comparison {
+    pub fn is_same(&self) -> bool {
+        self.only_first.is_empty() && self.only_second.is_empty() && self.moved.is_empty()
+    }
+}
+
+pub fn compare(first: &[String], second: &[String]) -> Comparison {
+    let lower = |ids: &[String]| ids.iter().map(|id| id.to_lowercase()).collect::<Vec<_>>();
+    let (a, b) = (lower(first), lower(second));
+    let place_in_b: std::collections::HashMap<&str, usize> =
+        b.iter().enumerate().map(|(i, id)| (id.as_str(), i)).collect();
+    let in_a: std::collections::HashSet<&str> = a.iter().map(String::as_str).collect();
+
+    // Shared mods in the first list's order, each with its place in the second list. The
+    // mods that keep their relative order are the longest run of rising places; the rest moved.
+    let shared: Vec<(usize, usize)> = a
+        .iter()
+        .enumerate()
+        .filter_map(|(i, id)| place_in_b.get(id.as_str()).map(|&place| (i, place)))
+        .collect();
+    let mut tails: Vec<usize> = Vec::new(); // index in `shared` of the smallest tail per length
+    let mut previous: Vec<Option<usize>> = vec![None; shared.len()];
+    for (i, &(_, place)) in shared.iter().enumerate() {
+        let len = tails.partition_point(|&t| shared[t].1 < place);
+        previous[i] = len.checked_sub(1).map(|l| tails[l]);
+        if len == tails.len() {
+            tails.push(i);
+        } else {
+            tails[len] = i;
+        }
+    }
+    let mut kept = vec![false; shared.len()];
+    let mut at = tails.last().copied();
+    while let Some(i) = at {
+        kept[i] = true;
+        at = previous[i];
+    }
+
+    Comparison {
+        only_first: first
+            .iter()
+            .zip(&a)
+            .filter(|(_, id)| !place_in_b.contains_key(id.as_str()))
+            .map(|(id, _)| id.clone())
+            .collect(),
+        only_second: second
+            .iter()
+            .zip(&b)
+            .filter(|(_, id)| !in_a.contains(id.as_str()))
+            .map(|(id, _)| id.clone())
+            .collect(),
+        moved: shared
+            .iter()
+            .zip(&kept)
+            .filter(|(_, kept)| !**kept)
+            .map(|((i, _), _)| first[*i].clone())
+            .collect(),
+        shared: shared.len(),
+    }
+}
+
 /// A safe `Mod_*.xml` settings file name in RimWorld's `Config` folder.
 pub fn is_mod_config_name(name: &str) -> bool {
     let lower = name.to_lowercase();
@@ -459,6 +534,25 @@ mod tests {
         assert_eq!(lists[0].game_version.as_deref(), Some("1.6.4871 rev591"));
         assert_eq!(lists[1].ids, ["a.b", "c.d"]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_lists_compared() {
+        let list = |ids: &[&str]| ids.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let first = list(&["Harmony", "core", "a", "b", "c", "only.first"]);
+        let second = list(&["harmony", "Core", "only.second", "c", "a", "b"]);
+        let diff = compare(&first, &second);
+        assert_eq!(diff.only_first, ["only.first"]);
+        assert_eq!(diff.only_second, ["only.second"]);
+        // One mod moved, not the two it jumped over.
+        assert_eq!(diff.moved, ["c"]);
+        assert_eq!(diff.shared, 5);
+        assert!(!diff.is_same());
+
+        // Letter case alone is no difference; a reversed list moves all but one.
+        assert!(compare(&first, &list(&["HARMONY", "CORE", "A", "B", "C", "ONLY.FIRST"])).is_same());
+        assert_eq!(compare(&list(&["a", "b", "c"]), &list(&["c", "b", "a"])).moved.len(), 2);
+        assert!(compare(&[], &[]).is_same());
     }
 
     #[test]

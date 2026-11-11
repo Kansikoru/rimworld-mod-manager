@@ -150,6 +150,7 @@ pub fn parse_mod_folder(
         incompatible_with: meta.incompatible_with,
         dependency_alternatives: meta.dependency_alternatives,
         by_version: meta.by_version,
+        frozen: crate::freeze::is_frozen(dir),
     };
     Some((info, cache_entry))
 }
@@ -557,6 +558,12 @@ pub fn dedupe_mods(mods: Vec<ModInfo>) -> (Vec<ModInfo>, Vec<DuplicateModEntry>)
             }
         }
     }
+    // A frozen copy next to its subscription is what the user asked for, not a mistake.
+    dups.retain(|d| {
+        !index
+            .get(&d.package_id.to_lowercase())
+            .is_some_and(|&pos| unique[pos].frozen)
+    });
     (unique, dups)
 }
 
@@ -773,6 +780,15 @@ mod tests {
         assert_eq!(unique[1].origin, ModOrigin::Local);
         assert_eq!(dups.len(), 1);
         assert_eq!(dups[0].origins.len(), 2);
+
+        // A frozen copy wins the same way and is not reported: the user made it.
+        let frozen = ModInfo {
+            frozen: true,
+            ..m("Brrainz.Harmony", ModOrigin::Local, "Mods/Harmony (frozen)")
+        };
+        let (unique, dups) = dedupe_mods(vec![m("brrainz.harmony", ModOrigin::Workshop, "ws/2009463077"), frozen]);
+        assert!(unique.len() == 1 && unique[0].frozen);
+        assert!(dups.is_empty());
     }
 
     #[test]

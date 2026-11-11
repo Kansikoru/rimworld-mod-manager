@@ -250,6 +250,17 @@ struct ModLists<'a> {
     index: &'a std::collections::HashMap<String, usize>,
 }
 
+/// Context menu item of a Workshop mod: what its author changed in the latest updates.
+fn changelog_item(ui: &mut Ui, t: crate::i18n::I18n, m: Option<&ModInfo>) {
+    let Some(id) = m.and_then(crate::app::changelog_id_of) else {
+        return;
+    };
+    if ui.button(t.get(TranslationKey::ModsCtxChangelog)).clicked() {
+        open_changelog_window(ui.ctx(), &id);
+        ui.close();
+    }
+}
+
 /// Context menu item with several mods selected: all of them in the Workshop tab.
 fn open_selected_in_workshop_item(ui: &mut Ui, t: crate::i18n::I18n, lists: ModLists) {
     if lists.selected.len() < 2 {
@@ -297,7 +308,7 @@ fn remove_mods_items(
     let subscribed = mods.iter().filter(|m| m.steam_item_id.is_some()).count();
     let reinstallable = mods
         .iter()
-        .filter(|m| m.steam_item_id.is_some() || (steamcmd && workshop_id_of(m).is_some()))
+        .filter(|m| !m.frozen && (m.steam_item_id.is_some() || (steamcmd && workshop_id_of(m).is_some())))
         .count();
     let ids: Vec<String> = mods.iter().map(|m| m.package_id.clone()).collect();
     // One mod: "Unsubscribe"; a selection: "Unsubscribe selected (N)", N = mods it applies to.
@@ -317,6 +328,24 @@ fn remove_mods_items(
     };
 
     ui.separator();
+    let freezable = mods.iter().filter(|m| crate::app::can_freeze(m)).count();
+    let frozen = mods.iter().filter(|m| m.frozen).count();
+    if freezable > 0 {
+        let text = label(
+            TranslationKey::ModsCtxFreeze,
+            TranslationKey::ModsCtxFreezeSelected,
+            freezable,
+        );
+        item(ui, text, DeleteKind::Freeze, false);
+    }
+    if frozen > 0 {
+        let text = label(
+            TranslationKey::ModsCtxUnfreeze,
+            TranslationKey::ModsCtxUnfreezeSelected,
+            frozen,
+        );
+        item(ui, text, DeleteKind::Unfreeze, false);
+    }
     if reinstallable > 0 {
         let text = label(
             TranslationKey::ModsCtxReinstall,
@@ -934,7 +963,9 @@ struct RowSplit {
 fn split_row(ui: &mut Ui, buttons_width: f32) -> (Ui, RowSplit) {
     let full = ui.available_rect_before_wrap();
     let right_x = (full.max.x - buttons_width).max(full.min.x);
-    let left_rect = egui::Rect::from_min_max(full.min, egui::pos2(right_x - 4.0, full.max.y));
+    // Every row is as tall as its tallest possible content, see `row_content_height`.
+    let bottom = full.max.y.max(full.min.y + row_content_height(ui));
+    let left_rect = egui::Rect::from_min_max(full.min, egui::pos2(right_x - 4.0, bottom));
     let mut left = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(left_rect)
@@ -956,12 +987,30 @@ fn split_row(ui: &mut Ui, buttons_width: f32) -> (Ui, RowSplit) {
 /// for the buttons, as tall as the content.
 fn finish_row(ui: &mut Ui, left: &Ui, split: &RowSplit) -> egui::Rect {
     let used = left.min_rect();
-    let content = egui::Rect::from_min_max(used.min, egui::pos2(split.right_x - 4.0, used.max.y));
+    // The whole slot, not only what was drawn in it: a row without badges is as tall as
+    // a row with them.
+    let top = used.min.y.min(left.max_rect().min.y);
+    let bottom = used.max.y.max(left.max_rect().max.y);
+    let content = egui::Rect::from_min_max(egui::pos2(used.min.x, top), egui::pos2(split.right_x - 4.0, bottom));
     ui.allocate_rect(content, egui::Sense::hover());
-    egui::Rect::from_min_max(
-        egui::pos2(split.right_x, used.min.y),
-        egui::pos2(split.max_x, used.max.y),
-    )
+    egui::Rect::from_min_max(egui::pos2(split.right_x, top), egui::pos2(split.max_x, bottom))
+}
+
+/// Height of a list row's content: the buttons (24) or a badge, whichever is taller with
+/// the current font. Rows of different heights make a long list shake at its end:
+/// `show_rows` works from one height for all rows, so the list's length would change with
+/// the rows in view, the scroll position be clamped, other rows come into view, and so on.
+fn row_content_height(ui: &Ui) -> f32 {
+    badge_height(ui).max(24.0).ceil()
+}
+
+/// The row height `show_rows` uses next frame. A measurement that differs by a fraction
+/// of a pixel is left alone, so the list's length can't flicker between two values.
+fn settled_row_height(current: f32, measured: Option<f32>) -> f32 {
+    match measured {
+        Some(h) if (h - current).abs() > 0.5 => h,
+        _ => current,
+    }
 }
 
 /// Average height of the rows just drawn (without item spacing), for `ScrollArea::show_rows`.
@@ -1061,7 +1110,14 @@ fn render_version_issues(app: &mut App, ui: &mut Ui) {
 }
 
 /// Muted "up to 1.6" badge for a mod that doesn't declare the installed game version.
-fn version_badge(ui: &mut Ui, m: &ModInfo, game_mm: Option<&str>, t: crate::i18n::I18n) {
+/// `workshop`: the last update check, which knows whether the Workshop copy does.
+fn version_badge(
+    ui: &mut Ui,
+    m: &ModInfo,
+    game_mm: Option<&str>,
+    workshop: Option<&crate::mod_updates::UpdateReport>,
+    t: crate::i18n::I18n,
+) {
     if crate::version_check::supports_version(m, game_mm) != Some(false) {
         return;
     }
@@ -1071,7 +1127,42 @@ fn version_badge(ui: &mut Ui, m: &ModInfo, game_mm: Option<&str>, t: crate::i18n
         &fmt(t.get(TranslationKey::ModsVersionBadge), &[&newest]),
         THEME.accent_amber,
     ) {
-        resp.on_hover_text(fmt(t.get(TranslationKey::ModsVersionHint), &[game_mm.unwrap_or("?")]));
+        let game = game_mm.unwrap_or("?");
+        let mut hint = fmt(t.get(TranslationKey::ModsVersionHint), &[game]);
+        // The last update check found no version for this game in the Workshop either.
+        if let Some(&updated) = workshop.and_then(|r| r.not_for_game.get(&m.package_id.to_lowercase())) {
+            hint.push('\n');
+            hint.push_str(&fmt(
+                t.get(TranslationKey::ModsVersionWorkshopHint),
+                &[game, &local_date_time(updated)],
+            ));
+        }
+        resp.on_hover_text(hint);
+    }
+}
+
+/// "Not in the Workshop" badge: the last update check didn't find the mod there any more.
+fn gone_badge(ui: &mut Ui, m: &ModInfo, workshop: Option<&crate::mod_updates::UpdateReport>, t: crate::i18n::I18n) {
+    if !workshop.is_some_and(|r| r.gone.contains_key(&m.package_id.to_lowercase())) {
+        return;
+    }
+    if let Some(resp) = tag_if_fits(ui, t.get(TranslationKey::ModsGoneBadge), THEME.accent_rose) {
+        let hint = if m.frozen {
+            TranslationKey::ModsGoneFrozenHint
+        } else {
+            TranslationKey::ModsGoneHint
+        };
+        resp.on_hover_text(t.get(hint));
+    }
+}
+
+/// "Frozen" badge: the user keeps this version of the mod (`freeze.rs`).
+fn frozen_badge(ui: &mut Ui, m: &ModInfo, t: crate::i18n::I18n) {
+    if !m.frozen {
+        return;
+    }
+    if let Some(resp) = tag_if_fits(ui, t.get(TranslationKey::ModsFrozenBadge), THEME.accent_cyan) {
+        resp.on_hover_text(t.get(TranslationKey::ModsFrozenHint));
     }
 }
 
@@ -1806,6 +1897,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                             ui.close();
                                         }
                                     }
+                                    changelog_item(ui, app.i18n, mod_info_opt);
                                     open_selected_in_workshop_item(
                                         ui,
                                         app.i18n,
@@ -1872,13 +1964,15 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                     if log_error_badge(ui, log_culprits.get(&m.package_id.to_lowercase()), t) {
                                         open_analyzer = true;
                                     }
-                                    version_badge(ui, m, game_mm.as_deref(), t);
+                                    version_badge(ui, m, game_mm.as_deref(), app.mod_updates.as_ref(), t);
+                                    gone_badge(ui, m, app.mod_updates.as_ref(), t);
+                                    frozen_badge(ui, m, t);
                                     if let Some(u) = update_map.get(&m.package_id.to_lowercase()) {
                                         if update_badge(
                                             ui,
                                             Some(u),
                                             t,
-                                            steamcmd_active && m.origin != ModOrigin::Workshop,
+                                            steamcmd_active && m.origin != ModOrigin::Workshop && !m.frozen,
                                         ) {
                                             download_dep_ws_id = Some(u.workshop_id.clone());
                                         }
@@ -2087,9 +2181,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
             scroll_offset = output.state.clamped_offset().y;
         });
     app.active_scroll_offset = scroll_offset;
-    if let Some(h) = measured_row_height {
-        app.active_row_height = h;
-    }
+    app.active_row_height = settled_row_height(app.active_row_height, measured_row_height);
     if start_drag.is_some() {
         app.mod_drag = start_drag;
     }
@@ -2380,6 +2472,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                                                 ui.close();
                                             }
                                         }
+                                        changelog_item(ui, app.i18n, Some(m));
                                         open_selected_in_workshop_item(
                                             ui,
                                             app.i18n,
@@ -2438,13 +2531,15 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                                     if log_error_badge(ui, log_culprits.get(&m.package_id.to_lowercase()), t) {
                                         open_analyzer = true;
                                     }
-                                    version_badge(ui, m, game_mm.as_deref(), t);
+                                    version_badge(ui, m, game_mm.as_deref(), app.mod_updates.as_ref(), t);
+                                    gone_badge(ui, m, app.mod_updates.as_ref(), t);
+                                    frozen_badge(ui, m, t);
                                     if let Some(u) = update_map.get(&m.package_id.to_lowercase()) {
                                         if update_badge(
                                             ui,
                                             Some(u),
                                             t,
-                                            steamcmd_active && m.origin != ModOrigin::Workshop,
+                                            steamcmd_active && m.origin != ModOrigin::Workshop && !m.frozen,
                                         ) {
                                             download_dep_ws_id = Some(u.workshop_id.clone());
                                         }
@@ -2514,9 +2609,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                     );
                 });
         });
-    if let Some(h) = measured_row_height {
-        app.inactive_row_height = h;
-    }
+    app.inactive_row_height = settled_row_height(app.inactive_row_height, measured_row_height);
     if start_drag.is_some() {
         app.mod_drag = start_drag;
     }
