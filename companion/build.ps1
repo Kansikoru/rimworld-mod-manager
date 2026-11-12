@@ -24,12 +24,16 @@ function Find-RimWorld {
 }
 
 if (-not $GameDir) { $GameDir = Find-RimWorld }
-if (-not $GameDir) { throw "RimWorld 1.6 not found: pass -GameDir <RimWorld folder>" }
-$managed = Join-Path $GameDir "RimWorldWin64_Data\Managed"
-if (-not (Test-Path (Join-Path $managed "Assembly-CSharp.dll"))) { throw "No RimWorld 1.6 assemblies in $managed" }
-
 $project = Join-Path $PSScriptRoot "Source\Companion.csproj"
-dotnet build $project -c Release -nologo "-p:RimWorldManaged=$managed"
+if ($GameDir) {
+    $managed = Join-Path $GameDir "RimWorldWin64_Data\Managed"
+    if (-not (Test-Path (Join-Path $managed "Assembly-CSharp.dll"))) { throw "No RimWorld 1.6 assemblies in $managed" }
+    dotnet build $project -c Release -nologo "-p:RimWorldManaged=$managed"
+} else {
+    # No RimWorld 1.6 on this machine (1.7 is installed): the 1.6 build uses NuGet's reference assemblies.
+    Write-Host "RimWorld 1.6 not found: building 1.6 against Krafs.Rimworld.Ref from NuGet"
+    dotnet build $project -c Release -nologo
+}
 if ($LASTEXITCODE -ne 0) { throw "build failed" }
 Remove-Item (Join-Path $PSScriptRoot "Source\obj") -Recurse -Force -ErrorAction SilentlyContinue
 Get-Item (Join-Path $PSScriptRoot "1.*\Assemblies\RimWorldModManagerCompanion.dll")

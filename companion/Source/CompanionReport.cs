@@ -275,7 +275,7 @@ namespace RimWorldModManagerCompanion
             return result;
         }
 
-        private static Type FindHarmony()
+        internal static Type FindHarmony()
         {
             foreach (Assembly a in AppDomain.CurrentDomain.GetAssemblies())
             {

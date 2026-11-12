@@ -332,7 +332,8 @@ mod tests {
                     continue;
                 }
                 let w = wanted(save.name_of(id).unwrap_or(id), &[]);
-                let raw = crate::workshop_search::search_steam_workshop(&clean_name(&w.name)).unwrap_or_default();
+                let raw = crate::workshop_search::search_steam_workshop(&clean_name(&w.name), &Default::default())
+                    .unwrap_or_default();
                 let m = matches_for(raw, &w, &HashSet::new());
                 total += 1;
                 if default_pick(&m).is_some() {

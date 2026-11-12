@@ -591,8 +591,11 @@ mod tests {
             ("RimHUD", L::De),
             ("Allow Tool", L::Zh),
         ] {
-            let raw =
-                crate::workshop_search::search_steam_workshop(&format!("{name} {}", lang.search_suffix())).unwrap();
+            let raw = crate::workshop_search::search_steam_workshop(
+                &format!("{name} {}", lang.search_suffix()),
+                &Default::default(),
+            )
+            .unwrap();
             let total = raw.len();
             let kept = translations_for_mod(raw, name, None, lang, &none);
             println!("{name} [{}]: {total} found, kept {}", lang.label(), kept.len());

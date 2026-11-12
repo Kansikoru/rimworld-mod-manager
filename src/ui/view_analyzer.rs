@@ -109,6 +109,7 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
     // edge is cut off.
     let mut switch_to_optimizer = false;
     let mut measure_launch = false;
+    let mut request_ticks = false;
     egui::ScrollArea::vertical()
         .id_salt("analyzer_page_scroll")
         .auto_shrink([false, false])
@@ -203,8 +204,15 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
                 }
                 render_companion_report_card(app, ui);
             }
+            ui.add_space(8.0);
+            if render_tick_profile_card(app, ui) {
+                request_ticks = true;
+            }
         });
 
+    if request_ticks {
+        app.request_tick_profile();
+    }
     if measure_launch {
         app.launch_with_load_measure();
     }
@@ -727,6 +735,121 @@ fn render_companion_report_card(app: &App, ui: &mut Ui) {
             render_report_patches(ui, t, report);
         });
     });
+}
+
+/// The mods' load per game tick, measured by the companion on request: the button that
+/// asks for it and the last measurement. Returns whether the button was clicked.
+fn render_tick_profile_card(app: &App, ui: &mut Ui) -> bool {
+    let t = app.i18n;
+    let mut clicked = false;
+    card_container(ui, |ui| {
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.add(svg_icon(ICON_SHIELD, egui::Vec2::splat(18.0), THEME.accent_cyan));
+                ui.heading(
+                    egui::RichText::new(t.get(TranslationKey::TickProfileTitle))
+                        .color(THEME.text_primary)
+                        .size(15.0)
+                        .strong(),
+                );
+            });
+            report_note(ui, t.get(TranslationKey::TickProfileHint), THEME.text_muted);
+            ui.add_space(6.0);
+            let waiting = crate::tick_profile::request_path().is_file();
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if ui
+                    .add_enabled_ui(!waiting, |ui| {
+                        secondary_button(ui, t.get(TranslationKey::TickProfileBtn))
+                    })
+                    .inner
+                    .on_hover_text(t.get(TranslationKey::TickProfileBtnHint))
+                    .clicked()
+                {
+                    clicked = true;
+                }
+                if waiting {
+                    report_note(ui, t.get(TranslationKey::TickProfileWaiting), THEME.accent_amber);
+                }
+            });
+
+            let Some(profile) = app.tick_profile.as_ref() else {
+                return;
+            };
+            ui.add_space(8.0);
+            report_note(
+                ui,
+                &crate::i18n::fmt(
+                    t.get(TranslationKey::TickProfileRun),
+                    &[
+                        &local_date_time(profile.written_unix),
+                        profile.game.as_deref().unwrap_or("?"),
+                        &profile.ticks.to_string(),
+                    ],
+                ),
+                THEME.text_muted,
+            );
+            let over = profile.tick_ms > crate::tick_profile::TICK_BUDGET_MS;
+            report_note(
+                ui,
+                &crate::i18n::fmt(
+                    t.get(TranslationKey::TickProfileTotal),
+                    &[&format!("{:.2}", profile.tick_ms), &format!("{:.2}", profile.mods_ms())],
+                ),
+                if over { THEME.accent_amber } else { THEME.text_secondary },
+            );
+            if profile.skipped_methods > 0 {
+                report_note(
+                    ui,
+                    &crate::i18n::fmt(
+                        t.get(TranslationKey::TickProfileSkipped),
+                        &[&profile.skipped_methods.to_string()],
+                    ),
+                    THEME.accent_amber,
+                );
+            }
+            for error in &profile.errors {
+                report_note(
+                    ui,
+                    &crate::i18n::fmt(t.get(TranslationKey::CompanionReportPartFailed), &[error]),
+                    THEME.accent_rose,
+                );
+            }
+            ui.add_space(6.0);
+            if profile.mods.is_empty() {
+                report_note(ui, t.get(TranslationKey::TickProfileNoMods), THEME.text_muted);
+                return;
+            }
+            report_rows(ui, t, "tick_profile_mods", &profile.mods, |ui, m| {
+                let methods: Vec<String> = m.methods.iter().map(|x| format!("{:.3} — {}", x.ms, x.name)).collect();
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    ui.label(
+                        egui::RichText::new(format!("{:.3}", m.ms))
+                            .color(THEME.text_primary)
+                            .monospace()
+                            .size(12.0),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!("{:.1}%", profile.share(m)))
+                            .color(THEME.text_muted)
+                            .monospace()
+                            .size(12.0),
+                    );
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(if m.name.is_empty() { &m.id } else { &m.name })
+                                .color(THEME.text_secondary)
+                                .size(12.5),
+                        )
+                        .truncate(),
+                    )
+                    .on_hover_text(format!("{}\n{}", m.id, methods.join("\n")));
+                });
+            });
+        });
+    });
+    clicked
 }
 
 fn report_note(ui: &mut Ui, text: &str, color: Color32) -> egui::Response {
