@@ -43,7 +43,76 @@ static WORKSHOP_ID_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| 
     Regex::new(r#"href="https://steamcommunity\.com/sharedfiles/filedetails/\?id=(\d+)""#).unwrap()
 });
 
-pub fn search_steam_workshop(query: &str) -> Result<Vec<WorkshopItemResult>, String> {
+/// A found item with its relevance to the query; translations are told by tag or title.
+fn found_item(
+    id: String,
+    title: String,
+    preview_url: Option<String>,
+    tags: Vec<String>,
+    query: &str,
+) -> WorkshopItemResult {
+    let title_lower = title.to_lowercase();
+    let is_translation = tags.iter().any(|t| t.eq_ignore_ascii_case("Translation"))
+        || ["translation", "перевод", "[ru]", "(ru)", "русификатор"]
+            .iter()
+            .any(|mark| title_lower.contains(mark));
+    let score = calculate_relevance(&title, query, is_translation);
+    WorkshopItemResult {
+        id,
+        title,
+        preview_url,
+        tags,
+        is_translation,
+        score,
+    }
+}
+
+/// How many results a search keeps (the website's first matches, the client's too).
+const MAX_RESULTS: usize = 12;
+
+/// Searches the Workshop by text: the website, and with the setting on (`route` has the
+/// game's Steam DLL) the Steam client when the site refuses or finds nothing. Where the
+/// site shows an age check instead of results, it "finds nothing" for every query.
+pub fn search_steam_workshop(
+    query: &str,
+    route: &crate::workshop_browse::Route,
+) -> Result<Vec<WorkshopItemResult>, String> {
+    let Some(dll) = route.steam_dll.as_deref() else {
+        return search_site(query);
+    };
+    if route.prefer_steam {
+        return search_client(dll, query).or_else(|_| search_site(query));
+    }
+    match search_site(query) {
+        Ok(items) if !items.is_empty() => Ok(items),
+        site => search_client(dll, query).or(site),
+    }
+}
+
+/// The same search through the Steam client, from the account the user is signed in to.
+fn search_client(dll: &std::path::Path, query: &str) -> Result<Vec<WorkshopItemResult>, String> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let page = crate::steam::UgcPageQuery {
+        query_type: crate::steam::UGC_RANKED_BY_TEXT_SEARCH,
+        matching: crate::steam::UGC_MATCHING_READY_TO_USE,
+        trend_days: 0,
+        text: trimmed,
+        required_tag: None,
+    };
+    let mut results: Vec<WorkshopItemResult> = crate::steam::ugc_query_pages(dll, &page, 1..=1)?
+        .into_iter()
+        .filter(|item| !item.title.is_empty())
+        .take(MAX_RESULTS)
+        .map(|item| found_item(item.id.to_string(), item.title, item.preview_url, item.tags, trimmed))
+        .collect();
+    results.sort_by_key(|r| std::cmp::Reverse(r.score));
+    Ok(results)
+}
+
+fn search_site(query: &str) -> Result<Vec<WorkshopItemResult>, String> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
         return Ok(Vec::new());
@@ -80,7 +149,7 @@ pub fn search_steam_workshop(query: &str) -> Result<Vec<WorkshopItemResult>, Str
             let id_str = m.as_str().to_string();
             if seen.insert(id_str.clone()) {
                 ids.push(id_str);
-                if ids.len() >= 12 {
+                if ids.len() >= MAX_RESULTS {
                     break;
                 }
             }
@@ -119,41 +188,14 @@ pub fn search_steam_workshop(query: &str) -> Result<Vec<WorkshopItemResult>, Str
                             let title = item
                                 .title
                                 .unwrap_or_else(|| tr!("Без названия", "Untitled", "无标题").to_string());
-                            let preview_url = item.preview_url;
-                            let mut tags = Vec::new();
-                            let mut is_translation = false;
-
-                            if let Some(tag_list) = item.tags {
-                                for t in tag_list {
-                                    if let Some(tag_name) = t.tag {
-                                        if tag_name.eq_ignore_ascii_case("Translation") {
-                                            is_translation = true;
-                                        }
-                                        tags.push(tag_name);
-                                    }
-                                }
-                            }
-
-                            let title_lower = title.to_lowercase();
-                            if title_lower.contains("translation")
-                                || title_lower.contains("перевод")
-                                || title_lower.contains("[ru]")
-                                || title_lower.contains("(ru)")
-                                || title_lower.contains("русификатор")
-                            {
-                                is_translation = true;
-                            }
-
+                            let tags: Vec<String> = item
+                                .tags
+                                .unwrap_or_default()
+                                .into_iter()
+                                .filter_map(|t| t.tag)
+                                .collect();
                             if !id.is_empty() && !title.is_empty() {
-                                let score = calculate_relevance(&title, trimmed, is_translation);
-                                results.push(WorkshopItemResult {
-                                    title,
-                                    id,
-                                    preview_url,
-                                    tags,
-                                    is_translation,
-                                    score,
-                                });
+                                results.push(found_item(id, title, item.preview_url, tags, trimmed));
                             }
                         }
 
@@ -219,4 +261,45 @@ fn urlencoding_simple(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn found_items_know_translations_and_relevance() {
+        let by_tag = found_item(
+            "1".into(),
+            "HugsLib RU".into(),
+            None,
+            vec!["Translation".into()],
+            "HugsLib",
+        );
+        let by_title = found_item("2".into(), "HugsLib (translation)".into(), None, vec![], "HugsLib");
+        let plain = found_item("3".into(), "HugsLib".into(), None, vec!["Mod".into()], "HugsLib");
+        assert!(by_tag.is_translation && by_title.is_translation && !plain.is_translation);
+        assert!(by_tag.score > plain.score && plain.score > 0);
+    }
+
+    /// Through the real Steam client (run by hand:
+    /// `cargo test live_search_through_steam_client -- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn live_search_through_steam_client() {
+        let dll = crate::steam::detect_steam_paths()
+            .steam_dll_path
+            .expect("steam_api64.dll");
+        let found = search_client(&dll, "HugsLib").unwrap();
+        for item in &found {
+            println!("{} | {} | {} | {:?}", item.id, item.title, item.score, item.tags);
+        }
+        assert!(found.len() <= MAX_RESULTS && found.iter().any(|i| i.id == "818773962"));
+        // With the setting on and the site answering, the site's results are used.
+        let route = crate::workshop_browse::Route {
+            steam_dll: Some(dll),
+            prefer_steam: false,
+        };
+        assert!(!search_steam_workshop("HugsLib", &route).unwrap().is_empty());
+    }
 }

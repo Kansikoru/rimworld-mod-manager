@@ -23,7 +23,12 @@
     <GenerateDependencyFile>false</GenerateDependencyFile>
     <Version>1.0.0</Version>
   </PropertyGroup>
-  <ItemGroup Condition="'$(TargetFramework)' == 'net472'">
+  <!-- No RimWorld 1.6 installed (-p:RimWorldManaged is empty): its reference assemblies from NuGet. -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net472' And '$(RimWorldManaged)' == ''">
+    <PackageReference Include="Krafs.Rimworld.Ref" Version="1.6.*" PrivateAssets="all" ExcludeAssets="runtime" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net472" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net472' And '$(RimWorldManaged)' != ''">
     <Reference Include="Assembly-CSharp">
       <HintPath>$(RimWorldManaged)\Assembly-CSharp.dll</HintPath>
       <Private>false</Private>

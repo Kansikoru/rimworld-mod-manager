@@ -397,6 +397,8 @@ pub struct App {
     pub log_report: Option<LogReport>,
     /// What the companion mod wrote after the last loading with it (textures, conflicts).
     pub companion_report: Option<crate::companion_report::CompanionReport>,
+    /// The mods' load per game tick, as the companion last measured it (`tick_profile.rs`).
+    pub tick_profile: Option<crate::tick_profile::TickProfile>,
     /// The next launch from the manager runs with the game's verbose logging, so the log
     /// holds how long each mod took to load (`load_profile`).
     pub measure_next_launch: bool,
@@ -830,6 +832,7 @@ impl App {
             steam_stop_flag: Arc::new(AtomicBool::new(false)),
             load_time_history: crate::load_time::LoadTimeHistory::load(),
             companion_report: crate::companion_report::load(),
+            tick_profile: crate::tick_profile::load(),
             measure_next_launch: false,
             odd_textures: HashMap::new(),
             odd_textures_rx: None,
@@ -1134,6 +1137,7 @@ impl App {
                 }
                 self.log_report = Some(report);
                 self.companion_report = crate::companion_report::load();
+                self.tick_profile = crate::tick_profile::load();
             }
         }
         if let Some(rx) = &self.launch_watch_rx {
@@ -1144,6 +1148,7 @@ impl App {
                     self.status_message = self.crash_summary_text(&report);
                     self.log_report = Some(report);
                     self.companion_report = crate::companion_report::load();
+                    self.tick_profile = crate::tick_profile::load();
                 }
             }
         }
@@ -1165,6 +1170,7 @@ impl App {
                     let errors = report.total_errors;
                     self.log_report = Some(report);
                     self.companion_report = crate::companion_report::load();
+                    self.tick_profile = crate::tick_profile::load();
                     if self.bisect.as_ref().is_some_and(|s| s.applied && s.outcome().is_none()) {
                         let note = match answer {
                             Some(problem) => {
@@ -2209,6 +2215,25 @@ impl App {
         self.game_mods_dir().map(|d| crate::companion::state(&d))
     }
 
+    /// Asks the companion to measure the mods' load on the next launch of the game. The
+    /// companion in the game must be the one this version carries: an older one doesn't
+    /// know the request.
+    pub fn request_tick_profile(&mut self) {
+        let t = self.i18n;
+        if self.companion_state() != Some(crate::companion::State::Current) {
+            self.install_companion();
+            if self.companion_state() != Some(crate::companion::State::Current) {
+                // `install_companion` said why (no Mods folder, or the game is running).
+                return;
+            }
+        }
+        self.status_message =
+            match crate::tick_profile::request_at(&crate::tick_profile::request_path(), crate::tick_profile::TICKS) {
+                Ok(()) => t.get(TranslationKey::TickProfileRequested).to_string(),
+                Err(e) => fmt(t.get(TranslationKey::TickProfileError), &[&e.to_string()]),
+            };
+    }
+
     /// Puts the companion mod into the game's Mods folder and turns it on (at the end of the
     /// list). Saved right away when the list had no unsaved changes of its own.
     pub fn install_companion(&mut self) {
@@ -3239,6 +3264,7 @@ impl App {
         let (tx, rx) = channel();
         self.name_search_rx = Some(rx);
         let ctx = self.repaint_ctx.clone();
+        let route = self.workshop_route();
         std::thread::spawn(move || {
             use std::sync::atomic::AtomicUsize;
             let next = AtomicUsize::new(0);
@@ -3251,7 +3277,7 @@ impl App {
                         let i = next.fetch_add(1, Ordering::Relaxed);
                         let Some(w) = wanted.get(i) else { break };
                         let query = crate::name_search::clean_name(&w.name);
-                        let msg = match search_steam_workshop(&query) {
+                        let msg = match search_steam_workshop(&query, &route) {
                             Ok(raw) => NameSearchMsg::Found(i, crate::name_search::matches_for(raw, w, &installed)),
                             Err(_) => NameSearchMsg::Failed(i),
                         };
@@ -4568,8 +4594,9 @@ impl App {
             query
         );
 
+        let route = self.workshop_route();
         self.workshop_rx = Some(self.spawn_task(move || {
-            let raw = search_steam_workshop(&query)?;
+            let raw = search_steam_workshop(&query, &route)?;
             let found = raw.len();
             // Keep only translations of this mod in the selected language,
             // drop the mod itself and unrelated items, best matches first.
@@ -4651,6 +4678,7 @@ impl App {
         let (tx, rx) = channel();
         self.batch_rx = Some(rx);
         let ctx = self.repaint_ctx.clone();
+        let route = self.workshop_route();
         std::thread::spawn(move || {
             use std::sync::atomic::AtomicUsize;
             let total = candidates.len();
@@ -4669,7 +4697,7 @@ impl App {
                             break;
                         };
                         let query = format!("{} {}", name, lang.search_suffix());
-                        match search_steam_workshop(&query) {
+                        match search_steam_workshop(&query, &route) {
                             Ok(raw) => {
                                 let items = crate::matcher::translations_for_mod(
                                     raw,
@@ -4821,8 +4849,9 @@ impl App {
             "正在搜索创意工坊：{}...",
             query
         );
+        let route = self.workshop_route();
         self.workshop_rx = Some(self.spawn_task(move || {
-            let res = search_steam_workshop(&query)?;
+            let res = search_steam_workshop(&query, &route)?;
             let status = tr!(
                 "Поиск в Workshop «{}»: результатов {}",
                 "Workshop search \"{}\": {} results",

@@ -44,6 +44,8 @@ namespace RimWorldModManagerCompanion
             {
                 Log.Warning("[RimWorld Mod Manager Companion] Could not write the report: " + e.Message);
             }
+            // Only when the manager asked for it; says so in the log itself.
+            TickProfiler.StartIfAsked();
         }
     }
 }

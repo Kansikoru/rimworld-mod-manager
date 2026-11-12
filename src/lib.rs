@@ -33,6 +33,7 @@ pub mod settings;
 pub mod sorter;
 pub mod steam;
 pub mod steamcmd;
+pub mod tick_profile;
 pub mod workshop_browse;
 pub mod workshop_db;
 pub mod workshop_search;
