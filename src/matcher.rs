@@ -287,12 +287,7 @@ pub fn is_candidate_base_mod_itself(
             return true;
         }
     }
-    let cand_trim = candidate_title.trim();
-    let base_trim = base_name.trim();
-    if cand_trim.eq_ignore_ascii_case(base_trim) {
-        return true;
-    }
-    false
+    candidate_title.trim().eq_ignore_ascii_case(base_name.trim())
 }
 
 /// Checks whether a title contains indicators of being a translation mod.
