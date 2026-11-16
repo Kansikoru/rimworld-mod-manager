@@ -306,6 +306,18 @@ pub fn classify_mod_tier_with_db(
     ModTier::Tier5ContentItems
 }
 
+/// Where an edge of the load order graph comes from, strongest first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Edge {
+    /// A mod's About.xml: dependencies, loadAfter, loadBefore.
+    AboutXml,
+    /// The player's own rule (`user_order.rs`); dropped where it goes against About.xml.
+    Own,
+    /// Community rules, translations after their mod, Core and the DLCs first, frameworks
+    /// early; dropped where it goes against an own rule.
+    Soft,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct SortCandidate {
     package_id: String,
@@ -424,12 +436,28 @@ pub fn sort_load_order_with_db(
         adj.insert(id_lower.clone(), HashSet::new());
     }
 
-    let mut add_edge = |from: &str, to: &str| {
+    // The player's own rules turn round any edge but a mod's About.xml (which the game
+    // checks): the opposite edge of each own rule is not added.
+    let turned_round: HashSet<(String, String)> = db_ref
+        .user_order
+        .iter()
+        .map(|r| (r.after.to_lowercase(), r.before.to_lowercase()))
+        .collect();
+
+    let mut add_edge = |from: &str, to: &str, kind: Edge| {
         let from_l = from.to_lowercase();
         let to_l = to.to_lowercase();
         if from_l != to_l && active_set.contains(&from_l) && active_set.contains(&to_l) {
             if is_canon_official(&to_l) && !is_canon_official(&from_l) {
                 return;
+            }
+            match kind {
+                Edge::AboutXml => {}
+                // About.xml edges are all in by now.
+                Edge::Own if adj.get(&to_l).is_some_and(|next| next.contains(&from_l)) => return,
+                Edge::Own => {}
+                Edge::Soft if turned_round.contains(&(from_l.clone(), to_l.clone())) => return,
+                Edge::Soft => {}
             }
 
             if adj.entry(from_l.clone()).or_default().insert(to_l.clone()) {
@@ -446,36 +474,40 @@ pub fn sort_load_order_with_db(
                 .chain(m.force_load_after.iter())
                 .chain(m.dependencies.iter())
             {
-                add_edge(dep, id_lower);
+                add_edge(dep, id_lower, Edge::AboutXml);
             }
             for target in m.load_before.iter().chain(m.force_load_before.iter()) {
-                add_edge(id_lower, target);
+                add_edge(id_lower, target, Edge::AboutXml);
             }
         }
+    }
+
+    for rule in &db_ref.user_order {
+        add_edge(&rule.before, &rule.after, Edge::Own);
     }
 
     // Правила порядка загрузки из базы сообщества
     for (rule_id, rule) in &db_ref.rules {
         for target in &rule.load_before {
-            add_edge(rule_id, target);
+            add_edge(rule_id, target, Edge::Soft);
         }
         for target in &rule.force_load_before {
-            add_edge(rule_id, target);
+            add_edge(rule_id, target, Edge::Soft);
         }
         for dep in &rule.load_after {
-            add_edge(dep, rule_id);
+            add_edge(dep, rule_id, Edge::Soft);
         }
         for dep in &rule.force_load_after {
-            add_edge(dep, rule_id);
+            add_edge(dep, rule_id, Edge::Soft);
         }
     }
 
     for (trans_id, parent_id) in &parent_of_trans {
-        add_edge(parent_id, trans_id);
+        add_edge(parent_id, trans_id, Edge::Soft);
     }
 
     for window in CANON_OFFICIAL_ORDER.windows(2) {
-        add_edge(window[0], window[1]);
+        add_edge(window[0], window[1], Edge::Soft);
     }
 
     let last_official = CANON_OFFICIAL_ORDER
@@ -487,7 +519,7 @@ pub fn sort_load_order_with_db(
     if let Some(last_off) = last_official {
         for (id_lower, _) in &unique_active {
             if !is_canon_official(id_lower) {
-                add_edge(last_off, id_lower);
+                add_edge(last_off, id_lower, Edge::Soft);
             }
         }
     }
@@ -504,7 +536,7 @@ pub fn sort_load_order_with_db(
         if active_set.contains(*special) {
             for (id_lower, _) in &unique_active {
                 if !is_canon_official(id_lower) && !special_early.contains(&id_lower.as_str()) {
-                    add_edge(special, id_lower);
+                    add_edge(special, id_lower, Edge::Soft);
                 }
             }
         }
@@ -513,7 +545,7 @@ pub fn sort_load_order_with_db(
     // Explicitly order special_early among themselves
     for w in special_early.windows(2) {
         if active_set.contains(w[0]) && active_set.contains(w[1]) {
-            add_edge(w[0], w[1]);
+            add_edge(w[0], w[1], Edge::Soft);
         }
     }
 

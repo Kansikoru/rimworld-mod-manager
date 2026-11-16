@@ -41,4 +41,5 @@ pub mod workshop_search;
 pub mod ui;
 pub mod ui_prefs;
 pub mod update_check;
+pub mod user_order;
 pub mod version_check;

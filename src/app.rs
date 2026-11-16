@@ -1765,6 +1765,76 @@ impl App {
                 .all(|p| self.dep_alert_ignored.contains(p))
     }
 
+    /// Name of an installed mod, or the ID as given.
+    fn mod_name_or_id(&self, id: &str) -> String {
+        lookup_mod(&self.mod_index, &self.all_mods, id).map_or_else(|| id.to_string(), |m| m.name.clone())
+    }
+
+    /// "Remember this place in the load order": own rules that make every sort leave the
+    /// active mod `id` where it stands now (`user_order::pin_place`).
+    pub fn pin_mod_place(&mut self, id: &str) {
+        use crate::user_order::PinOutcome;
+        let name = self.mod_name_or_id(id);
+        let t = self.i18n;
+        let outcome = crate::user_order::pin_place(&self.active_mods, &self.all_mods, &mut self.community_db, id);
+        self.status_message = match outcome {
+            PinOutcome::AlreadyThere => fmt(t.get(TranslationKey::OrderPinAlreadyThere), &[&name]),
+            PinOutcome::Added(_) => {
+                if !self.save_order_rules() {
+                    return;
+                }
+                fmt(
+                    t.get(TranslationKey::OrderPinned),
+                    &[&name, &self.community_db.user_order.len().to_string()],
+                )
+            }
+            PinOutcome::Blocked { blocker } => fmt(
+                t.get(TranslationKey::OrderPinBlocked),
+                &[&name, &self.mod_name_or_id(&blocker)],
+            ),
+            PinOutcome::TooFar => fmt(t.get(TranslationKey::OrderPinTooFar), &[&name]),
+        };
+    }
+
+    /// Forgets every own order rule that names `id`.
+    pub fn forget_order_rules_of(&mut self, id: &str) {
+        let removed = crate::user_order::remove_for(&mut self.community_db.user_order, id);
+        if removed > 0 && self.save_order_rules() {
+            self.status_message = fmt(
+                self.i18n.get(TranslationKey::OrderForgot),
+                &[&self.mod_name_or_id(id), &removed.to_string()],
+            );
+        }
+    }
+
+    /// Removes one own order rule (the list in Settings).
+    pub fn remove_order_rule(&mut self, index: usize) {
+        if index < self.community_db.user_order.len() {
+            self.community_db.user_order.remove(index);
+            self.save_order_rules();
+        }
+    }
+
+    /// Removes every own order rule (the button at the bottom of their card in Settings).
+    pub fn reset_order_rules(&mut self) {
+        let removed = self.community_db.user_order.len();
+        self.community_db.user_order.clear();
+        if self.save_order_rules() {
+            self.status_message = fmt(self.i18n.get(TranslationKey::OrderResetDone), &[&removed.to_string()]);
+        }
+    }
+
+    /// Writes the own order rules; on failure says so in the status line.
+    fn save_order_rules(&mut self) -> bool {
+        match crate::user_order::save(&crate::user_order::rules_path(), &self.community_db.user_order) {
+            Ok(()) => true,
+            Err(e) => {
+                self.status_message = fmt(self.i18n.get(TranslationKey::OrderSaveFailed), &[&e.to_string()]);
+                false
+            }
+        }
+    }
+
     /// Writes the load order to ModsConfig.xml. Returns whether it was saved.
     pub fn save_config(&mut self) -> bool {
         let Some(config_p) = self.mods_config_path.clone() else {

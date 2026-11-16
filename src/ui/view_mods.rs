@@ -1692,6 +1692,8 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     let query_lower = app.active_search_query.trim().to_lowercase();
     let mut move_up_idx = None;
     let mut move_down_idx = None;
+    let mut pin_place_id: Option<String> = None;
+    let mut forget_order_id: Option<String> = None;
     let mut deactivate_idx = None;
     let mut enable_dep_id = None;
     let mut download_dep_ws_id = None;
@@ -1922,6 +1924,36 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                         && ui.button(app.i18n.get(TranslationKey::ModsCtxMoveDown)).clicked()
                                     {
                                         move_down_idx = Some(idx);
+                                        ui.close();
+                                    }
+                                    // Own load order rules (user_order.rs). Core and the DLCs
+                                    // have a fixed place.
+                                    if !crate::sorter::is_canon_official(pkg_id)
+                                        && app.active_mods.len() > 1
+                                        && ui
+                                            .button(app.i18n.get(TranslationKey::ModsCtxPinPlace))
+                                            .on_hover_text(app.i18n.get(TranslationKey::ModsCtxPinPlaceHint))
+                                            .clicked()
+                                    {
+                                        pin_place_id = Some(pkg_id.clone());
+                                        ui.close();
+                                    }
+                                    // Field by field: the row borrows the app's lists.
+                                    let own_rules = app
+                                        .community_db
+                                        .user_order
+                                        .iter()
+                                        .filter(|r| r.involves(pkg_id))
+                                        .count();
+                                    if own_rules > 0
+                                        && ui
+                                            .button(fmt(
+                                                app.i18n.get(TranslationKey::ModsCtxForgetOrder),
+                                                &[&own_rules.to_string()],
+                                            ))
+                                            .clicked()
+                                    {
+                                        forget_order_id = Some(pkg_id.clone());
                                         ui.close();
                                     }
                                     ui.separator();
@@ -2291,6 +2323,12 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
         if idx + 1 < app.active_mods.len() {
             app.active_mods.swap(idx, idx + 1);
         }
+    }
+    if let Some(id) = pin_place_id {
+        app.pin_mod_place(&id);
+    }
+    if let Some(id) = forget_order_id {
+        app.forget_order_rules_of(&id);
     }
     // Deactivate all selected mods (from context menu)
     if deactivate_selected {

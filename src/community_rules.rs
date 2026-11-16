@@ -27,6 +27,10 @@ const BOTTOM_TIER: u8 = 11;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CommunityDatabase {
     pub rules: HashMap<String, CommunityRule>,
+    /// The player's own "this mod after that one" rules (`user_order.rs`); the sort puts
+    /// them above `rules`.
+    #[serde(default)]
+    pub user_order: Vec<crate::user_order::OrderRule>,
 }
 
 /// Built-in rules only.
@@ -35,6 +39,7 @@ pub fn get_default_community_db() -> &'static CommunityDatabase {
         let parsed: HashMap<String, CommunityRule> = serde_json::from_str(DEFAULT_RULES_JSON).unwrap_or_default();
         CommunityDatabase {
             rules: parsed.into_iter().map(|(k, v)| (k.to_lowercase(), v)).collect(),
+            ..Default::default()
         }
     })
 }
@@ -119,11 +124,17 @@ pub fn load_effective_db_from(path: &Path) -> CommunityDatabase {
     {
         merge_rules(&mut rules, extra);
     }
-    CommunityDatabase { rules }
+    CommunityDatabase {
+        rules,
+        ..Default::default()
+    }
 }
 
+/// Built-in rules, the community file and the player's own order rules.
 pub fn load_effective_db() -> CommunityDatabase {
-    load_effective_db_from(&local_rules_path())
+    let mut db = load_effective_db_from(&local_rules_path());
+    db.user_order = crate::user_order::load(&crate::user_order::rules_path());
+    db
 }
 
 /// Validates and stores community rules text; returns how many rules it has.
@@ -213,7 +224,10 @@ mod tests {
 
         let mut rules = get_default_community_db().rules.clone();
         merge_rules(&mut rules, rimsort);
-        let db = CommunityDatabase { rules };
+        let db = CommunityDatabase {
+            rules,
+            ..Default::default()
+        };
         let paths = crate::steam::detect_steam_paths();
         let mods = crate::scanner::scan_mods(
             paths.workshop_path.as_deref(),

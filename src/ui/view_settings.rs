@@ -584,4 +584,103 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
             });
         });
     });
+
+    ui.add_space(8.0);
+    own_order_rules_card(app, ui);
+}
+
+/// The player's own "this mod after that one" rules, each with a button that removes it.
+fn own_order_rules_card(app: &mut App, ui: &mut Ui) {
+    let t = app.i18n;
+    let mut remove: Option<usize> = None;
+    let mut reset_all = false;
+    card_container(ui, |ui| {
+        ui.vertical(|ui| {
+            ui.heading(
+                egui::RichText::new(t.get(TranslationKey::SettingsOrderTitle))
+                    .color(THEME.accent_purple)
+                    .size(15.0),
+            );
+            ui.add_space(6.0);
+            hint(ui, t.get(TranslationKey::SettingsOrderHint));
+            ui.add_space(4.0);
+            let rules = &app.community_db.user_order;
+            if rules.is_empty() {
+                ui.label(
+                    egui::RichText::new(t.get(TranslationKey::SettingsOrderEmpty))
+                        .color(THEME.text_muted)
+                        .size(12.0),
+                );
+            }
+            // Today's name of an installed mod, else the one it had when the rule was made.
+            let name = |id: &str, stored: &str| {
+                crate::app::lookup_mod(&app.mod_index, &app.all_mods, id).map_or_else(
+                    || {
+                        if stored.is_empty() {
+                            id.to_string()
+                        } else {
+                            stored.to_string()
+                        }
+                    },
+                    |m| m.name.clone(),
+                )
+            };
+            for (i, rule) in rules.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    if icon_button(ui, ICON_TRASH, egui::Vec2::splat(14.0), THEME.text_muted)
+                        .on_hover_text(t.get(TranslationKey::SettingsOrderDelete))
+                        .clicked()
+                    {
+                        remove = Some(i);
+                    }
+                    ui.label(fmt(
+                        t.get(TranslationKey::SettingsOrderRule),
+                        &[
+                            &name(&rule.after, &rule.after_name),
+                            &name(&rule.before, &rule.before_name),
+                        ],
+                    ))
+                    .on_hover_text(format!("{} → {}", rule.before, rule.after));
+                });
+            }
+            // Reset of every rule at the bottom of the card, asked once more before it goes.
+            if !rules.is_empty() {
+                ui.add_space(8.0);
+                let confirm_id = egui::Id::unique("reset_own_order_rules");
+                let asking = ui.data(|d| d.get_temp::<bool>(confirm_id).unwrap_or(false));
+                if asking {
+                    ui.label(
+                        egui::RichText::new(t.get(TranslationKey::SettingsOrderResetConfirm))
+                            .color(THEME.accent_rose)
+                            .size(12.0),
+                    );
+                    ui.horizontal(|ui| {
+                        if danger_button_icon(ui, ICON_TRASH, t.get(TranslationKey::SettingsOrderResetYes)).clicked() {
+                            reset_all = true;
+                            ui.data_mut(|d| d.remove::<bool>(confirm_id));
+                        }
+                        if secondary_button(ui, t.get(TranslationKey::BtnCancel)).clicked() {
+                            ui.data_mut(|d| d.remove::<bool>(confirm_id));
+                        }
+                    });
+                } else if danger_button_icon(
+                    ui,
+                    ICON_TRASH,
+                    &fmt(
+                        t.get(TranslationKey::SettingsOrderResetAll),
+                        &[&rules.len().to_string()],
+                    ),
+                )
+                .clicked()
+                {
+                    ui.data_mut(|d| d.insert_temp(confirm_id, true));
+                }
+            }
+        });
+    });
+    if reset_all {
+        app.reset_order_rules();
+    } else if let Some(i) = remove {
+        app.remove_order_rule(i);
+    }
 }
