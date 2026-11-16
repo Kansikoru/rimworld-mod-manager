@@ -320,6 +320,9 @@ pub struct App {
     pub mod_search_query: String,
     pub active_search_query: String,
     pub dependency_report: DependencyReport,
+    /// Problems the player hid with "Ignore" on the dependency alert. The alert stays hidden
+    /// while it has no other problems, until the next sort or the end of the session.
+    pub dep_alert_ignored: Vec<DependencyProblem>,
     pub is_details_panel_collapsed: bool,
     pub is_details_panel_visible: bool,
 
@@ -752,6 +755,7 @@ impl App {
             mod_search_query: String::new(),
             active_search_query: String::new(),
             dependency_report: DependencyReport::default(),
+            dep_alert_ignored: Vec::new(),
             is_details_panel_collapsed: false,
             is_details_panel_visible: true,
 
@@ -1741,8 +1745,24 @@ impl App {
 
     pub fn sort_active_mods(&mut self) {
         self.active_mods = sort_load_order_with_db(&self.active_mods, &self.all_mods, Some(&self.community_db));
+        self.dep_alert_ignored.clear();
         self.validate_deps();
         self.status_message = self.i18n.get(TranslationKey::AppSortedMsg).to_string();
+    }
+
+    /// "Ignore" on the dependency alert: hides it for its current problems.
+    pub fn ignore_dependency_alert(&mut self) {
+        self.dep_alert_ignored = self.dependency_report.problems.clone();
+    }
+
+    /// The dependency alert is shown: there are problems, and not only ignored ones.
+    pub fn dependency_alert_shown(&self) -> bool {
+        !self.dependency_report.is_empty()
+            && !self
+                .dependency_report
+                .problems
+                .iter()
+                .all(|p| self.dep_alert_ignored.contains(p))
     }
 
     /// Writes the load order to ModsConfig.xml. Returns whether it was saved.
@@ -4293,6 +4313,7 @@ impl App {
     pub fn auto_fix_dependencies(&mut self) {
         let added = enable_dependencies_recursive(&mut self.active_mods, &self.all_mods);
         self.active_mods = sort_load_order_with_db(&self.active_mods, &self.all_mods, Some(&self.community_db));
+        self.dep_alert_ignored.clear();
         self.validate_deps();
         self.status_message = if added > 0 {
             tr!(
@@ -4304,6 +4325,14 @@ impl App {
         } else {
             self.i18n.get(TranslationKey::AppSortedMsg).to_string()
         };
+        let missing = self.dependency_report.missing_list().len();
+        if missing > 0 {
+            self.status_message.push_str(" | ");
+            self.status_message.push_str(&fmt(
+                self.i18n.get(TranslationKey::DepMissingManual),
+                &[&missing.to_string()],
+            ));
+        }
         if self.dependency_report.incompatible_count() > 0 {
             self.status_message.push_str(" | ");
             self.status_message
@@ -6572,6 +6601,49 @@ pub fn is_verified_launch_log(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// "Auto-fix" on the real mods and the saved list, in memory only (run by hand:
+    /// `cargo test live_auto_fix -- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn live_auto_fix() {
+        let paths = detect_steam_paths();
+        let scanned = scan_mods(
+            paths.workshop_path.as_deref(),
+            paths.local_mods_path.as_deref(),
+            paths.game_data_path.as_deref(),
+        );
+        let (mut mods, _) = crate::scanner::dedupe_mods(scanned);
+        crate::scanner::resolve_versioned_fields(&mut mods, paths.game_major_minor().as_deref());
+        classify_and_link_translations(&mut mods);
+        let config = get_default_mods_config_path().expect("ModsConfig.xml");
+        let mut active = load_active_mods(&config);
+        let db = crate::community_rules::load_effective_db();
+        let show = |label: &str, active: &[String]| {
+            let report = validate_dependencies(active, &mods);
+            println!(
+                "{label}: {} mods | missing {} disabled {} order {} incompatible {} | button shown: {}",
+                active.len(),
+                report.missing_count(),
+                report.disabled_count(),
+                report.order_count(),
+                report.incompatible_count(),
+                report.auto_fixable()
+            );
+            for p in report.problems.iter().take(12) {
+                println!("  {p:?}");
+            }
+        };
+        show("before", &active);
+        let added = enable_dependencies_recursive(&mut active, &mods);
+        let sorted = sort_load_order_with_db(&active, &mods, Some(&db));
+        println!("enabled {added}");
+        show("after one click", &sorted);
+        let mut again = sorted.clone();
+        enable_dependencies_recursive(&mut again, &mods);
+        let again = sort_load_order_with_db(&again, &mods, Some(&db));
+        println!("second click changes the order: {}", again != sorted);
+    }
 
     #[test]
     fn a_collection_becomes_a_modpack_with_core_and_dlc_in_load_order() {

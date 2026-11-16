@@ -106,10 +106,30 @@ impl DependencyReport {
             .collect()
     }
 
-    /// Something "Auto-fix" can do: enable or sort dependencies (not incompatibilities —
-    /// which of two mods to turn off is the player's choice).
+    /// Something "Auto-fix" can do: enable installed dependencies or sort them. Not missing
+    /// mods (there is nothing on disk to enable) and not incompatibilities (which of two
+    /// mods to turn off is the player's choice).
     pub fn auto_fixable(&self) -> bool {
-        self.missing_count() + self.disabled_count() + self.order_count() > 0
+        self.disabled_count() + self.order_count() > 0
+    }
+
+    /// Dependencies that aren't installed: `(dependent mod's ID, its name, required ID)`,
+    /// each pair once.
+    pub fn missing_list(&self) -> Vec<(String, String, String)> {
+        let mut seen = HashSet::new();
+        self.problems
+            .iter()
+            .filter_map(|p| match p {
+                DependencyProblem::Missing {
+                    dependent_name,
+                    dependent_id,
+                    required_id,
+                } => seen
+                    .insert((dependent_id.to_lowercase(), required_id.to_lowercase()))
+                    .then(|| (dependent_id.clone(), dependent_name.clone(), required_id.clone())),
+                _ => None,
+            })
+            .collect()
     }
 }
 
@@ -359,6 +379,15 @@ mod tests {
         ];
         let report = validate_dependencies(&ids(&["ludeon.rimworld", "someone.genes"]), &mods);
         assert_eq!(report.missing_count(), 1, "reported as not found");
+        assert!(!report.auto_fixable(), "auto-fix has nothing on disk to enable");
+        assert_eq!(
+            report.missing_list(),
+            [(
+                "someone.genes".to_string(),
+                "someone.genes".to_string(),
+                "ludeon.rimworld.biotech".to_string()
+            )]
+        );
         assert_eq!(
             report.disabled_count(),
             0,

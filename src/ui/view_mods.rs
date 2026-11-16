@@ -573,7 +573,7 @@ fn render_mods_main(app: &mut App, ui: &mut Ui, side: bool) {
     ui.add_space(8.0);
 
     // Conflict & Dependency Alert Bar (if any problems detected)
-    if !app.dependency_report.is_empty() {
+    if app.dependency_alert_shown() {
         let missing = app.dependency_report.missing_count();
         let disabled = app.dependency_report.disabled_count();
         let order = app.dependency_report.order_count();
@@ -607,25 +607,30 @@ fn render_mods_main(app: &mut App, ui: &mut Ui, side: bool) {
                 // are downloaded in one go.
                 let auto_fix = app.dependency_report.auto_fixable();
                 let downloadable = app.missing_dependency_workshop_ids().len();
-                if auto_fix || downloadable > 0 {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if auto_fix && secondary_button(ui, t.get(TranslationKey::BtnAutoFixDependencies)).clicked() {
-                            app.auto_fix_dependencies();
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // "Ignore": the alert is gone until the next sort or a new problem.
+                    if secondary_button(ui, t.get(TranslationKey::DepIgnore))
+                        .on_hover_text(t.get(TranslationKey::DepIgnoreHint))
+                        .clicked()
+                    {
+                        app.ignore_dependency_alert();
+                    }
+                    if auto_fix && secondary_button(ui, t.get(TranslationKey::BtnAutoFixDependencies)).clicked() {
+                        app.auto_fix_dependencies();
+                    }
+                    if downloadable > 0 {
+                        let label = fmt(t.get(TranslationKey::DepDownloadMissing), &[&downloadable.to_string()]);
+                        let busy = app.steam_busy();
+                        if ui
+                            .add_enabled_ui(!busy, |ui| primary_button_icon(ui, ICON_STEAM, &label))
+                            .inner
+                            .on_hover_text(t.get(TranslationKey::DepDownloadMissingHint))
+                            .clicked()
+                        {
+                            app.download_missing_dependencies();
                         }
-                        if downloadable > 0 {
-                            let label = fmt(t.get(TranslationKey::DepDownloadMissing), &[&downloadable.to_string()]);
-                            let busy = app.steam_busy();
-                            if ui
-                                .add_enabled_ui(!busy, |ui| primary_button_icon(ui, ICON_STEAM, &label))
-                                .inner
-                                .on_hover_text(t.get(TranslationKey::DepDownloadMissingHint))
-                                .clicked()
-                            {
-                                app.download_missing_dependencies();
-                            }
-                        }
-                    });
-                }
+                    }
+                });
             });
             // Each incompatible pair, with a button to turn off either mod.
             let mut turn_off: Option<String> = None;
@@ -651,6 +656,41 @@ fn render_mods_main(app: &mut App, ui: &mut Ui, side: bool) {
                         }
                     }
                 });
+            }
+            // Dependencies that aren't installed: auto-fix can't enable them. The player
+            // installs the mod (the Workshop database finds some, button above) or turns off
+            // the mod that needs it — often a translation of a mod that isn't in the list.
+            let missing = app.dependency_report.missing_list();
+            for (dep_id, dep_name, required) in missing.iter().take(5) {
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(8.0, 6.0);
+                    ui.label(
+                        egui::RichText::new(fmt(t.get(TranslationKey::DepMissingPair), &[dep_name, required]))
+                            .color(THEME.text_secondary)
+                            .size(12.0),
+                    );
+                    if small_button(
+                        ui,
+                        &fmt(t.get(TranslationKey::DepTurnOff), &[&short_name(dep_name, 28)]),
+                        ButtonStyle::Secondary,
+                    )
+                    .on_hover_text(dep_id.as_str())
+                    .clicked()
+                    {
+                        turn_off = Some(dep_id.clone());
+                    }
+                });
+            }
+            if missing.len() > 5 {
+                ui.label(
+                    egui::RichText::new(fmt(
+                        t.get(TranslationKey::DepMoreMissing),
+                        &[&(missing.len() - 5).to_string()],
+                    ))
+                    .color(THEME.text_muted)
+                    .size(12.0),
+                );
             }
             if let Some(id) = turn_off {
                 app.deactivate_mod(&id);
