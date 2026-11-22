@@ -1,4 +1,4 @@
-use eframe::egui::{self, Ui};
+use eframe::egui::{self, CornerRadius, Ui, Vec2};
 
 use super::components::*;
 use super::icons::*;
@@ -282,6 +282,66 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
                     app.set_language(Language::Chinese);
                 }
             });
+        });
+    });
+
+    ui.add_space(8.0);
+
+    // Theme and accent palette (F9 of the plan): apply at once and are saved with the font.
+    card_container(ui, |ui| {
+        ui.vertical(|ui| {
+            use crate::ui::theme::{Accent, ThemeKind};
+            ui.label(
+                egui::RichText::new(format!("{}:", t.get(TranslationKey::SettingsTheme)))
+                    .color(THEME.text_secondary)
+                    .strong(),
+            );
+            let before = (app.ui_prefs.theme, app.ui_prefs.accent);
+            ui.horizontal_wrapped(|ui| {
+                for theme in ThemeKind::ALL {
+                    let c = theme.colors();
+                    // A small preview of the theme: its window and its accent.
+                    let (rect, _) = ui.allocate_exact_size(Vec2::new(28.0, 18.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, CornerRadius::same(4), c.bg_card);
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_size(rect.min + Vec2::new(4.0, 6.0), Vec2::new(20.0, 6.0)),
+                        CornerRadius::same(2),
+                        c.accent_cyan,
+                    );
+                    ui.selectable_value(&mut app.ui_prefs.theme, theme, t.get(theme.key()));
+                    ui.add_space(6.0);
+                }
+            });
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(t.get(TranslationKey::SettingsAccent));
+                for accent in Accent::ALL {
+                    let selected = app.ui_prefs.accent == accent;
+                    let color = accent.swatch(app.ui_prefs.theme);
+                    // A round swatch in the palette's color; the chosen one gets a ring.
+                    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(24.0), egui::Sense::click());
+                    let resp = resp
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(t.get(accent.key()));
+                    let r = if resp.hovered() { 9.0 } else { 8.0 };
+                    ui.painter().circle_filled(rect.center(), r, color);
+                    if selected {
+                        ui.painter()
+                            .circle_stroke(rect.center(), 11.0, egui::Stroke::new(1.5, THEME.text_primary));
+                    }
+                    if resp.clicked() {
+                        app.ui_prefs.accent = accent;
+                    }
+                }
+            });
+            hint(ui, t.get(TranslationKey::SettingsThemeHint));
+            if (app.ui_prefs.theme, app.ui_prefs.accent) != before {
+                crate::ui::theme::set_theme(app.ui_prefs.theme, app.ui_prefs.accent);
+                crate::ui::theme::apply_theme(ui.ctx());
+                if let Err(e) = app.ui_prefs.save() {
+                    app.status_message = fmt(t.get(TranslationKey::SettingsTabsSaveError), &[&e.to_string()]);
+                }
+            }
         });
     });
 

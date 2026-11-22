@@ -109,6 +109,11 @@ pub struct UiPrefs {
     /// under the active list (false, after the strip's close button).
     #[serde(default = "default_true")]
     pub details_side: bool,
+    /// Theme and accent palette (F9 of the plan).
+    #[serde(default)]
+    pub theme: crate::ui::theme::ThemeKind,
+    #[serde(default)]
+    pub accent: crate::ui::theme::Accent,
 }
 
 fn default_text_scale() -> f32 {
@@ -126,6 +131,8 @@ impl Default for UiPrefs {
             text_scale: default_text_scale(),
             tabs: TabPrefs::default(),
             details_side: true,
+            theme: Default::default(),
+            accent: Default::default(),
         }
     }
 }
@@ -165,6 +172,9 @@ mod tests {
         assert_eq!(prefs.font, UiFont::Montserrat);
         assert_eq!(prefs.tabs, TabPrefs::default());
         assert!(!prefs.tabs.hide_sets && prefs.tabs.analyzer_label == TabLabel::Full);
+        // Saved before themes: the first theme with its own accent.
+        assert_eq!(prefs.theme, crate::ui::theme::ThemeKind::Lavender);
+        assert_eq!(prefs.accent, crate::ui::theme::Accent::Theme);
     }
 
     #[test]
@@ -175,5 +185,22 @@ mod tests {
         prefs.tabs.settings_icon = true;
         let back: UiPrefs = serde_json::from_str(&serde_json::to_string(&prefs).unwrap()).unwrap();
         assert_eq!(back, prefs);
+    }
+
+    #[test]
+    fn theme_choice_survives_saving() {
+        let prefs = UiPrefs {
+            theme: crate::ui::theme::ThemeKind::Mint,
+            accent: crate::ui::theme::Accent::Amber,
+            ..Default::default()
+        };
+        let back: UiPrefs = serde_json::from_str(&serde_json::to_string(&prefs).unwrap()).unwrap();
+        assert_eq!((back.theme, back.accent), (prefs.theme, prefs.accent));
+        // The theme was called "Miku" at first: such a file keeps the theme and the font.
+        let old: UiPrefs = serde_json::from_str(r#"{ "font": "Montserrat", "theme": "Miku" }"#).unwrap();
+        assert_eq!(
+            (old.theme, old.font),
+            (crate::ui::theme::ThemeKind::Mint, UiFont::Montserrat)
+        );
     }
 }

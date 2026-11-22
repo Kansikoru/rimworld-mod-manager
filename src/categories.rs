@@ -104,7 +104,7 @@ impl ModCategory {
 
     /// (background, foreground) RGB for the badge.
     /// (background, text) of the category badge: a soft pastel text color on the same
-    /// color at 18% over a list row (`#1B1530`), like the other badges.
+    /// color at 18% over a list row of the chosen theme, like the other badges.
     pub fn colors(&self) -> ([u8; 3], [u8; 3]) {
         let fg: [u8; 3] = match self {
             ModCategory::Framework => [0xB6, 0x9C, 0xFF],
@@ -121,8 +121,9 @@ impl ModCategory {
             ModCategory::Retexture => [0xF9, 0xA8, 0xD4],
             ModCategory::Translation => [0xA8, 0xB8, 0xFF],
         };
-        const ROW: [u8; 3] = [0x1B, 0x15, 0x30];
-        let bg = [0, 1, 2].map(|i| (ROW[i] as f32 + (fg[i] as f32 - ROW[i] as f32) * 0.18).round() as u8);
+        let row = crate::ui::theme::THEME.bg_card;
+        let row = [row.r(), row.g(), row.b()];
+        let bg = [0, 1, 2].map(|i| (row[i] as f32 + (fg[i] as f32 - row[i] as f32) * 0.18).round() as u8);
         (bg, fg)
     }
 }

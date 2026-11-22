@@ -3,7 +3,7 @@
 use eframe::egui;
 use rimworld_mod_manager::app::App;
 use rimworld_mod_manager::fonts::setup_custom_fonts;
-use rimworld_mod_manager::ui::theme::apply_dark_theme;
+use rimworld_mod_manager::ui::theme::{apply_theme, set_theme};
 
 fn load_app_icon() -> Option<egui::IconData> {
     let icon_bytes = include_bytes!("../assets/icon.png");
@@ -66,10 +66,13 @@ fn main() {
         native_options,
         Box::new(|cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            // Always dark, whatever the Windows theme; styles are set once here, not every frame.
+            // Always dark, whatever the Windows theme; styles are set once here (and again
+            // when the theme is changed in Settings), not every frame.
+            let prefs = rimworld_mod_manager::ui_prefs::UiPrefs::load();
             cc.egui_ctx.set_theme(egui::Theme::Dark);
-            apply_dark_theme(&cc.egui_ctx);
-            setup_custom_fonts(&cc.egui_ctx, &rimworld_mod_manager::ui_prefs::UiPrefs::load());
+            set_theme(prefs.theme, prefs.accent);
+            apply_theme(&cc.egui_ctx);
+            setup_custom_fonts(&cc.egui_ctx, &prefs);
             Ok(Box::new(App::new(&cc.egui_ctx)))
         }),
     );
