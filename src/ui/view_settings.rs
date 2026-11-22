@@ -626,6 +626,40 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
         });
     });
 
+    // All settings in one file: to keep or to move to another computer.
+    ui.add_space(8.0);
+    card_container(ui, |ui| {
+        ui.vertical(|ui| {
+            ui.heading(
+                egui::RichText::new(t.get(TranslationKey::SettingsBackupTitle))
+                    .color(THEME.accent_purple)
+                    .size(15.0),
+            );
+            ui.add_space(6.0);
+            hint(ui, t.get(TranslationKey::SettingsBackupHint));
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                if secondary_button_icon(ui, ICON_SAVE, t.get(TranslationKey::SettingsBackupExport)).clicked() {
+                    if let Some(target) = rfd::FileDialog::new()
+                        .set_file_name("RimWorldModManager-settings.zip")
+                        .add_filter("zip", &["zip"])
+                        .save_file()
+                    {
+                        app.export_settings(&target);
+                    }
+                }
+                if secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::SettingsBackupImport))
+                    .on_hover_text(t.get(TranslationKey::SettingsBackupImportHint))
+                    .clicked()
+                {
+                    if let Some(source) = rfd::FileDialog::new().add_filter("zip", &["zip"]).pick_file() {
+                        app.import_settings(&source);
+                    }
+                }
+            });
+        });
+    });
+
     // Duplicates hidden with "Ignore" on the Mods tab.
     let hidden = app.ignored_duplicate_count();
     if hidden > 0 {

@@ -32,6 +32,7 @@ pub mod relations;
 pub mod saves;
 pub mod scanner;
 pub mod settings;
+pub mod settings_backup;
 pub mod sorter;
 pub mod steam;
 pub mod steamcmd;

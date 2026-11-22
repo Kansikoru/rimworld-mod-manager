@@ -580,6 +580,11 @@ fn render_mods_main(app: &mut App, ui: &mut Ui, side: bool) {
         if scanning {
             fixed += 16.0 + GAP;
         }
+        // Undo button (item 23 of the plan) while there is something to undo.
+        let can_undo = app.can_undo();
+        if can_undo {
+            fixed += styled_button_width(ui, true, "") + GAP;
+        }
         let full: f32 = library
             .iter()
             .map(|(_, text)| styled_button_width(ui, true, text) + GAP)
@@ -622,6 +627,13 @@ fn render_mods_main(app: &mut App, ui: &mut Ui, side: bool) {
                     "The load order differs from ModsConfig.xml. Press \"Save Order\" so the game sees it.",
                     "加载顺序与 ModsConfig.xml 不同。请点击「保存排序」让游戏使用它。"
                 ));
+        }
+        if can_undo
+            && secondary_button_icon(ui, ICON_UNDO, "")
+                .on_hover_text(t.get(TranslationKey::UndoBtnHint))
+                .clicked()
+        {
+            app.undo_active();
         }
 
         for (i, (icon, text)) in library.iter().enumerate() {

@@ -151,6 +151,75 @@ pub fn dlc_name(id: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Undo / redo of the active list (F9 of the plan, item 23).
+#[derive(Debug, Default)]
+pub struct ActiveHistory {
+    /// Earlier orders, oldest first; undone ones.
+    pub undo: Vec<Vec<String>>,
+    pub redo: Vec<Vec<String>>,
+    /// The list as of the last look (`None` before the first one: nothing to compare).
+    seen: Option<Vec<String>>,
+}
+
+impl ActiveHistory {
+    const MAX_STEPS: usize = 100;
+
+    /// Looks at the list once a frame; a change becomes an undo step (and drops the redo
+    /// steps). Returns the list as it was before the change.
+    pub fn observe(&mut self, current: &[String]) -> Option<Vec<String>> {
+        let Some(seen) = self.seen.as_ref() else {
+            self.seen = Some(current.to_vec());
+            return None;
+        };
+        if seen == current {
+            return None;
+        }
+        let before = self.seen.replace(current.to_vec())?;
+        self.undo.push(before.clone());
+        if self.undo.len() > Self::MAX_STEPS {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+        Some(before)
+    }
+
+    /// The list read from disk, not an edit: nothing to undo for it.
+    pub fn settle(&mut self, current: &[String]) {
+        self.seen = Some(current.to_vec());
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    /// The list before the last change; `current` becomes a redo step.
+    pub fn undo(&mut self, current: &[String]) -> Option<Vec<String>> {
+        let prev = self.undo.pop()?;
+        self.redo.push(current.to_vec());
+        self.seen = Some(prev.clone());
+        Some(prev)
+    }
+
+    pub fn redo(&mut self, current: &[String]) -> Option<Vec<String>> {
+        let next = self.redo.pop()?;
+        self.undo.push(current.to_vec());
+        self.seen = Some(next.clone());
+        Some(next)
+    }
+}
+
+/// Mods of `before` that are not in `now` and that a save's `save_ids` lists (Core is never
+/// turned off, so it is left out). Letter case doesn't matter.
+pub fn turned_off_from_save(before: &[String], now: &[String], save_ids: &[String]) -> Vec<String> {
+    let now: std::collections::HashSet<String> = now.iter().map(|id| id.to_lowercase()).collect();
+    before
+        .iter()
+        .filter(|id| !now.contains(&id.to_lowercase()) && !is_protected_package_id(id))
+        .filter(|id| save_ids.iter().any(|s| s.eq_ignore_ascii_case(id)))
+        .cloned()
+        .collect()
+}
+
 /// Folder size in bytes (all files below it).
 pub fn folder_size(dir: &Path) -> u64 {
     walkdir::WalkDir::new(dir)
@@ -249,6 +318,10 @@ pub enum PendingQuestion {
     LegacyDds(Vec<PathBuf>),
     /// "Restore previous version" of a mod (lowercase package ID), confirmed first.
     RestoreVersion(String),
+    /// An edit turned off mods the newest save is made with (F9 of the plan, item 24).
+    RemovedFromSave { save: String, names: Vec<String> },
+    /// Settings were loaded from a file: restart now or later (item 22).
+    RestartAfterImport,
     /// Active mod textures exceed ~80% of dedicated video memory (V2).
     VramWarning {
         estimated_bytes: u64,
@@ -666,6 +739,13 @@ pub struct App {
     mod_restore_rx: Option<Receiver<(String, Result<PathBuf, String>)>>,
     /// Save the installed copy when the update check finds a newer one (on unless turned off).
     pub keep_mod_versions: bool,
+    /// Undo / redo of the active list (F9 of the plan, item 23).
+    active_history: ActiveHistory,
+    /// The next change replaces the whole list on purpose (a modpack, a save, a backup):
+    /// no "used by the last save" warning (item 24).
+    skip_save_check: bool,
+    /// Settings were imported from a file (item 22): they apply after a restart.
+    pub settings_imported: bool,
     /// Narrow window: the Mods tab shows one list; this says which one.
     pub mods_show_active: bool,
     /// Narrow window: the category chips are folded behind a "Filters" button.
@@ -1032,6 +1112,9 @@ impl App {
             mod_versions_rx: None,
             mod_restore_rx: None,
             keep_mod_versions,
+            active_history: ActiveHistory::default(),
+            skip_save_check: false,
+            settings_imported: false,
             mods_show_active: true,
             show_filter_chips: false,
             // An unfinished search opens again where it stopped.
@@ -1769,6 +1852,10 @@ impl App {
 
     /// Saves settings when anything changed (called every frame; writes only on change).
     fn save_settings_if_changed(&mut self) {
+        // Imported settings wait for the restart: this run must not write its own over them.
+        if self.settings_imported {
+            return;
+        }
         let snap = self.settings_snapshot();
         let mut last = self.last_saved_settings.clone();
         last.launch_flags.sort();
@@ -1903,6 +1990,8 @@ impl App {
             let on_disk = load_active_mods(&config_p);
             if let Some(list) = active_after_rescan(self.has_unsaved_changes(), self.reload_active_from_disk, &on_disk)
             {
+                // Read from disk, not an edit: nothing to undo.
+                self.active_history.settle(&list);
                 self.active_mods = list;
             }
             self.reload_active_from_disk = false;
@@ -3373,6 +3462,7 @@ impl App {
         for id in &save.ids {
             add_active_id(&mut ids, id);
         }
+        self.skip_save_check = true;
         self.active_mods = ids;
         self.current_modlist = None;
         self.validate_deps();
@@ -3923,6 +4013,120 @@ impl App {
         self.save_ignored_duplicates();
     }
 
+    // ----- Settings in one file (F9 of the plan, item 22) -----
+
+    /// "Save settings to a file": the current settings go to disk first, then into the zip.
+    pub fn export_settings(&mut self, target: &Path) {
+        self.save_settings_if_changed();
+        let t = self.i18n;
+        self.status_message = match crate::settings_backup::export(&crate::game_install::manager_data_dir(), target) {
+            Ok(n) => fmt(
+                t.get(TranslationKey::SettingsBackupExported),
+                &[&n.to_string(), &target.display().to_string()],
+            ),
+            Err(e) => fmt(t.get(TranslationKey::SettingsBackupError), &[&e]),
+        };
+    }
+
+    /// "Load settings from a file": replaces the settings files, then offers a restart.
+    pub fn import_settings(&mut self, source: &Path) {
+        let t = self.i18n;
+        match crate::settings_backup::import(source, &crate::game_install::manager_data_dir()) {
+            Ok(n) => {
+                self.settings_imported = true;
+                self.status_message = fmt(t.get(TranslationKey::SettingsBackupImported), &[&n.to_string()]);
+                self.pending_question = Some(PendingQuestion::RestartAfterImport);
+            }
+            Err(e) => self.status_message = fmt(t.get(TranslationKey::SettingsBackupError), &[&e]),
+        }
+    }
+
+    /// Starts the program again and closes this window (imported settings load at start).
+    fn restart(&mut self, ctx: &egui::Context) {
+        let t = self.i18n;
+        // An unsaved load order would be lost without the usual question.
+        if self.has_unsaved_changes() {
+            self.status_message = t.get(TranslationKey::SettingsBackupRestartUnsaved).to_string();
+            return;
+        }
+        match std::env::current_exe().and_then(|exe| std::process::Command::new(exe).spawn()) {
+            Ok(_) => {
+                self.allow_close = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            Err(e) => self.status_message = fmt(t.get(TranslationKey::SettingsBackupError), &[&e.to_string()]),
+        }
+    }
+
+    // ----- Undo / redo of the active list (F9 of the plan, item 23) -----
+
+    /// Called once a frame: remembers each change of the active list for undo, and warns
+    /// when an edit turns off mods the newest save is made with (item 24).
+    fn track_active_changes(&mut self) {
+        let whole_list = std::mem::take(&mut self.skip_save_check);
+        if let Some(before) = self.active_history.observe(&self.active_mods) {
+            if !whole_list {
+                self.warn_removed_from_save(&before);
+            }
+        }
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.active_history.can_undo()
+    }
+
+    /// Ctrl+Z: the active list as it was before the last change.
+    pub fn undo_active(&mut self) {
+        if let Some(prev) = self.active_history.undo(&self.active_mods) {
+            self.active_mods = prev;
+            self.after_history_jump(TranslationKey::UndoDone, self.active_history.undo.len());
+        }
+    }
+
+    /// Ctrl+Y / Ctrl+Shift+Z: the change undone last, again.
+    pub fn redo_active(&mut self) {
+        if let Some(next) = self.active_history.redo(&self.active_mods) {
+            self.active_mods = next;
+            self.after_history_jump(TranslationKey::RedoDone, self.active_history.redo.len());
+        }
+    }
+
+    fn after_history_jump(&mut self, key: TranslationKey, left: usize) {
+        self.validate_deps();
+        self.status_message = fmt(self.i18n.get(key), &[&left.to_string()]);
+    }
+
+    // ----- Mods the newest save needs (F9 of the plan, item 24) -----
+
+    /// The save written last, once the saves are read (read in the background at start).
+    fn newest_save(&self) -> Option<&crate::saves::SaveInfo> {
+        self.saves.iter().max_by_key(|s| s.modified.unwrap_or(0))
+    }
+
+    /// Mods of `before` that are off now and that the newest save is made with
+    /// (Core stays on anyway): asks whether to turn them back on.
+    fn warn_removed_from_save(&mut self, before: &[String]) {
+        if self.pending_question.is_some() {
+            return;
+        }
+        let Some(save) = self.newest_save() else { return };
+        let names: Vec<String> = turned_off_from_save(before, &self.active_mods, &save.ids)
+            .into_iter()
+            .map(|id| {
+                self.find_mod(&id)
+                    .map(|m| m.name.clone())
+                    .or_else(|| save.name_of(&id).map(str::to_string))
+                    .unwrap_or(id)
+            })
+            .collect();
+        if !names.is_empty() {
+            self.pending_question = Some(PendingQuestion::RemovedFromSave {
+                save: save.name.clone(),
+                names,
+            });
+        }
+    }
+
     /// Shows every hidden duplicate again.
     pub fn show_ignored_duplicates(&mut self) {
         self.ignored_duplicates.clear();
@@ -4182,6 +4386,7 @@ impl App {
             self.bisect_note = Some(e);
             return;
         }
+        self.skip_save_check = true;
         self.active_mods = enabled.clone();
         self.remember_saved_order(&enabled);
         self.validate_deps();
@@ -4340,6 +4545,7 @@ impl App {
             self.bisect_note = Some(e);
             return;
         }
+        self.skip_save_check = true;
         self.active_mods = order.clone();
         self.remember_saved_order(&order);
         self.validate_deps();
@@ -4681,6 +4887,7 @@ impl App {
                 .flatten();
             add_active_id(&mut ids, real.as_deref().unwrap_or(id));
         }
+        self.skip_save_check = true;
         self.active_mods = ids;
         self.validate_deps();
         self.current_modlist = Some(list.name.clone());
@@ -4773,6 +4980,7 @@ impl App {
 
     /// Loads a backup into the list as unsaved changes: ModsConfig.xml changes only on "Save".
     pub fn restore_backup(&mut self, backup: &crate::mods_config::ConfigBackup) {
+        self.skip_save_check = true;
         self.active_mods = backup.mods.clone();
         self.validate_deps();
         self.history = None;
@@ -6513,6 +6721,25 @@ impl eframe::App for App {
                 }
             });
 
+        // Ctrl+Z / Ctrl+Y on the Mods tab, unless a text field has the keyboard.
+        if self.current_tab == AppTab::Mods && !ctx.egui_wants_keyboard_input() {
+            let (redo, undo) = ctx.input_mut(|i| {
+                let redo = i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::Z)
+                    || i.consume_key(egui::Modifiers::COMMAND, egui::Key::Y);
+                (redo, i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z))
+            });
+            if redo {
+                self.redo_active();
+            } else if undo {
+                self.undo_active();
+            }
+        }
+        self.track_active_changes();
+        // The newest save's mods are needed for the "used by the last save" warning.
+        if self.saves_loaded_at.is_none() {
+            self.refresh_saves();
+        }
+
         // Closing the window with an unsaved load order: ask first.
         if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close && self.has_unsaved_changes() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -6681,6 +6908,32 @@ impl App {
                     self.i18n.get(TranslationKey::BtnCancel),
                 )
             }
+            PendingQuestion::RemovedFromSave { save, names } => {
+                const SHOWN: usize = 10;
+                let mut list: Vec<String> = names.iter().take(SHOWN).map(|n| format!("• {n}")).collect();
+                if names.len() > SHOWN {
+                    list.push(fmt(
+                        self.i18n.get(TranslationKey::DepMoreMissing),
+                        &[&(names.len() - SHOWN).to_string()],
+                    ));
+                }
+                (
+                    self.i18n.get(TranslationKey::SaveModsOffTitle),
+                    format!(
+                        "{}\n\n{}",
+                        fmt(self.i18n.get(TranslationKey::SaveModsOffBody), &[save, &names.len().to_string()]),
+                        list.join("\n")
+                    ),
+                    self.i18n.get(TranslationKey::SaveModsOffUndo),
+                    self.i18n.get(TranslationKey::SaveModsOffKeep),
+                )
+            }
+            PendingQuestion::RestartAfterImport => (
+                self.i18n.get(TranslationKey::SettingsBackupRestartTitle),
+                self.i18n.get(TranslationKey::SettingsBackupRestartBody).to_string(),
+                self.i18n.get(TranslationKey::SettingsBackupRestartNow),
+                self.i18n.get(TranslationKey::SettingsBackupRestartLater),
+            ),
             PendingQuestion::VramWarning {
                 estimated_bytes,
                 total_vram_bytes,
@@ -6819,6 +7072,8 @@ impl App {
             }
             (PendingQuestion::LegacyDds(paths), Answer::Secondary) => self.delete_unlogged_dds(paths),
             (PendingQuestion::RestoreVersion(id), Answer::Primary) => self.restore_version_now(&id),
+            (PendingQuestion::RemovedFromSave { .. }, Answer::Primary) => self.undo_active(),
+            (PendingQuestion::RestartAfterImport, Answer::Primary) => self.restart(ctx),
             (PendingQuestion::VramWarning { .. }, Answer::Primary) if vram_waylith => self.launch_game_now(),
             (PendingQuestion::VramWarning { .. }, Answer::Primary) => {
                 self.current_tab = AppTab::Optimizer;
@@ -7215,6 +7470,57 @@ pub fn is_verified_launch_log(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn undo_redo_of_the_active_list() {
+        let list = |ids: &[&str]| ids.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let mut h = ActiveHistory::default();
+        assert_eq!(h.observe(&list(&["a"])), None, "the first look only remembers");
+        assert_eq!(h.observe(&list(&["a"])), None);
+        assert_eq!(h.observe(&list(&["a", "b"])), Some(list(&["a"])));
+        h.observe(&list(&["b", "a"]));
+
+        let back = h.undo(&list(&["b", "a"])).unwrap();
+        assert_eq!(back, list(&["a", "b"]));
+        assert_eq!(h.observe(&back), None, "undo itself is not a new step");
+        assert_eq!(h.undo(&back), Some(list(&["a"])));
+        assert_eq!(h.undo(&list(&["a"])), None);
+        assert_eq!(h.redo(&list(&["a"])), Some(list(&["a", "b"])));
+        // A new edit drops what could be redone.
+        h.observe(&list(&["a", "b", "c"]));
+        assert_eq!(h.redo(&list(&["a", "b", "c"])), None);
+
+        // A list read from disk is not an edit.
+        h.settle(&list(&["x"]));
+        assert_eq!(h.observe(&list(&["x"])), None);
+        for i in 0..150 {
+            h.observe(&[i.to_string()]);
+        }
+        assert_eq!(h.undo.len(), ActiveHistory::MAX_STEPS);
+    }
+
+    #[test]
+    fn mods_the_last_save_needs() {
+        let list = |ids: &[&str]| ids.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let before = list(&["Ludeon.RimWorld", "a.mod", "B.Mod", "c.mod"]);
+        let now = list(&["ludeon.rimworld", "c.mod"]);
+        let save = list(&["ludeon.rimworld", "b.mod", "c.mod", "z.mod"]);
+        assert_eq!(
+            turned_off_from_save(&before, &now, &save),
+            ["B.Mod"],
+            "a.mod isn't in the save"
+        );
+        assert!(
+            turned_off_from_save(&now, &before, &save).is_empty(),
+            "turning mods on is fine"
+        );
+        assert!(
+            turned_off_from_save(&before, &[], &save)
+                .iter()
+                .all(|id| id != "Ludeon.RimWorld"),
+            "Core is never in the warning"
+        );
+    }
 
     #[test]
     fn folder_size_and_date_for_sorting() {
