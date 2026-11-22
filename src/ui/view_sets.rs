@@ -43,6 +43,8 @@ enum SetAction {
     /// Open the "Compare" window, or change what the modpack is compared with.
     Compare(String, CompareWith),
     CloseCompare,
+    /// A new set with the mods of both, in load order.
+    Merge(String, String),
 }
 
 /// A tag as shown: built-in ones translated, own ones as typed.
@@ -196,6 +198,7 @@ fn apply_actions(app: &mut App, actions: Vec<SetAction>) {
             SetAction::ForgetSettings(name) => app.forget_modlist_settings(&name),
             SetAction::Compare(name, with) => app.open_set_compare(&name, with),
             SetAction::CloseCompare => app.set_compare = None,
+            SetAction::Merge(first, second) => app.merge_modlists(&first, &second),
             SetAction::OpenFolder => {
                 if let Some(dir) = app.modlists_folder() {
                     let _ = std::fs::create_dir_all(&dir);
@@ -682,6 +685,29 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, with_mod
             .clicked()
         {
             actions.push(SetAction::Compare(name.clone(), CompareWith::Current));
+        }
+        // "Merge with…": the other sets in a menu.
+        if app.modlists.len() > 1 {
+            ui.menu_button(t.get(TranslationKey::SetsBtnMerge), |ui| {
+                ui.label(
+                    egui::RichText::new(t.get(TranslationKey::SetsMergeHint))
+                        .color(THEME.text_muted)
+                        .size(12.0),
+                );
+                ui.separator();
+                for other in app.modlists.iter().filter(|l| l.name != *name) {
+                    if ui
+                        .button(fmt(
+                            t.get(TranslationKey::SetsMergeItem),
+                            &[&other.name, &other.ids.len().to_string()],
+                        ))
+                        .clicked()
+                    {
+                        actions.push(SetAction::Merge(name.clone(), other.name.clone()));
+                        ui.close();
+                    }
+                }
+            });
         }
         if secondary_button(ui, t.get(TranslationKey::SetsBtnRename)).clicked() {
             actions.push(SetAction::Dialog(ModListDialog::Rename {

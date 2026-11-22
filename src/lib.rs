@@ -19,6 +19,7 @@ pub mod load_time;
 pub mod matcher;
 pub mod mod_colors;
 pub mod mod_updates;
+pub mod mod_versions;
 pub mod models;
 pub mod modlist_images;
 pub mod modlist_settings;

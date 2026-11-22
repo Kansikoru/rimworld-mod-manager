@@ -587,6 +587,61 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
 
     ui.add_space(8.0);
     own_order_rules_card(app, ui);
+
+    // Previous versions of mods (saved before an update) and their switch.
+    ui.add_space(8.0);
+    card_container(ui, |ui| {
+        ui.vertical(|ui| {
+            ui.heading(
+                egui::RichText::new(t.get(TranslationKey::SettingsVersionsTitle))
+                    .color(THEME.accent_purple)
+                    .size(15.0),
+            );
+            ui.add_space(6.0);
+            let mut keep = app.keep_mod_versions;
+            if ui
+                .checkbox(&mut keep, t.get(TranslationKey::SettingsVersionsKeep))
+                .changed()
+            {
+                app.keep_mod_versions = keep;
+            }
+            hint(ui, t.get(TranslationKey::SettingsVersionsHint));
+            let count = app.mod_versions.len();
+            if count > 0 {
+                ui.add_space(4.0);
+                let bytes: u64 = app.mod_versions.values().map(|v| v.size).sum();
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(fmt(
+                        t.get(TranslationKey::SettingsVersionsCount),
+                        &[&count.to_string(), &crate::workshop_browse::human_size(bytes)],
+                    ));
+                    if secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::ModsBtnFolder)).clicked() {
+                        open_external(crate::mod_versions::versions_dir());
+                    }
+                    if danger_button_icon(ui, ICON_TRASH, t.get(TranslationKey::SettingsVersionsDelete)).clicked() {
+                        app.delete_saved_versions();
+                    }
+                });
+            }
+        });
+    });
+
+    // Duplicates hidden with "Ignore" on the Mods tab.
+    let hidden = app.ignored_duplicate_count();
+    if hidden > 0 {
+        ui.add_space(8.0);
+        card_container(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(fmt(
+                    t.get(TranslationKey::SettingsHiddenDuplicates),
+                    &[&hidden.to_string()],
+                ));
+                if secondary_button(ui, t.get(TranslationKey::SettingsShowDuplicates)).clicked() {
+                    app.show_ignored_duplicates();
+                }
+            });
+        });
+    }
 }
 
 /// The player's own "this mod after that one" rules, each with a button that removes it.

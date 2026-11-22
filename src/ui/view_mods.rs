@@ -5,7 +5,8 @@ use super::components::*;
 use super::icons::*;
 use super::theme::THEME;
 use crate::app::{
-    is_official_content, lookup_mod, passes_category_filter, workshop_id_of, App, DeleteKind, DropTarget, ModDrag,
+    dlc_name, is_official_content, lookup_mod, passes_category_filter, required_dlcs, workshop_id_of, App, DeleteKind,
+    DropTarget, ModDrag,
 };
 use crate::categories::ModCategory;
 use crate::dependencies::DependencyProblem;
@@ -371,6 +372,26 @@ fn remove_mods_items(
     item(ui, text, DeleteKind::Mods, true);
 }
 
+/// DLCs the mod requires (F9 of the plan): a tag per DLC, red when the DLC isn't installed.
+fn dlc_badges(ui: &mut Ui, m: &ModInfo, all: &[ModInfo], t: crate::i18n::I18n) {
+    for dlc in required_dlcs(m) {
+        let installed = all.iter().any(|o| o.package_id.eq_ignore_ascii_case(dlc));
+        let color = if installed {
+            THEME.accent_purple
+        } else {
+            THEME.accent_rose
+        };
+        if let Some(resp) = tag_if_fits(ui, &dlc_name(dlc), color) {
+            let key = if installed {
+                TranslationKey::DlcBadgeHint
+            } else {
+                TranslationKey::DlcChipMissingHint
+            };
+            resp.on_hover_text(fmt(t.get(key), &[&dlc_name(dlc)]));
+        }
+    }
+}
+
 /// The mod's colour mark (F9 of the plan): a small dot before its name.
 fn color_dot(ui: &mut Ui, color: Option<crate::mod_colors::ModColor>, t: crate::i18n::I18n) {
     if let Some(c) = color {
@@ -418,6 +439,28 @@ fn color_context_menu(
             }
         }
     });
+}
+
+/// "Restore previous version (date)" when a copy was saved before an update (F9 of the plan).
+fn restore_version_item(
+    ui: &mut Ui,
+    t: crate::i18n::I18n,
+    saved: Option<&crate::mod_versions::SavedVersion>,
+    pkg_id: &str,
+    out: &mut Option<String>,
+) {
+    let Some(v) = saved else { return };
+    if ui
+        .button(fmt(
+            t.get(TranslationKey::ModsCtxRestoreVersion),
+            &[&local_date(v.saved_at)],
+        ))
+        .on_hover_text(t.get(TranslationKey::ModsCtxRestoreVersionHint))
+        .clicked()
+    {
+        *out = Some(pkg_id.to_string());
+        ui.close();
+    }
 }
 
 /// What the chosen order of the available list sorts a mod by, for a muted tag in its row.
@@ -772,26 +815,37 @@ fn render_mods_main(app: &mut App, ui: &mut Ui, side: bool) {
         ui.add_space(4.0);
     }
 
-    // Duplicate copies of the same mod (e.g. Workshop + game Mods folder)
-    if !app.duplicate_mods.is_empty() {
+    // Duplicate copies of the same mod (e.g. Workshop + game Mods folder); ones the player
+    // ignored stay hidden while they have the same copies.
+    let shown_dups = app.shown_duplicates();
+    let mut ignore_dup: Option<String> = None;
+    if !shown_dups.is_empty() {
         card_container(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.add(svg_icon(ICON_STATUS_DUPLICATE, Vec2::splat(18.0), THEME.accent_amber));
                 ui.label(
                     egui::RichText::new(fmt(
                         t.get(TranslationKey::ModsDuplicatesTitle),
-                        &[&app.duplicate_mods.len().to_string()],
+                        &[&shown_dups.len().to_string()],
                     ))
                     .color(THEME.accent_amber)
                     .strong(),
                 );
             });
-            for dup in &app.duplicate_mods {
-                ui.label(
-                    egui::RichText::new(format!("{} ({})", dup.name, dup.package_id))
-                        .color(THEME.text_primary)
-                        .size(12.0),
-                );
+            for dup in &shown_dups {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("{} ({})", dup.name, dup.package_id))
+                            .color(THEME.text_primary)
+                            .size(12.0),
+                    );
+                    if small_button(ui, t.get(TranslationKey::DuplicatesIgnore), ButtonStyle::Secondary)
+                        .on_hover_text(t.get(TranslationKey::DuplicatesIgnoreHint))
+                        .clicked()
+                    {
+                        ignore_dup = Some(dup.package_id.clone());
+                    }
+                });
                 for (origin, dir) in &dup.origins {
                     ui.horizontal(|ui| {
                         origin_badge(ui, *origin);
@@ -806,6 +860,9 @@ fn render_mods_main(app: &mut App, ui: &mut Ui, side: bool) {
             }
         });
         ui.add_space(4.0);
+    }
+    if let Some(id) = ignore_dup {
+        app.ignore_duplicate(&id);
     }
 
     render_version_issues(app, ui);
@@ -1321,6 +1378,7 @@ fn filters_toggle(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
     let selected = app.category_filter.len()
         + app.color_filter.len()
+        + app.dlc_filter.len()
         + usize::from(app.filter_updates)
         + usize::from(app.filter_no_version)
         + usize::from(app.filter_local)
@@ -1422,6 +1480,17 @@ fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
     let updates = app.mod_updates.as_ref().map(|r| r.outdated_count()).unwrap_or(0);
     let local = app.all_mods.iter().filter(|m| app.is_local_mod(m)).count();
     let workshop = app.all_mods.iter().filter(|m| app.is_workshop_mod(m)).count();
+    // DLCs mods require, in DLC order, with how many mods need each.
+    let dlcs: Vec<(&'static str, usize)> = crate::sorter::CANON_OFFICIAL_ORDER
+        .iter()
+        .filter(|id| id.starts_with("ludeon.rimworld."))
+        .map(|id| {
+            let n = app.all_mods.iter().filter(|m| required_dlcs(m).contains(id)).count();
+            (*id, n)
+        })
+        .filter(|(_, n)| *n > 0)
+        .collect();
+    let installed_dlcs: HashSet<String> = app.all_mods.iter().map(|m| m.package_id.to_lowercase()).collect();
     let colors = crate::mod_colors::counts(&app.mod_colors, app.all_mods.iter().map(|m| m.package_id.as_str()));
 
     // Narrow window: the chips take many rows, so they fold behind a "Filters" button
@@ -1463,6 +1532,37 @@ fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
             app.filter_no_version = false;
             app.filter_local = false;
             app.filter_workshop = false;
+            app.dlc_filter.clear();
+        }
+        // DLCs the mods require; one that isn't installed is shown in red.
+        for (dlc, n) in &dlcs {
+            let selected = app.dlc_filter.contains(dlc);
+            let color = if installed_dlcs.contains(*dlc) {
+                THEME.accent_purple
+            } else {
+                THEME.accent_rose
+            };
+            let hint = if installed_dlcs.contains(*dlc) {
+                t.get(TranslationKey::DlcChipHint)
+            } else {
+                t.get(TranslationKey::DlcChipMissingHint)
+            };
+            if chip(
+                ui,
+                Some((ICON_STATUS_LOCAL, color)),
+                &fmt(t.get(TranslationKey::DlcChip), &[&dlc_name(dlc)]),
+                *n,
+                selected,
+            )
+            .on_hover_text(hint)
+            .clicked()
+            {
+                if selected {
+                    app.dlc_filter.remove(dlc);
+                } else {
+                    app.dlc_filter.insert(dlc);
+                }
+            }
         }
         // Colour marks: a chip per colour in use; right-click deletes the whole group.
         for (color, n) in &colors {
@@ -1826,6 +1926,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     let mut pin_place_id: Option<String> = None;
     let mut color_set: Option<(Vec<String>, Option<crate::mod_colors::ModColor>)> = None;
     let mut forget_order_id: Option<String> = None;
+    let mut restore_id: Option<String> = None;
     let mut deactivate_idx = None;
     let mut enable_dep_id = None;
     let mut download_dep_ws_id = None;
@@ -2154,6 +2255,13 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                         app.mod_colors.get(&pkg_id.to_lowercase()).copied(),
                                         &mut color_set,
                                     );
+                                    restore_version_item(
+                                        ui,
+                                        t,
+                                        app.mod_versions.get(&pkg_id.to_lowercase()),
+                                        pkg_id,
+                                        &mut restore_id,
+                                    );
                                     remove_mods_items(
                                         ui,
                                         t,
@@ -2178,6 +2286,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                 if let Some(m) = mod_info_opt {
                                     if !is_protected {
                                         category_badges(ui, &m.categories, t, 2);
+                                        dlc_badges(ui, m, &app.all_mods, t);
                                     }
                                     if log_error_badge(ui, log_culprits.get(&m.package_id.to_lowercase()), t) {
                                         open_analyzer = true;
@@ -2459,6 +2568,9 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     if let Some((ids, color)) = color_set {
         app.set_mod_color(&ids, color);
     }
+    if let Some(id) = restore_id {
+        app.ask_restore_version(&id);
+    }
 
     if let Some(req_id) = enable_dep_id {
         app.activate_mod(&req_id);
@@ -2563,6 +2675,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     let mut cat_reset: Option<String> = None;
     let mut download_dep_ws_id: Option<String> = None;
     let mut color_set: Option<(Vec<String>, Option<crate::mod_colors::ModColor>)> = None;
+    let mut restore_id: Option<String> = None;
     let steamcmd_active = app.steamcmd_active();
 
     // Rows that pass the search and category filter, computed once.
@@ -2773,6 +2886,13 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                                             app.mod_colors.get(&pkg_id_ctx.to_lowercase()).copied(),
                                             &mut color_set,
                                         );
+                                        restore_version_item(
+                                            ui,
+                                            t,
+                                            app.mod_versions.get(&pkg_id_ctx.to_lowercase()),
+                                            &pkg_id_ctx,
+                                            &mut restore_id,
+                                        );
                                         remove_mods_items(
                                             ui,
                                             t,
@@ -2791,6 +2911,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
 
                                     relation_badge(ui, relation, t);
                                     category_badges(ui, &m.categories, t, 2);
+                                    dlc_badges(ui, m, &app.all_mods, t);
                                     if log_error_badge(ui, log_culprits.get(&m.package_id.to_lowercase()), t) {
                                         open_analyzer = true;
                                     }
@@ -2935,6 +3056,9 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     apply_category_actions(app, cat_toggle, cat_reset);
     if let Some((ids, color)) = color_set {
         app.set_mod_color(&ids, color);
+    }
+    if let Some(id) = restore_id {
+        app.ask_restore_version(&id);
     }
     if let Some(sort) = new_sort {
         app.set_inactive_sort(sort);

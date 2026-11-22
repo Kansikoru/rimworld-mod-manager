@@ -206,6 +206,35 @@ pub fn unique_name(dir: &Path, name: &str) -> String {
         .unwrap_or_else(|| name.to_string())
 }
 
+/// Both sets in one (F9 of the plan): every mod of `first` in its order, then the mods only
+/// `second` has. The caller puts them in load order. Letter case doesn't matter.
+pub fn merge(first: &ModList, second: &ModList) -> Vec<ModListEntry> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for list in [first, second] {
+        for (i, id) in list.ids.iter().enumerate() {
+            let lower = id.to_lowercase();
+            if !seen.insert(lower.clone()) {
+                continue;
+            }
+            out.push(ModListEntry {
+                name: list
+                    .names
+                    .get(i)
+                    .cloned()
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or_else(|| id.clone()),
+                steam_id: list
+                    .steam_id(&lower)
+                    .or_else(|| first.steam_id(&lower))
+                    .map(str::to_string),
+                id: lower,
+            });
+        }
+    }
+    out
+}
+
 /// The set as plain text for a chat or forum: one mod per line, with its Workshop link
 /// when it has one.
 pub fn share_text(title: &str, mods: &[(String, Option<String>)]) -> String {
@@ -553,6 +582,38 @@ mod tests {
         assert!(compare(&first, &list(&["HARMONY", "CORE", "A", "B", "C", "ONLY.FIRST"])).is_same());
         assert_eq!(compare(&list(&["a", "b", "c"]), &list(&["c", "b", "a"])).moved.len(), 2);
         assert!(compare(&[], &[]).is_same());
+    }
+
+    #[test]
+    fn two_lists_merged() {
+        let list = |ids: &[&str], steam: &[(&str, &str)]| ModList {
+            name: "x".into(),
+            path: PathBuf::new(),
+            game_version: None,
+            ids: ids.iter().map(|s| s.to_string()).collect(),
+            names: ids.iter().map(|s| s.to_uppercase()).collect(),
+            modified: None,
+            steam_ids: steam.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        };
+        let first = list(&["ludeon.rimworld", "A.Mod", "b.mod"], &[("a.mod", "11")]);
+        let second = list(
+            &["ludeon.rimworld", "c.mod", "a.mod"],
+            &[("c.mod", "33"), ("a.mod", "99")],
+        );
+        let merged = merge(&first, &second);
+        let ids: Vec<&str> = merged.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["ludeon.rimworld", "a.mod", "b.mod", "c.mod"],
+            "first's order, then second's extras"
+        );
+        assert_eq!(
+            merged[1].name, "A.MOD",
+            "names come from the list that has the mod first"
+        );
+        assert_eq!(merged[1].steam_id.as_deref(), Some("11"));
+        assert_eq!(merged[3].steam_id.as_deref(), Some("33"));
+        assert_eq!(merged[0].steam_id, None);
     }
 
     #[test]

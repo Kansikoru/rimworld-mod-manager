@@ -49,6 +49,9 @@ pub struct AppSettings {
     /// Workshop tab: when the Steam website refuses, ask the Steam client (off unless turned on).
     #[serde(default)]
     pub workshop_via_steam_client: bool,
+    /// Save a mod's installed copy when the update check finds a newer one (F9 of the plan).
+    #[serde(default = "default_true")]
+    pub keep_mod_versions: bool,
 }
 
 fn default_true() -> bool {
@@ -76,6 +79,7 @@ impl Default for AppSettings {
             backup_save_before_launch: true,
             save_backups_to_keep: 5,
             workshop_via_steam_client: false,
+            keep_mod_versions: true,
         }
     }
 }
@@ -129,6 +133,7 @@ mod tests {
         assert!(old.backup_save_before_launch);
         assert_eq!(old.save_backups_to_keep, 5);
         assert!(!old.workshop_via_steam_client);
+        assert!(old.keep_mod_versions, "previous versions are kept unless turned off");
         // 2.1.0 wrote a plain true/false.
         std::fs::write(&path, r#"{"language":"English","use_steamcmd":false}"#).unwrap();
         assert_eq!(AppSettings::load_from(&path).unwrap().use_steamcmd, Some(false));

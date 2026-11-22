@@ -72,8 +72,24 @@ fn folder_name(name: &str) -> String {
     }
 }
 
+/// Marks `dir` frozen now (a restored previous version, `mod_versions.rs`).
+pub(crate) fn mark_frozen(dir: &Path, workshop_id: Option<String>, copy: bool) -> Result<(), String> {
+    let frozen_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    write_marker(
+        dir,
+        &Frozen {
+            workshop_id,
+            frozen_at,
+            copy,
+        },
+    )
+}
+
 /// A folder in `mods_dir` that doesn't exist yet: "Name (frozen)", "Name (frozen 2)", ...
-fn free_dir(mods_dir: &Path, name: &str) -> PathBuf {
+pub(crate) fn free_dir(mods_dir: &Path, name: &str) -> PathBuf {
     let base = folder_name(name);
     let first = mods_dir.join(format!("{base} (frozen)"));
     if !first.exists() {

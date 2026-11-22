@@ -41,6 +41,25 @@ fn tab_icon(tab: AppTab) -> egui::ImageSource<'static> {
     }
 }
 
+fn ignored_duplicates_path() -> PathBuf {
+    crate::game_install::manager_data_dir().join("ignored_duplicates.json")
+}
+
+fn load_ignored_duplicates(path: &Path) -> HashMap<String, Vec<PathBuf>> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+fn save_ignored_duplicates(path: &Path, ignored: &HashMap<String, Vec<PathBuf>>) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let text = serde_json::to_string_pretty(ignored).map_err(std::io::Error::other)?;
+    std::fs::write(path, text)
+}
+
 fn bisect_session_path() -> PathBuf {
     crate::game_install::manager_data_dir().join("bisect.json")
 }
@@ -110,6 +129,26 @@ impl InactiveSort {
     pub fn needs_workshop(self) -> bool {
         matches!(self, InactiveSort::Subscribers | InactiveSort::Updated)
     }
+}
+
+/// DLCs a mod requires in its About.xml (F9 of the plan), lowercase IDs in DLC order.
+pub fn required_dlcs(m: &ModInfo) -> Vec<&'static str> {
+    crate::sorter::CANON_OFFICIAL_ORDER
+        .iter()
+        .copied()
+        .filter(|dlc| dlc.starts_with("ludeon.rimworld."))
+        .filter(|dlc| m.dependencies.iter().any(|d| d.trim().eq_ignore_ascii_case(dlc)))
+        .collect()
+}
+
+/// "ludeon.rimworld.biotech" -> "Biotech" (DLC names are the same in every language).
+pub fn dlc_name(id: &str) -> String {
+    let short = id.rsplit('.').next().unwrap_or(id);
+    let mut chars = short.chars();
+    chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 /// Folder size in bytes (all files below it).
@@ -208,6 +247,8 @@ pub enum PendingQuestion {
     /// Rollback found DDS files that are not in the manager's log (old optimizer, RimPy
     /// or the mod author). Each has a PNG/JPG next to it.
     LegacyDds(Vec<PathBuf>),
+    /// "Restore previous version" of a mod (lowercase package ID), confirmed first.
+    RestoreVersion(String),
     /// Active mod textures exceed ~80% of dedicated video memory (V2).
     VramWarning {
         estimated_bytes: u64,
@@ -605,6 +646,11 @@ pub struct App {
     /// Colour marks of mods (`mod_colors.rs`) and the colours shown (empty: all).
     pub mod_colors: crate::mod_colors::Marks,
     pub color_filter: std::collections::HashSet<crate::mod_colors::ModColor>,
+    /// DLCs shown (lowercase IDs; empty: all): mods that require one of them.
+    pub dlc_filter: std::collections::HashSet<&'static str>,
+    /// Copies in the duplicates card the player hid (`ignored_duplicates.json`): lowercase
+    /// package ID -> the folders it had then. A new copy shows the mod again.
+    pub ignored_duplicates: HashMap<String, Vec<PathBuf>>,
     /// Order of the available mods list and the data it needs, loaded when first chosen:
     /// Steam's details of the Workshop items (by Workshop ID), folder sizes and creation
     /// dates (by lowercase package ID).
@@ -614,6 +660,12 @@ pub struct App {
     pub mod_sizes: Option<HashMap<String, u64>>,
     mod_sizes_rx: Option<Receiver<HashMap<String, u64>>>,
     pub mod_added: Option<HashMap<String, u64>>,
+    /// Previous versions saved before an update (`mod_versions.rs`), by lowercase package ID.
+    pub mod_versions: HashMap<String, crate::mod_versions::SavedVersion>,
+    mod_versions_rx: Option<Receiver<(Vec<crate::mod_versions::SavedVersion>, Vec<String>)>>,
+    mod_restore_rx: Option<Receiver<(String, Result<PathBuf, String>)>>,
+    /// Save the installed copy when the update check finds a newer one (on unless turned off).
+    pub keep_mod_versions: bool,
     /// Narrow window: the Mods tab shows one list; this says which one.
     pub mods_show_active: bool,
     /// Narrow window: the category chips are folded behind a "Filters" button.
@@ -758,6 +810,7 @@ impl App {
         };
         let last_check_updates = s.check_updates;
         let workshop_via_steam_client = s.workshop_via_steam_client;
+        let keep_mod_versions = s.keep_mod_versions;
         let custom_steamcmd_dir = s.steamcmd_dir.clone();
         let use_steamcmd_set = s.use_steamcmd.is_some();
         // Never set: SteamCMD installed means downloads go through it.
@@ -967,12 +1020,18 @@ impl App {
             filter_workshop: false,
             mod_colors: crate::mod_colors::load(&crate::mod_colors::marks_path()),
             color_filter: std::collections::HashSet::new(),
+            dlc_filter: std::collections::HashSet::new(),
+            ignored_duplicates: load_ignored_duplicates(&ignored_duplicates_path()),
             inactive_sort: InactiveSort::Default,
             workshop_stats: None,
             workshop_stats_rx: None,
             mod_sizes: None,
             mod_sizes_rx: None,
             mod_added: None,
+            mod_versions: crate::mod_versions::list(&crate::mod_versions::versions_dir()),
+            mod_versions_rx: None,
+            mod_restore_rx: None,
+            keep_mod_versions,
             mods_show_active: true,
             show_filter_chips: false,
             // An unfinished search opens again where it stopped.
@@ -1108,6 +1167,43 @@ impl App {
                 self.mod_sizes = Some(sizes);
             }
         }
+        // Previous versions saved before an update: one line, errors after it.
+        if let Some(rx) = &self.mod_versions_rx {
+            if let Ok((saved, errors)) = rx.try_recv() {
+                self.mod_versions_rx = None;
+                self.mod_versions = crate::mod_versions::list(&crate::mod_versions::versions_dir());
+                let t = self.i18n;
+                if !saved.is_empty() {
+                    let bytes: u64 = saved.iter().map(|v| v.size).sum();
+                    self.status_message.push_str(" | ");
+                    self.status_message.push_str(&fmt(
+                        t.get(TranslationKey::VersionsSaved),
+                        &[&saved.len().to_string(), &crate::workshop_browse::human_size(bytes)],
+                    ));
+                }
+                if !errors.is_empty() {
+                    self.status_message.push_str(" | ");
+                    self.status_message
+                        .push_str(&fmt(t.get(TranslationKey::VersionsSaveFailed), &[&errors.join("; ")]));
+                }
+            }
+        }
+        if let Some(rx) = &self.mod_restore_rx {
+            if let Ok((name, result)) = rx.try_recv() {
+                self.mod_restore_rx = None;
+                let t = self.i18n;
+                match result {
+                    Ok(dir) => {
+                        self.status_message = fmt(
+                            t.get(TranslationKey::VersionsRestored),
+                            &[&name, &dir.display().to_string()],
+                        );
+                        self.rescan_mods_keep_status();
+                    }
+                    Err(e) => self.status_message = fmt(t.get(TranslationKey::VersionsRestoreFailed), &[&name, &e]),
+                }
+            }
+        }
         if let Some(rx) = &self.workshop_index_rx {
             if let Ok((downloaded, result)) = rx.try_recv() {
                 self.workshop_index_rx = None;
@@ -1153,6 +1249,7 @@ impl App {
                                 &[&report.gone.len().to_string()],
                             ));
                         }
+                        self.save_previous_versions(&report);
                         self.mod_updates = Some(report);
                     }
                     Err(e) => self.status_message = fmt(t.get(TranslationKey::UpdatesError), &[&e]),
@@ -1666,6 +1763,7 @@ impl App {
             backup_save_before_launch: self.backup_save_before_launch,
             save_backups_to_keep: self.save_backups_to_keep,
             workshop_via_steam_client: self.workshop_via_steam_client,
+            keep_mod_versions: self.keep_mod_versions,
         }
     }
 
@@ -3643,6 +3741,74 @@ impl App {
         self.mod_updates_rx.is_some()
     }
 
+    // ----- Previous versions (F9 of the plan, item 20) -----
+
+    /// After an update check: saves the installed copy of every outdated mod in the
+    /// background, before Steam or SteamCMD replaces it (frozen and Core/DLC mods are left).
+    fn save_previous_versions(&mut self, report: &crate::mod_updates::UpdateReport) {
+        if !self.keep_mod_versions || self.mod_versions_rx.is_some() {
+            return;
+        }
+        let items: Vec<crate::mod_versions::SaveItem> = report
+            .mods
+            .iter()
+            .filter(|(_, u)| u.outdated)
+            .filter_map(|(id, _)| self.find_mod(id))
+            .filter(|m| !m.frozen && !self.is_official_mod(m))
+            .map(|m| crate::mod_versions::SaveItem {
+                package_id: m.package_id.clone(),
+                name: m.name.clone(),
+                workshop_id: workshop_id_of(m),
+                dir: m.dir_path.clone(),
+            })
+            .collect();
+        if items.is_empty() {
+            return;
+        }
+        let root = crate::mod_versions::versions_dir();
+        self.mod_versions_rx = Some(self.spawn_task(move || crate::mod_versions::save(&root, &items)));
+    }
+
+    /// The saved previous version of a mod, if any.
+    pub fn saved_version(&self, id: &str) -> Option<&crate::mod_versions::SavedVersion> {
+        self.mod_versions.get(&id.to_lowercase())
+    }
+
+    /// "Restore previous version" in a mod's menu: asks first.
+    pub fn ask_restore_version(&mut self, id: &str) {
+        if self.saved_version(id).is_some() && self.mod_restore_rx.is_none() {
+            self.pending_question = Some(PendingQuestion::RestoreVersion(id.to_lowercase()));
+        }
+    }
+
+    /// Puts the saved copy back in the background, then scans the mods again.
+    fn restore_version_now(&mut self, id: &str) {
+        let (Some(version), Some(m)) = (self.saved_version(id).cloned(), self.find_mod(id)) else {
+            return;
+        };
+        let current = m.dir_path.clone();
+        let from_workshop = m.origin == crate::models::ModOrigin::Workshop;
+        let mods_dir = self.game_mods_dir();
+        let name = m.name.clone();
+        self.mod_restore_rx = Some(self.spawn_task(move || {
+            let result = crate::mod_versions::restore(&version, &current, from_workshop, mods_dir.as_deref());
+            (name, result)
+        }));
+    }
+
+    /// Deletes every saved previous version (Settings).
+    pub fn delete_saved_versions(&mut self) {
+        let root = crate::mod_versions::versions_dir();
+        self.status_message = match crate::mod_versions::delete(&root, None) {
+            Ok(()) => fmt(
+                self.i18n.get(TranslationKey::VersionsDeleted),
+                &[&self.mod_versions.len().to_string()],
+            ),
+            Err(e) => fmt(self.i18n.get(TranslationKey::VersionsDeleteFailed), &[&e.to_string()]),
+        };
+        self.mod_versions = crate::mod_versions::list(&root);
+    }
+
     /// SC1: outdated mods SteamCMD can update — the ones in the game's Mods folder. Mods the
     /// Steam client keeps in its Workshop folder are left to Steam (a SteamCMD copy would
     /// give the mod twice).
@@ -3699,6 +3865,8 @@ impl App {
             && (local || !self.filter_local)
             && (workshop || !self.filter_workshop)
             && colored
+            && (self.dlc_filter.is_empty()
+                || m.is_some_and(|m| required_dlcs(m).iter().any(|d| self.dlc_filter.contains(d))))
     }
 
     /// A Steam Workshop subscription (not Core/DLC).
@@ -3714,6 +3882,57 @@ impl App {
             || self.filter_local
             || self.filter_workshop
             || !self.color_filter.is_empty()
+            || !self.dlc_filter.is_empty()
+    }
+
+    // ----- Duplicates the player hid (F9 of the plan) -----
+
+    /// Duplicates to show: not hidden, or hidden with other folders than now.
+    pub fn shown_duplicates(&self) -> Vec<&crate::scanner::DuplicateModEntry> {
+        self.duplicate_mods
+            .iter()
+            .filter(|d| !self.is_duplicate_ignored(d))
+            .collect()
+    }
+
+    fn is_duplicate_ignored(&self, d: &crate::scanner::DuplicateModEntry) -> bool {
+        self.ignored_duplicates
+            .get(&d.package_id.to_lowercase())
+            .is_some_and(|dirs| d.origins.iter().all(|(_, dir)| dirs.contains(dir)))
+    }
+
+    /// How many duplicates are hidden now (for "Show again" in Settings).
+    pub fn ignored_duplicate_count(&self) -> usize {
+        self.duplicate_mods
+            .iter()
+            .filter(|d| self.is_duplicate_ignored(d))
+            .count()
+    }
+
+    /// "Ignore" on a duplicate: hidden while it has these copies.
+    pub fn ignore_duplicate(&mut self, package_id: &str) {
+        let Some(d) = self
+            .duplicate_mods
+            .iter()
+            .find(|d| d.package_id.eq_ignore_ascii_case(package_id))
+        else {
+            return;
+        };
+        let dirs = d.origins.iter().map(|(_, dir)| dir.clone()).collect();
+        self.ignored_duplicates.insert(package_id.to_lowercase(), dirs);
+        self.save_ignored_duplicates();
+    }
+
+    /// Shows every hidden duplicate again.
+    pub fn show_ignored_duplicates(&mut self) {
+        self.ignored_duplicates.clear();
+        self.save_ignored_duplicates();
+    }
+
+    fn save_ignored_duplicates(&mut self) {
+        if let Err(e) = save_ignored_duplicates(&ignored_duplicates_path(), &self.ignored_duplicates) {
+            self.status_message = fmt(self.i18n.get(TranslationKey::DuplicatesSaveFailed), &[&e.to_string()]);
+        }
     }
 
     /// The mod passes the chips and the search text `query` (lower case) of a list, as the
@@ -4378,6 +4597,37 @@ impl App {
                 self.status_message = fmt(self.i18n.get(TranslationKey::SetsDuplicated), &[name, &copy]);
             }
             Err(e) => self.status_message = fmt(self.i18n.get(TranslationKey::SetsWriteError), &[&e.to_string()]),
+        }
+    }
+
+    /// "Merge with…" (F9 of the plan): a new set "A + B" with the mods of both in load
+    /// order; the two sets stay as they are.
+    pub fn merge_modlists(&mut self, first: &str, second: &str) {
+        let t = self.i18n;
+        let find = |name: &str| self.modlists.iter().find(|l| l.name == name).cloned();
+        let (Some(dir), Some(a), Some(b)) = (self.modlists_folder(), find(first), find(second)) else {
+            return;
+        };
+        let mut entries = crate::modlists::merge(&a, &b);
+        let ids: Vec<String> = entries.iter().map(|e| e.id.clone()).collect();
+        let place: HashMap<String, usize> = sort_load_order_with_db(&ids, &self.all_mods, Some(&self.community_db))
+            .into_iter()
+            .enumerate()
+            .map(|(i, id)| (id.to_lowercase(), i))
+            .collect();
+        entries.sort_by_key(|e| place.get(&e.id).copied().unwrap_or(usize::MAX));
+        let name = crate::modlists::unique_name(&dir, &format!("{first} + {second}"));
+        let path = crate::modlists::path_for(&dir, &name);
+        match crate::modlists::write_rml(&path, &self.game_version_for_sets(), &entries) {
+            Ok(()) => {
+                self.refresh_modlists();
+                self.selected_modlist = Some(name.clone());
+                self.status_message = fmt(
+                    t.get(TranslationKey::SetsMerged),
+                    &[first, second, &name, &entries.len().to_string()],
+                );
+            }
+            Err(e) => self.status_message = fmt(t.get(TranslationKey::SetsWriteError), &[&e.to_string()]),
         }
     }
 
@@ -6410,6 +6660,27 @@ impl App {
                 tr!("Оставить", "Keep them", "保留"),
                 tr!("Удалить их тоже", "Delete them too", "也一起删除"),
             ),
+            PendingQuestion::RestoreVersion(id) => {
+                let name = self.mod_display_name(id);
+                let date = self
+                    .saved_version(id)
+                    .map(|v| crate::ui::components::local_date_time(v.saved_at))
+                    .unwrap_or_default();
+                let subscription = self
+                    .find_mod(id)
+                    .is_some_and(|m| m.origin == crate::models::ModOrigin::Workshop);
+                let body = if subscription {
+                    TranslationKey::VersionsRestoreBodyWorkshop
+                } else {
+                    TranslationKey::VersionsRestoreBodyLocal
+                };
+                (
+                    self.i18n.get(TranslationKey::VersionsRestoreTitle),
+                    fmt(self.i18n.get(body), &[&name, &date]),
+                    self.i18n.get(TranslationKey::VersionsRestoreBtn),
+                    self.i18n.get(TranslationKey::BtnCancel),
+                )
+            }
             PendingQuestion::VramWarning {
                 estimated_bytes,
                 total_vram_bytes,
@@ -6512,8 +6783,10 @@ impl App {
                     if crate::ui::components::secondary_button(ui, secondary).clicked() {
                         answer = Answer::Secondary;
                     }
-                    let own_cancel = matches!(question, PendingQuestion::LegacyDds(_))
-                        || (vram_waylith && matches!(question, PendingQuestion::VramWarning { .. }));
+                    let own_cancel = matches!(
+                        question,
+                        PendingQuestion::LegacyDds(_) | PendingQuestion::RestoreVersion(_)
+                    ) || (vram_waylith && matches!(question, PendingQuestion::VramWarning { .. }));
                     if !own_cancel
                         && crate::ui::components::secondary_button(ui, self.i18n.get(TranslationKey::BtnCancel))
                             .clicked()
@@ -6545,6 +6818,7 @@ impl App {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
             (PendingQuestion::LegacyDds(paths), Answer::Secondary) => self.delete_unlogged_dds(paths),
+            (PendingQuestion::RestoreVersion(id), Answer::Primary) => self.restore_version_now(&id),
             (PendingQuestion::VramWarning { .. }, Answer::Primary) if vram_waylith => self.launch_game_now(),
             (PendingQuestion::VramWarning { .. }, Answer::Primary) => {
                 self.current_tab = AppTab::Optimizer;
@@ -6956,6 +7230,26 @@ mod tests {
 
         assert!(InactiveSort::Subscribers.needs_workshop() && InactiveSort::Updated.needs_workshop());
         assert!(!InactiveSort::Size.needs_workshop());
+    }
+
+    #[test]
+    fn dlcs_a_mod_requires() {
+        let m = ModInfo {
+            dependencies: vec![
+                " Ludeon.RimWorld.Biotech ".into(),
+                "brrainz.harmony".into(),
+                "ludeon.rimworld.royalty".into(),
+                "ludeon.rimworld".into(),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            required_dlcs(&m),
+            ["ludeon.rimworld.royalty", "ludeon.rimworld.biotech"],
+            "DLC order, Core is not a DLC"
+        );
+        assert_eq!(dlc_name("ludeon.rimworld.biotech"), "Biotech");
+        assert!(required_dlcs(&ModInfo::default()).is_empty());
     }
 
     /// "Auto-fix" on the real mods and the saved list, in memory only (run by hand:
