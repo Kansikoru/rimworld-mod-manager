@@ -24,6 +24,11 @@ pub struct RemoteItem {
     /// Game versions from the tags: "1.6", "1.7"...
     pub versions: Vec<String>,
     pub title: String,
+    /// Current subscribers, people who added it to favourites, size in bytes
+    /// (sorting the available mods).
+    pub subscriptions: u64,
+    pub favorited: u64,
+    pub file_size: u64,
 }
 
 /// One installed mod to check.
@@ -100,12 +105,22 @@ pub fn parse_details(json: &str) -> Result<HashMap<String, RemoteItem>, String> 
             })
             .unwrap_or_default();
         let title = item["title"].as_str().unwrap_or_default().to_string();
+        // Steam sends some numbers as strings ("file_size": "123").
+        let number = |key: &str| {
+            item[key]
+                .as_u64()
+                .or_else(|| item[key].as_str().and_then(|s| s.parse().ok()))
+                .unwrap_or(0)
+        };
         out.insert(
             id.to_string(),
             RemoteItem {
                 time_updated,
                 versions,
                 title,
+                subscriptions: number("subscriptions"),
+                favorited: number("favorited"),
+                file_size: number("file_size"),
             },
         );
     }
@@ -434,6 +449,7 @@ mod tests {
 
     const DETAILS: &str = r#"{"response":{"result":1,"resultcount":3,"publishedfiledetails":[
         {"publishedfileid":"2009463077","result":1,"title":"Harmony","time_updated":1792065891,
+         "subscriptions":412345,"favorited":9100,"file_size":"8306239",
          "tags":[{"tag":"Mod"},{"tag":"1.7"},{"tag":"1.6"}]},
         {"publishedfileid":"730936602","result":1,"title":"Achtung!","time_updated":1786739756,
          "tags":[{"tag":"Mod"},{"tag":"1.6"},{"tag":"1.5"}]},
@@ -456,6 +472,10 @@ mod tests {
         assert_eq!(items.len(), 2, "not-found items are skipped");
         assert_eq!(items["2009463077"].versions, ["1.7", "1.6"]);
         assert_eq!(items["730936602"].time_updated, 1786739756);
+        let harmony = &items["2009463077"];
+        assert_eq!((harmony.subscriptions, harmony.favorited), (412345, 9100));
+        assert_eq!(harmony.file_size, 8306239, "Steam sends the size as a string");
+        assert_eq!(items["730936602"].subscriptions, 0, "missing numbers are 0");
         assert!(parse_details("not json").is_err());
     }
 

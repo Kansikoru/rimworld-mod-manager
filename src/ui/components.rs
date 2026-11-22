@@ -57,6 +57,15 @@ pub fn local_date_time(unix_secs: u64) -> String {
     utc.with_timezone(&chrono::Local).format(format).to_string()
 }
 
+/// Unix time as a local date: "26.10.2026" (Russian) or "2026-10-26".
+pub fn local_date(unix_secs: u64) -> String {
+    let Some(utc) = chrono::DateTime::from_timestamp(unix_secs as i64, 0) else {
+        return String::new();
+    };
+    let format = crate::i18n::tr!("%d.%m.%Y", "%Y-%m-%d", "%Y-%m-%d");
+    utc.with_timezone(&chrono::Local).format(format).to_string()
+}
+
 /// Snaps a coordinate to whole physical pixels: thin icon lines stay sharp.
 fn snap(ui: &Ui, v: f32) -> f32 {
     let ppp = ui.ctx().pixels_per_point();

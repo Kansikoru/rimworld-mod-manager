@@ -69,6 +69,67 @@ pub fn passes_category_filter(filter: &std::collections::HashSet<ModCategory>, m
             .unwrap_or(false)
 }
 
+/// Order of the available mods list (F9 of the plan). `Default` keeps the scan order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InactiveSort {
+    #[default]
+    Default,
+    Name,
+    /// Workshop subscribers, most first (fetched from Steam when chosen).
+    Subscribers,
+    /// Latest Workshop update, newest first.
+    Updated,
+    /// Folder size on disk, largest first.
+    Size,
+    /// Folder created (mod downloaded or copied), newest first.
+    Added,
+}
+
+impl InactiveSort {
+    pub const ALL: [InactiveSort; 6] = [
+        InactiveSort::Default,
+        InactiveSort::Name,
+        InactiveSort::Subscribers,
+        InactiveSort::Updated,
+        InactiveSort::Size,
+        InactiveSort::Added,
+    ];
+
+    pub fn key(self) -> TranslationKey {
+        match self {
+            InactiveSort::Default => TranslationKey::SortDefault,
+            InactiveSort::Name => TranslationKey::SortName,
+            InactiveSort::Subscribers => TranslationKey::SortSubscribers,
+            InactiveSort::Updated => TranslationKey::SortUpdated,
+            InactiveSort::Size => TranslationKey::SortSize,
+            InactiveSort::Added => TranslationKey::SortAdded,
+        }
+    }
+
+    /// Needs Steam's data of the Workshop items.
+    pub fn needs_workshop(self) -> bool {
+        matches!(self, InactiveSort::Subscribers | InactiveSort::Updated)
+    }
+}
+
+/// Folder size in bytes (all files below it).
+pub fn folder_size(dir: &Path) -> u64 {
+    walkdir::WalkDir::new(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.metadata().ok())
+        .filter(|md| md.is_file())
+        .map(|md| md.len())
+        .sum()
+}
+
+/// When the folder was created (Unix seconds), or modified where creation isn't known.
+pub fn folder_added(dir: &Path) -> Option<u64> {
+    let md = std::fs::metadata(dir).ok()?;
+    let t = md.created().or_else(|_| md.modified()).ok()?;
+    t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeleteKind {
     /// "Delete all translations" for the selected language
@@ -539,6 +600,20 @@ pub struct App {
     pub filter_no_version: bool,
     /// Show only mods from the game's Mods folder (not Workshop, not Core/DLC).
     pub filter_local: bool,
+    /// Show only Workshop subscriptions (not Core/DLC). Never on together with `filter_local`.
+    pub filter_workshop: bool,
+    /// Colour marks of mods (`mod_colors.rs`) and the colours shown (empty: all).
+    pub mod_colors: crate::mod_colors::Marks,
+    pub color_filter: std::collections::HashSet<crate::mod_colors::ModColor>,
+    /// Order of the available mods list and the data it needs, loaded when first chosen:
+    /// Steam's details of the Workshop items (by Workshop ID), folder sizes and creation
+    /// dates (by lowercase package ID).
+    pub inactive_sort: InactiveSort,
+    pub workshop_stats: Option<HashMap<String, crate::mod_updates::RemoteItem>>,
+    workshop_stats_rx: Option<Receiver<Result<HashMap<String, crate::mod_updates::RemoteItem>, String>>>,
+    pub mod_sizes: Option<HashMap<String, u64>>,
+    mod_sizes_rx: Option<Receiver<HashMap<String, u64>>>,
+    pub mod_added: Option<HashMap<String, u64>>,
     /// Narrow window: the Mods tab shows one list; this says which one.
     pub mods_show_active: bool,
     /// Narrow window: the category chips are folded behind a "Filters" button.
@@ -889,6 +964,15 @@ impl App {
             filter_updates: false,
             filter_no_version: false,
             filter_local: false,
+            filter_workshop: false,
+            mod_colors: crate::mod_colors::load(&crate::mod_colors::marks_path()),
+            color_filter: std::collections::HashSet::new(),
+            inactive_sort: InactiveSort::Default,
+            workshop_stats: None,
+            workshop_stats_rx: None,
+            mod_sizes: None,
+            mod_sizes_rx: None,
+            mod_added: None,
             mods_show_active: true,
             show_filter_chips: false,
             // An unfinished search opens again where it stopped.
@@ -1005,6 +1089,25 @@ impl App {
 
     /// Picks up finished background tasks (called every frame).
     fn poll_background_tasks(&mut self) {
+        // Data for the order of the available mods: what failed sorts as missing.
+        if let Some(rx) = &self.workshop_stats_rx {
+            if let Ok(result) = rx.try_recv() {
+                self.workshop_stats_rx = None;
+                match result {
+                    Ok(stats) => self.workshop_stats = Some(stats),
+                    Err(e) => {
+                        self.status_message = fmt(self.i18n.get(TranslationKey::SortWorkshopError), &[&e]);
+                        self.workshop_stats = Some(HashMap::new());
+                    }
+                }
+            }
+        }
+        if let Some(rx) = &self.mod_sizes_rx {
+            if let Ok(sizes) = rx.try_recv() {
+                self.mod_sizes_rx = None;
+                self.mod_sizes = Some(sizes);
+            }
+        }
         if let Some(rx) = &self.workshop_index_rx {
             if let Ok((downloaded, result)) = rx.try_recv() {
                 self.workshop_index_rx = None;
@@ -1675,6 +1778,13 @@ impl App {
         let mut mods = res.mods;
         crate::categories::assign_categories(&mut mods, &self.category_overrides);
         self.all_mods = mods;
+        // Sizes and dates of the old folders: loaded again for the chosen order.
+        self.mod_sizes = None;
+        self.mod_sizes_rx = None;
+        self.mod_added = None;
+        if matches!(self.inactive_sort, InactiveSort::Size | InactiveSort::Added) {
+            self.set_inactive_sort(self.inactive_sort);
+        }
         self.duplicate_mods = res.duplicates;
         self.opt_wrong_orientation = res.optimizer_dds;
         // Sets can be added or changed in the game itself: re-read them with the mods.
@@ -3580,9 +3690,141 @@ impl App {
         let has_update = m.is_some_and(|m| self.mod_update(&m.package_id).is_some());
         let lacks_version = m.is_some_and(|m| crate::version_check::supports_version(m, game_mm) == Some(false));
         let local = m.is_some_and(|m| self.is_local_mod(m));
+        let workshop = m.is_some_and(|m| self.is_workshop_mod(m));
+        let colored = self.color_filter.is_empty()
+            || m.and_then(|m| self.mod_colors.get(&m.package_id.to_lowercase()))
+                .is_some_and(|c| self.color_filter.contains(c));
         (has_update || !self.filter_updates)
             && (lacks_version || !self.filter_no_version)
             && (local || !self.filter_local)
+            && (workshop || !self.filter_workshop)
+            && colored
+    }
+
+    /// A Steam Workshop subscription (not Core/DLC).
+    pub fn is_workshop_mod(&self, m: &ModInfo) -> bool {
+        m.origin == crate::models::ModOrigin::Workshop && !self.is_official_mod(m)
+    }
+
+    /// Some chip filter is on: "Enable All" / "Disable All" act on the shown mods only.
+    pub fn filters_on(&self) -> bool {
+        !self.category_filter.is_empty()
+            || self.filter_updates
+            || self.filter_no_version
+            || self.filter_local
+            || self.filter_workshop
+            || !self.color_filter.is_empty()
+    }
+
+    /// The mod passes the chips and the search text `query` (lower case) of a list, as the
+    /// list draws it: the available list also searches authors (`by_author`).
+    fn mod_shown(&self, m: Option<&ModInfo>, id: &str, query: &str, game_mm: Option<&str>, by_author: bool) -> bool {
+        let text_ok = query.is_empty()
+            || id.to_lowercase().contains(query)
+            || m.is_some_and(|m| {
+                m.name.to_lowercase().contains(query) || (by_author && m.author.to_lowercase().contains(query))
+            });
+        text_ok && passes_category_filter(&self.category_filter, m) && self.passes_extra_filters(m, game_mm)
+    }
+
+    // ----- Colour marks (F9 of the plan) -----
+
+    /// Gives the mods `ids` the colour `color` (`None` takes it away) and saves the marks.
+    pub fn set_mod_color(&mut self, ids: &[String], color: Option<crate::mod_colors::ModColor>) {
+        crate::mod_colors::set(&mut self.mod_colors, ids, color);
+        if let Err(e) = crate::mod_colors::save(&crate::mod_colors::marks_path(), &self.mod_colors) {
+            self.status_message = fmt(self.i18n.get(TranslationKey::ColorSaveFailed), &[&e.to_string()]);
+        }
+        // A colour nobody has any more can't stay a filter.
+        let used: std::collections::HashSet<_> = self.mod_colors.values().copied().collect();
+        self.color_filter.retain(|c| used.contains(c));
+    }
+
+    pub fn mod_color(&self, id: &str) -> Option<crate::mod_colors::ModColor> {
+        self.mod_colors.get(&id.to_lowercase()).copied()
+    }
+
+    /// Installed mods (not Core/DLC) with the colour `color`, for deleting a whole group.
+    pub fn mods_with_color(&self, color: crate::mod_colors::ModColor) -> Vec<String> {
+        self.all_mods
+            .iter()
+            .filter(|m| !self.is_official_mod(m) && self.mod_color(&m.package_id) == Some(color))
+            .map(|m| m.package_id.clone())
+            .collect()
+    }
+
+    // ----- Order of the available mods (F9 of the plan) -----
+
+    /// Chooses the order; loads what it needs the first time (Steam's Workshop details,
+    /// folder sizes in the background, folder dates at once).
+    pub fn set_inactive_sort(&mut self, sort: InactiveSort) {
+        self.inactive_sort = sort;
+        if sort.needs_workshop() && self.workshop_stats.is_none() && self.workshop_stats_rx.is_none() {
+            let ids: Vec<String> = self
+                .all_mods
+                .iter()
+                .filter(|m| !self.is_official_mod(m))
+                .filter_map(workshop_id_of)
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            if ids.is_empty() {
+                self.workshop_stats = Some(HashMap::new());
+            } else {
+                self.workshop_stats_rx = Some(self.spawn_task(move || crate::mod_updates::fetch_details(&ids)));
+            }
+        }
+        if sort == InactiveSort::Size && self.mod_sizes.is_none() && self.mod_sizes_rx.is_none() {
+            let dirs: Vec<(String, PathBuf)> = self
+                .all_mods
+                .iter()
+                .map(|m| (m.package_id.to_lowercase(), m.dir_path.clone()))
+                .collect();
+            self.mod_sizes_rx =
+                Some(self.spawn_task(move || dirs.into_iter().map(|(id, dir)| (id, folder_size(&dir))).collect()));
+        }
+        if sort == InactiveSort::Added && self.mod_added.is_none() {
+            self.mod_added = Some(
+                self.all_mods
+                    .iter()
+                    .filter_map(|m| Some((m.package_id.to_lowercase(), folder_added(&m.dir_path)?)))
+                    .collect(),
+            );
+        }
+    }
+
+    /// The data for the chosen order is still loading.
+    pub fn inactive_sort_loading(&self) -> bool {
+        match self.inactive_sort {
+            s if s.needs_workshop() => self.workshop_stats_rx.is_some(),
+            InactiveSort::Size => self.mod_sizes_rx.is_some(),
+            _ => false,
+        }
+    }
+
+    /// The number the chosen order sorts `m` by (bigger first); `None` goes to the end.
+    pub fn inactive_sort_value(&self, m: &ModInfo) -> Option<u64> {
+        let remote = || {
+            let id = workshop_id_of(m)?;
+            self.workshop_stats.as_ref()?.get(&id)
+        };
+        let key = m.package_id.to_lowercase();
+        match self.inactive_sort {
+            InactiveSort::Default | InactiveSort::Name => None,
+            InactiveSort::Subscribers => remote().map(|r| r.subscriptions),
+            InactiveSort::Updated => remote().map(|r| r.time_updated),
+            InactiveSort::Size => self.mod_sizes.as_ref()?.get(&key).copied(),
+            InactiveSort::Added => self.mod_added.as_ref()?.get(&key).copied(),
+        }
+    }
+
+    /// Puts the available mods in the chosen order (stable: equal ones keep their place).
+    pub fn sort_inactive(&self, mods: &mut [&ModInfo]) {
+        match self.inactive_sort {
+            InactiveSort::Default => {}
+            InactiveSort::Name => mods.sort_by(|a, b| a.name_lower.cmp(&b.name_lower)),
+            _ => mods.sort_by_key(|m| std::cmp::Reverse(self.inactive_sort_value(m))),
+        }
     }
 
     // ----- Broken-mod search (F8) -----
@@ -4299,16 +4541,44 @@ impl App {
         add_active_id(&mut self.active_mods, id)
     }
 
+    /// "Enable All": every mod, or only the available mods the chips and the search show.
     pub fn activate_all_mods(&mut self) {
-        let ids: Vec<String> = self.all_mods.iter().map(|m| m.package_id.clone()).collect();
+        let ids: Vec<String> = if self.filters_on() {
+            let game_mm = self.steam_paths.game_major_minor();
+            let query = self.mod_search_query.trim().to_lowercase();
+            self.all_mods
+                .iter()
+                .filter(|m| self.mod_shown(Some(m), &m.package_id, &query, game_mm.as_deref(), true))
+                .map(|m| m.package_id.clone())
+                .collect()
+        } else {
+            self.all_mods.iter().map(|m| m.package_id.clone()).collect()
+        };
         for id in ids {
             self.activate_mod(&id);
         }
         self.validate_deps();
     }
 
+    /// "Disable All": every mod but Core, or only the active mods the chips and the search show.
     pub fn deactivate_all_mods(&mut self) {
-        self.active_mods.retain(|id| is_protected_package_id(id));
+        if self.filters_on() {
+            let game_mm = self.steam_paths.game_major_minor();
+            let query = self.active_search_query.trim().to_lowercase();
+            let shown: std::collections::HashSet<String> = self
+                .active_mods
+                .iter()
+                .filter(|id| {
+                    let m = lookup_mod(&self.mod_index, &self.all_mods, id);
+                    self.mod_shown(m, id, &query, game_mm.as_deref(), false)
+                })
+                .map(|id| id.to_lowercase())
+                .collect();
+            self.active_mods
+                .retain(|id| is_protected_package_id(id) || !shown.contains(&id.to_lowercase()));
+        } else {
+            self.active_mods.retain(|id| is_protected_package_id(id));
+        }
         self.validate_deps();
     }
 
@@ -6671,6 +6941,22 @@ pub fn is_verified_launch_log(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn folder_size_and_date_for_sorting() {
+        let dir = std::env::temp_dir().join(format!("rmm_folder_size_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("Textures")).unwrap();
+        std::fs::write(dir.join("About.xml"), [0u8; 100]).unwrap();
+        std::fs::write(dir.join("Textures").join("a.dds"), [0u8; 400]).unwrap();
+        assert_eq!(folder_size(&dir), 500, "files below the folder count too");
+        assert!(folder_added(&dir).is_some_and(|t| t > 1_700_000_000));
+        assert_eq!(folder_size(&dir.join("missing")), 0);
+        assert_eq!(folder_added(&dir.join("missing")), None);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(InactiveSort::Subscribers.needs_workshop() && InactiveSort::Updated.needs_workshop());
+        assert!(!InactiveSort::Size.needs_workshop());
+    }
 
     /// "Auto-fix" on the real mods and the saved list, in memory only (run by hand:
     /// `cargo test live_auto_fix -- --ignored --nocapture`).

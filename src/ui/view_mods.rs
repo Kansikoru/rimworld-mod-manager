@@ -371,6 +371,67 @@ fn remove_mods_items(
     item(ui, text, DeleteKind::Mods, true);
 }
 
+/// The mod's colour mark (F9 of the plan): a small dot before its name.
+fn color_dot(ui: &mut Ui, color: Option<crate::mod_colors::ModColor>, t: crate::i18n::I18n) {
+    if let Some(c) = color {
+        let [r, g, b] = c.rgb();
+        ui.add(svg_icon(ICON_DOT, Vec2::splat(10.0), Color32::from_rgb(r, g, b)))
+            .on_hover_text(t.get(c.key()));
+    }
+}
+
+/// "Colour" submenu of a mod's menu: this mod, or every selected one when the row is part
+/// of a selection. `out` gets the mods and the colour (`None`: no colour).
+fn color_context_menu(
+    ui: &mut Ui,
+    t: crate::i18n::I18n,
+    lists: &ModLists,
+    pkg_id: &str,
+    current: Option<crate::mod_colors::ModColor>,
+    out: &mut Option<(Vec<String>, Option<crate::mod_colors::ModColor>)>,
+) {
+    let in_selection = lists.selected.len() > 1 && lists.selected.iter().any(|s| s.eq_ignore_ascii_case(pkg_id));
+    let ids: Vec<String> = if in_selection {
+        lists.selected.iter().cloned().collect()
+    } else {
+        vec![pkg_id.to_string()]
+    };
+    let title = if in_selection {
+        fmt(t.get(TranslationKey::ModsCtxColorSelected), &[&ids.len().to_string()])
+    } else {
+        t.get(TranslationKey::ModsCtxColor).to_string()
+    };
+    ui.menu_button(title, |ui| {
+        for c in crate::mod_colors::ModColor::ALL {
+            let [r, g, b] = c.rgb();
+            let text = egui::RichText::new(format!("●  {}", t.get(c.key()))).color(Color32::from_rgb(r, g, b));
+            if ui.selectable_label(!in_selection && current == Some(c), text).clicked() {
+                *out = Some((ids.clone(), Some(c)));
+                ui.close();
+            }
+        }
+        if in_selection || current.is_some() {
+            ui.separator();
+            if ui.button(t.get(TranslationKey::ModsCtxColorNone)).clicked() {
+                *out = Some((ids.clone(), None));
+                ui.close();
+            }
+        }
+    });
+}
+
+/// What the chosen order of the available list sorts a mod by, for a muted tag in its row.
+fn sort_value_text(app: &App, m: &ModInfo, t: crate::i18n::I18n) -> Option<String> {
+    use crate::app::InactiveSort;
+    let value = app.inactive_sort_value(m)?;
+    Some(match app.inactive_sort {
+        InactiveSort::Subscribers => fmt(t.get(TranslationKey::SortSubscribersValue), &[&value.to_string()]),
+        InactiveSort::Size => crate::workshop_browse::human_size(value),
+        InactiveSort::Updated | InactiveSort::Added => local_date(value),
+        InactiveSort::Default | InactiveSort::Name => return None,
+    })
+}
+
 /// Dragged rows are drawn faded, so it is clear what is being moved.
 fn fade_row(ui: &Ui, rect: egui::Rect) {
     ui.painter()
@@ -441,8 +502,17 @@ fn render_mods_main(app: &mut App, ui: &mut Ui, side: bool) {
         let scanning = app.is_rescanning();
         let mut library: Vec<(egui::ImageSource<'static>, &str)> = vec![
             (ICON_REFRESH, t.get(TranslationKey::BtnRescanMods)),
-            (ICON_CHECK_ALL, t.get(TranslationKey::BtnEnableAll)),
-            (ICON_X_ALL, t.get(TranslationKey::BtnDisableAll)),
+            // With a chip filter on they act on the shown mods only, and say so.
+            if app.filters_on() {
+                (ICON_CHECK_ALL, t.get(TranslationKey::BtnEnableShown))
+            } else {
+                (ICON_CHECK_ALL, t.get(TranslationKey::BtnEnableAll))
+            },
+            if app.filters_on() {
+                (ICON_X_ALL, t.get(TranslationKey::BtnDisableShown))
+            } else {
+                (ICON_X_ALL, t.get(TranslationKey::BtnDisableAll))
+            },
             (ICON_STEAM, t.get(TranslationKey::UpdatesBtn)),
         ];
         let checking_updates = app.checking_mod_updates();
@@ -517,12 +587,15 @@ fn render_mods_main(app: &mut App, ui: &mut Ui, side: bool) {
             let clicked = ui
                 .add_enabled_ui(!busy, |ui| {
                     let resp = secondary_button_icon(ui, icon.clone(), label);
+                    let shown_only = (i == 1 || i == 2) && app.filters_on();
                     let hint = if i == 3 {
                         t.get(TranslationKey::UpdatesBtnHint)
+                    } else if shown_only {
+                        t.get(TranslationKey::BtnShownHint)
                     } else {
                         *text
                     };
-                    if compact || i == 3 {
+                    if compact || i == 3 || shown_only {
                         resp.on_hover_text(hint)
                     } else {
                         resp
@@ -1247,9 +1320,11 @@ fn update_badge(
 fn filters_toggle(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
     let selected = app.category_filter.len()
+        + app.color_filter.len()
         + usize::from(app.filter_updates)
         + usize::from(app.filter_no_version)
-        + usize::from(app.filter_local);
+        + usize::from(app.filter_local)
+        + usize::from(app.filter_workshop);
     let label = if selected > 0 {
         format!("{} · {}", t.get(TranslationKey::ModsFiltersBtn), selected)
     } else {
@@ -1346,6 +1421,8 @@ fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
         .count();
     let updates = app.mod_updates.as_ref().map(|r| r.outdated_count()).unwrap_or(0);
     let local = app.all_mods.iter().filter(|m| app.is_local_mod(m)).count();
+    let workshop = app.all_mods.iter().filter(|m| app.is_workshop_mod(m)).count();
+    let colors = crate::mod_colors::counts(&app.mod_colors, app.all_mods.iter().map(|m| m.package_id.as_str()));
 
     // Narrow window: the chips take many rows, so they fold behind a "Filters" button
     // (drawn here, or already drawn by the caller next to the list switch).
@@ -1362,6 +1439,7 @@ fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
     }
 
     let mut update_all = false;
+    let mut delete_color: Option<crate::mod_colors::ModColor> = None;
     // Mods SteamCMD can update (the Steam client updates its own subscriptions).
     let updatable = if app.steamcmd_active() {
         app.steamcmd_updatable_ids().len()
@@ -1370,21 +1448,55 @@ fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
     };
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
-        let all_selected =
-            app.category_filter.is_empty() && !app.filter_updates && !app.filter_no_version && !app.filter_local;
         if chip(
             ui,
             None,
             t.get(TranslationKey::CategoriesAll),
             app.all_mods.len(),
-            all_selected,
+            !app.filters_on(),
         )
         .clicked()
         {
             app.category_filter.clear();
+            app.color_filter.clear();
             app.filter_updates = false;
             app.filter_no_version = false;
             app.filter_local = false;
+            app.filter_workshop = false;
+        }
+        // Colour marks: a chip per colour in use; right-click deletes the whole group.
+        for (color, n) in &colors {
+            let selected = app.color_filter.contains(color);
+            let [r, g, b] = color.rgb();
+            let resp = chip(
+                ui,
+                Some((ICON_DOT, Color32::from_rgb(r, g, b))),
+                t.get(color.key()),
+                *n,
+                selected,
+            )
+            .on_hover_text(t.get(TranslationKey::ColorChipHint));
+            if resp.clicked() {
+                if selected {
+                    app.color_filter.remove(color);
+                } else {
+                    app.color_filter.insert(*color);
+                }
+            }
+            resp.context_menu(|ui| {
+                let removable = app.mods_with_color(*color).len();
+                if removable > 0
+                    && ui
+                        .button(
+                            egui::RichText::new(fmt(t.get(TranslationKey::ColorDeleteAll), &[&removable.to_string()]))
+                                .color(THEME.accent_rose),
+                        )
+                        .clicked()
+                {
+                    delete_color = Some(*color);
+                    ui.close();
+                }
+            });
         }
         // Status filters: a newer Workshop version, no support for the installed game version.
         if updates > 0 {
@@ -1441,6 +1553,21 @@ fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
             .clicked()
         {
             app.filter_local = !app.filter_local;
+            app.filter_workshop = false;
+        }
+        if workshop > 0
+            && chip(
+                ui,
+                Some((ICON_STATUS_WORKSHOP, THEME.accent_info)),
+                t.get(TranslationKey::WorkshopChip),
+                workshop,
+                app.filter_workshop,
+            )
+            .on_hover_text(t.get(TranslationKey::WorkshopChipHint))
+            .clicked()
+        {
+            app.filter_workshop = !app.filter_workshop;
+            app.filter_local = false;
         }
         for cat in ModCategory::ALL {
             let Some(n) = counts.get(&cat) else {
@@ -1468,6 +1595,10 @@ fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
     });
     if update_all {
         app.update_outdated_mods();
+    }
+    if let Some(color) = delete_color {
+        let ids = app.mods_with_color(color);
+        app.request_mod_action(DeleteKind::Mods, &ids);
     }
 }
 
@@ -1693,6 +1824,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     let mut move_up_idx = None;
     let mut move_down_idx = None;
     let mut pin_place_id: Option<String> = None;
+    let mut color_set: Option<(Vec<String>, Option<crate::mod_colors::ModColor>)> = None;
     let mut forget_order_id: Option<String> = None;
     let mut deactivate_idx = None;
     let mut enable_dep_id = None;
@@ -1835,6 +1967,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                 {
                                     origin_icon(ui, m.origin, t);
                                 }
+                                color_dot(ui, app.mod_colors.get(&pkg_id.to_lowercase()).copied(), t);
 
                                 // Mod Name (selectable)
                                 let name_text = egui::RichText::new(display_name)
@@ -2008,6 +2141,19 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                             &mut cat_reset,
                                         );
                                     }
+                                    color_context_menu(
+                                        ui,
+                                        t,
+                                        &ModLists {
+                                            selected: &app.selected_mod_ids,
+                                            active: &app.active_mods,
+                                            all: &app.all_mods,
+                                            index: &app.mod_index,
+                                        },
+                                        pkg_id,
+                                        app.mod_colors.get(&pkg_id.to_lowercase()).copied(),
+                                        &mut color_set,
+                                    );
                                     remove_mods_items(
                                         ui,
                                         t,
@@ -2310,6 +2456,9 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
         app.subscribe_steam_mod(&ws_id);
     }
     apply_category_actions(app, cat_toggle, cat_reset);
+    if let Some((ids, color)) = color_set {
+        app.set_mod_color(&ids, color);
+    }
 
     if let Some(req_id) = enable_dep_id {
         app.activate_mod(&req_id);
@@ -2378,12 +2527,30 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
         .i18n
         .get(TranslationKey::ModsTotal)
         .replace("{}", &app.all_mods.len().to_string());
+    // Order of the list (F9 of the plan): chosen here, applied at the end of the frame.
+    let current_sort = app.inactive_sort;
+    let sort_loading = app.inactive_sort_loading();
+    let mut new_sort: Option<crate::app::InactiveSort> = None;
     panel_header(
         ui,
         t.get(TranslationKey::AvailableModsTitle),
         inactive_mods.len(),
         |ui| {
             ui.label(egui::RichText::new(total_text).color(THEME.text_muted).size(12.0));
+            if sort_loading {
+                ui.spinner().on_hover_text(t.get(TranslationKey::SortLoading));
+            }
+            egui::ComboBox::from_id_salt("inactive_sort")
+                .selected_text(t.get(current_sort.key()))
+                .show_ui(ui, |ui| {
+                    for sort in crate::app::InactiveSort::ALL {
+                        if ui.selectable_label(sort == current_sort, t.get(sort.key())).clicked() {
+                            new_sort = Some(sort);
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(t.get(TranslationKey::SortHint));
         },
     );
 
@@ -2395,10 +2562,11 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     let mut cat_toggle: Option<(String, ModCategory)> = None;
     let mut cat_reset: Option<String> = None;
     let mut download_dep_ws_id: Option<String> = None;
+    let mut color_set: Option<(Vec<String>, Option<crate::mod_colors::ModColor>)> = None;
     let steamcmd_active = app.steamcmd_active();
 
     // Rows that pass the search and category filter, computed once.
-    let visible_mods: Vec<&ModInfo> = inactive_mods
+    let mut visible_mods: Vec<&ModInfo> = inactive_mods
         .iter()
         .copied()
         .filter(|m| {
@@ -2410,6 +2578,9 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                 && app.passes_extra_filters(Some(m), game_mm.as_deref())
         })
         .collect();
+    app.sort_inactive(&mut visible_mods);
+    // What each row is sorted by, as a muted tag (rows borrow the app field by field).
+    let sort_tags: Vec<Option<String>> = visible_mods.iter().map(|m| sort_value_text(app, m, t)).collect();
     // Visible IDs for Shift-range selection
     let visible_inactive_ids: Vec<String> = visible_mods.iter().map(|m| m.package_id.clone()).collect();
 
@@ -2473,6 +2644,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                                     if !is_official_content(m, game_data.as_deref()) {
                                         origin_icon(ui, m.origin, t);
                                     }
+                                    color_dot(ui, app.mod_colors.get(&m.package_id.to_lowercase()).copied(), t);
 
                                     let name_text = egui::RichText::new(&m.name).color(THEME.text_primary).size(13.0);
                                     let name_resp =
@@ -2588,6 +2760,19 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                                                 &mut cat_reset,
                                             );
                                         }
+                                        color_context_menu(
+                                            ui,
+                                            t,
+                                            &ModLists {
+                                                selected: &app.selected_mod_ids,
+                                                active: &app.active_mods,
+                                                all: &app.all_mods,
+                                                index: &app.mod_index,
+                                            },
+                                            &pkg_id_ctx,
+                                            app.mod_colors.get(&pkg_id_ctx.to_lowercase()).copied(),
+                                            &mut color_set,
+                                        );
                                         remove_mods_items(
                                             ui,
                                             t,
@@ -2629,6 +2814,9 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                                         t,
                                     ) {
                                         open_translations = true;
+                                    }
+                                    if let Some(text) = sort_tags.get(pos).and_then(Option::as_ref) {
+                                        tag_if_fits(ui, text, THEME.text_muted);
                                     }
                                 }
                                 let right_rect = finish_row(ui, &left_ui, &split);
@@ -2745,6 +2933,12 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
         app.subscribe_steam_mod(&ws_id);
     }
     apply_category_actions(app, cat_toggle, cat_reset);
+    if let Some((ids, color)) = color_set {
+        app.set_mod_color(&ids, color);
+    }
+    if let Some(sort) = new_sort {
+        app.set_inactive_sort(sort);
+    }
 
     // Activate all selected (from context menu)
     let to_enable: Vec<String> = if activate_selected {

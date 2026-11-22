@@ -43,6 +43,8 @@ pub const ICON_STATUS_DUPLICATE: ImageSource<'static> = egui::include_image!("..
 pub const ICON_STATUS_CRASH: ImageSource<'static> = egui::include_image!("../../assets/icons/status_crash.svg");
 pub const ICON_STATUS_LOCAL: ImageSource<'static> = egui::include_image!("../../assets/icons/status_local.svg");
 pub const ICON_STATUS_WORKSHOP: ImageSource<'static> = egui::include_image!("../../assets/icons/status_workshop.svg");
+/// A filled circle, tinted with a mod's colour mark.
+pub const ICON_DOT: ImageSource<'static> = egui::include_image!("../../assets/icons/dot.svg");
 
 // Brand (logo.svg is full colour: draw it without tint)
 pub const ICON_LOGO: ImageSource<'static> = egui::include_image!("../../assets/icons/logo.svg");
