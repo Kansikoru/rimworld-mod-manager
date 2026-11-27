@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Threading;
 using RimWorld;
 using Verse;
 
@@ -203,10 +204,11 @@ namespace RimWorldModManagerCompanion
         public static void After(long __state, MethodBase __originalMethod)
         {
             if (__state == 0 || !active) return;
+            // A mod that ticks on several threads calls this at once: the sums are added atomically.
             if (Slots.TryGetValue(__originalMethod, out Slot slot))
             {
-                slot.Time += Stopwatch.GetTimestamp() - __state;
-                slot.Calls++;
+                Interlocked.Add(ref slot.Time, Stopwatch.GetTimestamp() - __state);
+                Interlocked.Increment(ref slot.Calls);
             }
         }
 

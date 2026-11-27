@@ -426,6 +426,7 @@ mod tests {
         assert_eq!(major_minor("1.7.4985 rev1269").as_deref(), Some("1.7"));
         assert_eq!(major_minor("1.6.4871 rev591").as_deref(), Some("1.6"));
         assert_eq!(major_minor("garbage"), None);
+        assert_eq!(major_minor("1.7.4990.1069").as_deref(), Some("1.7"));
     }
 
     fn temp_dir(name: &str) -> PathBuf {

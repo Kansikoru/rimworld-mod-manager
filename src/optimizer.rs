@@ -1244,14 +1244,6 @@ fn detect_vram_registry() -> Option<u64> {
     (max_vram > 0).then_some(max_vram)
 }
 
-/// "1.6" from a game version like "1.6.4633 rev1261".
-pub fn short_game_version(version: &str) -> Option<String> {
-    let mut parts = version.trim().split(|c: char| !c.is_ascii_digit());
-    let major = parts.next().filter(|s| !s.is_empty())?;
-    let minor = parts.next().filter(|s| !s.is_empty())?;
-    Some(format!("{major}.{minor}"))
-}
-
 /// (major, minor) of a folder or section name like "1.6" / "v1.6".
 fn version_of(name: &str) -> Option<(u32, u32)> {
     let name = name.trim().trim_start_matches(['v', 'V']);
@@ -1261,8 +1253,11 @@ fn version_of(name: &str) -> Option<(u32, u32)> {
 
 /// Folders of `<loadFolders>` for `version` (exact, else `default`, else the newest older one).
 fn load_folders_from_xml(xml: &str, version: Option<(u32, u32)>) -> Option<Vec<String>> {
-    let re_open = regex::Regex::new(r"<([vV]\d+\.\d+|default)\s*>").ok()?;
-    let re_li = regex::Regex::new(r"(?s)<li\b[^>]*>(.*?)</li>").ok()?;
+    static RE_OPEN: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"<([vV]\d+\.\d+|default)\s*>").unwrap());
+    static RE_LI: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(?s)<li\b[^>]*>(.*?)</li>").unwrap());
+    let (re_open, re_li) = (&*RE_OPEN, &*RE_LI);
     let mut sections: Vec<(String, &str)> = Vec::new();
     for c in re_open.captures_iter(xml) {
         let (Some(whole), Some(name)) = (c.get(0), c.get(1)) else {
@@ -1298,7 +1293,9 @@ fn load_folders_from_xml(xml: &str, version: Option<(u32, u32)>) -> Option<Vec<S
 /// else the mod root, `Common` and the best version folder (the game's own, or the newest
 /// older one).
 pub fn mod_load_folders(mod_dir: &Path, game_version: Option<&str>) -> Vec<PathBuf> {
-    let version = game_version.and_then(short_game_version).and_then(|v| version_of(&v));
+    let version = game_version
+        .and_then(crate::game_install::major_minor)
+        .and_then(|v| version_of(&v));
     let xml = ["loadFolders.xml", "LoadFolders.xml"]
         .iter()
         .find_map(|n| std::fs::read_to_string(mod_dir.join(n)).ok());
@@ -1624,7 +1621,7 @@ pub fn write_texture_sides_cache(path: &Path, cache: &HashMap<PathBuf, (u64, u32
     for (dir, (fp, odd, all)) in cache {
         text.push_str(&format!("{fp}\t{odd}\t{all}\t{}\n", dir.display()));
     }
-    std::fs::write(path, text)
+    crate::fs_util::write_atomic(path, text)
 }
 
 /// Asynchronous VRAM check for active mods (V2).
@@ -2451,12 +2448,5 @@ mod tests {
         assert_eq!(estimate_mod_vram(&m, GameEngine::Unity, Some("1.5.1"), false), px(64));
 
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn short_game_version_takes_major_and_minor() {
-        assert_eq!(short_game_version("1.6.4633 rev1261").as_deref(), Some("1.6"));
-        assert_eq!(short_game_version("1.7.4990.1069").as_deref(), Some("1.7"));
-        assert_eq!(short_game_version("unknown"), None);
     }
 }

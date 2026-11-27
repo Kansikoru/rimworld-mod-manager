@@ -71,7 +71,7 @@ pub fn fetch(workshop_id: &str) -> Result<Vec<ChangeNote>, String> {
     if !crate::modlists::is_workshop_id(workshop_id) {
         return Ok(Vec::new());
     }
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).build();
+    let agent = crate::steam_web::agent();
     let url = page_url(workshop_id);
     // Steam lets only a few of these pages through in a row from one address and answers
     // the rest with 429; a couple of seconds later it lets the next one in. A client that

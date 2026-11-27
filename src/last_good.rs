@@ -69,7 +69,7 @@ impl LastGoodSnapshot {
             let _ = std::fs::create_dir_all(parent);
         }
         let text = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        std::fs::write(path, text).map_err(|e| e.to_string())
+        crate::fs_util::write_atomic(path, text).map_err(|e| e.to_string())
     }
 
     /// Creates a new snapshot from the currently active mods and their timestamps.

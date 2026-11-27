@@ -533,7 +533,7 @@ pub fn load_overrides(path: &Path) -> HashMap<String, Vec<ModCategory>> {
 
 pub fn save_overrides(path: &Path, overrides: &HashMap<String, Vec<ModCategory>>) -> std::io::Result<()> {
     let text = serde_json::to_string_pretty(overrides).map_err(std::io::Error::other)?;
-    std::fs::write(path, text)
+    crate::fs_util::write_atomic(path, text)
 }
 
 #[cfg(test)]

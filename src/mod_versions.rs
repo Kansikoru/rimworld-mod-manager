@@ -88,17 +88,7 @@ fn folder_for(root: &Path, package_id: &str) -> PathBuf {
 }
 
 fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(to)?;
-    for entry in std::fs::read_dir(from)? {
-        let entry = entry?;
-        let (src, dst) = (entry.path(), to.join(entry.file_name()));
-        if src.is_dir() {
-            copy_dir(&src, &dst)?;
-        } else {
-            std::fs::copy(&src, &dst)?;
-        }
-    }
-    Ok(())
+    crate::fs_util::copy_dir(from, to).map_err(std::io::Error::from)
 }
 
 /// Saves the copies (blocking — call from a background task). A mod whose saved copy

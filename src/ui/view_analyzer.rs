@@ -248,7 +248,6 @@ fn render_overview(app: &mut App, ui: &mut Ui) -> bool {
         return false;
     };
 
-    let is_russian = app.is_russian;
     let (mut save, mut browse) = (false, false);
     card_container(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -308,7 +307,7 @@ fn render_overview(app: &mut App, ui: &mut Ui) -> bool {
             if (!report.culprits.is_empty() || report.total_errors > 0 || report.has_hard_crash)
                 && success_button_icon(ui, ICON_COPY, t.get(TranslationKey::CrashBtnCopyPrompt)).clicked()
             {
-                let prompt = generate_ai_diagnostic_prompt(report, is_russian);
+                let prompt = generate_ai_diagnostic_prompt(report, t.language());
                 ui.ctx().copy_text(prompt);
             }
             save = secondary_button_icon(ui, ICON_SAVE, t.get(TranslationKey::AnalyzerSaveReport)).clicked();

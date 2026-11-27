@@ -4,6 +4,7 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 /// Severity level of a detected crash or issue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -456,6 +457,38 @@ fn analyze_waylith_entries<'a>(
     }
 }
 
+/// Patterns of the 1.6 (Unity) log, compiled once.
+static RE_MONO_CALL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\(Mono JIT Code\)\s+([A-Za-z0-9_\.]+):([A-Za-z0-9_]+)").unwrap());
+static RE_MONO_AT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*at\s+([A-Za-z0-9_\.]+)\.([A-Za-z0-9_<>]+)").unwrap());
+static RE_PREPATCHER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"Prepatcher Error:.*?static\s+.*?\s+([A-Za-z0-9_\.]+)::").unwrap());
+static RE_DEPENDENCY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Mod\s+(.*?)\s+dependency\s+\((.*?)\)").unwrap());
+static RE_CONFIG_ERROR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"Exception in ConfigErrors\(\) of ([A-Za-z0-9_]+):").unwrap());
+static RE_INSTANTIATE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:Error while instantiating class|Exception creating instance of)\s+([A-Za-z0-9_\.]+)").unwrap()
+});
+// The game writes both "Could not resolve cross-reference: No Verse.SoundDef named X found
+// to give to Some.Class ..." and "Could not resolve cross-reference to Verse.ThingDef named X
+// (wanter=costList)".
+static RE_CROSS_REF: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"Could not resolve cross-reference(?::\s*No|\s+to)\s+([A-Za-z0-9_\.]+)\s+named\s+(\S+?)(?:\s+found to give to\s+([A-Za-z0-9_\.]+))?(?:\s|$)",
+    )
+    .unwrap()
+});
+static RE_TEXTURE_ERR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:Could not load UnityEngine\.Texture2D at|Failed to load texture at|Could not find a texture named)\s+([^\s]+)").unwrap()
+});
+static RE_HARMONY_CONFLICT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?:Method not found:\s+'HarmonyLib|MissingMethodException:.*?HarmonyLib|Could not load type 'HarmonyLib)",
+    )
+    .unwrap()
+});
+
 pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
     let mut report = LogReport {
         log_path: log_path.to_path_buf(),
@@ -531,26 +564,6 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
         analyze_waylith_entries(&lines, &matcher, &mut report, &mut culprits_map);
     }
 
-    let re_mono_call = Regex::new(r"\(Mono JIT Code\)\s+([A-Za-z0-9_\.]+):([A-Za-z0-9_]+)").ok();
-    let re_mono_at = Regex::new(r"^\s*at\s+([A-Za-z0-9_\.]+)\.([A-Za-z0-9_<>]+)").ok();
-    let re_prepatcher = Regex::new(r"Prepatcher Error:.*?static\s+.*?\s+([A-Za-z0-9_\.]+)::").ok();
-    let re_dependency = Regex::new(r"Mod\s+(.*?)\s+dependency\s+\((.*?)\)").ok();
-    let re_config_error = Regex::new(r"Exception in ConfigErrors\(\) of ([A-Za-z0-9_]+):").ok();
-    let re_instantiate =
-        Regex::new(r"(?:Error while instantiating class|Exception creating instance of)\s+([A-Za-z0-9_\.]+)").ok();
-    // The game writes both "Could not resolve cross-reference: No Verse.SoundDef named X found
-    // to give to Some.Class ..." and "Could not resolve cross-reference to Verse.ThingDef named X
-    // (wanter=costList)".
-    let re_cross_ref = Regex::new(
-        r"Could not resolve cross-reference(?::\s*No|\s+to)\s+([A-Za-z0-9_\.]+)\s+named\s+(\S+?)(?:\s+found to give to\s+([A-Za-z0-9_\.]+))?(?:\s|$)",
-    )
-    .ok();
-    let re_texture_err = Regex::new(r"(?:Could not load UnityEngine\.Texture2D at|Failed to load texture at|Could not find a texture named)\s+([^\s]+)").ok();
-    let re_harmony_conflict = Regex::new(
-        r"(?:Method not found:\s+'HarmonyLib|MissingMethodException:.*?HarmonyLib|Could not load type 'HarmonyLib)",
-    )
-    .ok();
-
     let mut crash_marker_idx = None;
     // Unity/Mono crash markers only exist in 1.6 and older logs.
     let skip_unity_markers = report.is_waylith;
@@ -580,7 +593,8 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
         let mut found_culprit = false;
 
         for line in stack_slice {
-            if let Some(ref re) = re_mono_call {
+            {
+                let re = &*RE_MONO_CALL;
                 if let Some(caps) = re.captures(line) {
                     let full_class = caps.get(1).map(|m| m.as_str()).unwrap_or("");
                     let method = caps.get(2).map(|m| m.as_str()).unwrap_or("");
@@ -632,7 +646,8 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
 
         if !found_culprit {
             for line in stack_slice {
-                if let Some(ref re) = re_mono_at {
+                {
+                    let re = &*RE_MONO_AT;
                     if let Some(caps) = re.captures(line) {
                         let full_class = caps.get(1).map(|m| m.as_str()).unwrap_or("");
                         let method = caps.get(2).map(|m| m.as_str()).unwrap_or("");
@@ -695,7 +710,8 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
             }
             let excerpt = excerpt_lines.join("\n");
 
-            if let Some(ref re) = re_prepatcher {
+            {
+                let re = &*RE_PREPATCHER;
                 if let Some(caps) = re.captures(line) {
                     let patch_class = caps.get(1).map(|m| m.as_str()).unwrap_or("");
                     if let Some(matched_mod) = matcher.find_mod(patch_class) {
@@ -731,7 +747,8 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
             if count_keyword_errors {
                 report.total_errors += 1;
             }
-            if let Some(ref re) = re_dependency {
+            {
+                let re = &*RE_DEPENDENCY;
                 if let Some(caps) = re.captures(line) {
                     let mod_name = caps.get(1).map(|m| m.as_str()).unwrap_or("");
                     let dep_id = caps.get(2).map(|m| m.as_str()).unwrap_or("");
@@ -782,7 +799,8 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
             }
             let excerpt = excerpt_lines.join("\n");
 
-            if let Some(ref re) = re_config_error {
+            {
+                let re = &*RE_CONFIG_ERROR;
                 if let Some(caps) = re.captures(line) {
                     let def_name = caps.get(1).map(|m| m.as_str()).unwrap_or("");
                     let matched_mod = matcher.find_mod(def_name);
@@ -819,7 +837,8 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
             if count_keyword_errors {
                 report.total_errors += 1;
             }
-            if let Some(ref re) = re_instantiate {
+            {
+                let re = &*RE_INSTANTIATE;
                 if let Some(caps) = re.captures(line) {
                     let class_name = caps.get(1).map(|m| m.as_str()).unwrap_or("");
                     if let Some(matched_mod) = matcher.find_mod(class_name) {
@@ -855,7 +874,8 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
             if count_keyword_errors {
                 report.total_errors += 1;
             }
-            if let Some(ref re) = re_cross_ref {
+            {
+                let re = &*RE_CROSS_REF;
                 if let Some(caps) = re.captures(line) {
                     let def_type = caps.get(1).map(|m| m.as_str()).unwrap_or("");
                     let def_type = def_type.rsplit('.').next().unwrap_or(def_type);
@@ -897,7 +917,8 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
             if count_keyword_errors {
                 report.total_errors += 1;
             }
-            if let Some(ref re) = re_texture_err {
+            {
+                let re = &*RE_TEXTURE_ERR;
                 if let Some(caps) = re.captures(line) {
                     let path = caps.get(1).map(|m| m.as_str()).unwrap_or("");
                     let matched_mod = matcher.find_mod(path);
@@ -936,7 +957,7 @@ pub fn analyze_rimworld_log(log_path: &Path, mods: &[ModInfo]) -> LogReport {
             }
         }
 
-        if re_harmony_conflict.as_ref().is_some_and(|re| re.is_match(line)) {
+        if RE_HARMONY_CONFLICT.is_match(line) {
             if count_keyword_errors {
                 report.total_errors += 1;
             }
@@ -1019,111 +1040,118 @@ fn push_log_data(out: &mut String, report: &LogReport, lang: crate::i18n::Langua
     out.push('\n');
 }
 
-pub fn generate_ai_diagnostic_prompt(report: &LogReport, is_ru: bool) -> String {
+/// "Copy for AI": the request to an AI assistant in the interface language.
+pub fn generate_ai_diagnostic_prompt(report: &LogReport, lang: Language) -> String {
+    let s = |ru: &'static str, en: &'static str, zh: &'static str| match lang {
+        Language::Russian => ru,
+        Language::English => en,
+        Language::Chinese => zh,
+    };
     let mut out = String::new();
 
-    if is_ru {
-        out.push_str("Помоги разобраться с ошибкой или вылетом RimWorld. Ниже данные из Player.log.\n\n");
-        out.push_str(&format!("Файл лога: {}\n", report.log_file_name));
-        out.push_str(&format!("Итог анализа: {}\n", summary_for(report, Language::Russian)));
+    out.push_str(s(
+        "Помоги разобраться с ошибкой или вылетом RimWorld. Ниже данные из Player.log.\n\n",
+        "Help me find the cause of a RimWorld error or crash. Data from Player.log is below.\n\n",
+        "请帮我找出 RimWorld 报错或崩溃的原因。以下是 Player.log 中的数据。\n\n",
+    ));
+    out.push_str(&format!(
+        "{}: {}\n",
+        s("Файл лога", "Log file", "日志文件"),
+        report.log_file_name
+    ));
+    out.push_str(&format!(
+        "{}: {}\n",
+        s("Итог анализа", "Analysis result", "分析结果"),
+        summary_for(report, lang)
+    ));
 
-        out.push_str(if report.is_waylith {
-            "Версия игры: RimWorld 1.7+ (движок Waylith, .NET 10)\n"
-        } else {
-            "Версия игры: RimWorld 1.6 или старше (движок Unity, Mono)\n"
-        });
-
-        if report.has_hard_crash {
-            out.push_str(if report.is_waylith {
-                "Игра вылетела на рабочий стол.\n"
-            } else {
-                "Игра вылетела на рабочий стол (сбой движка Unity).\n"
-            });
-        }
-
-        if !report.culprits.is_empty() {
-            out.push_str("\nМоды, на которые указывает лог:\n\n");
-            for (idx, c) in report.culprits.iter().enumerate() {
-                out.push_str(&format!(
-                    "{}. {} ({})\n",
-                    idx + 1,
-                    c.mod_name,
-                    c.package_id.as_deref().unwrap_or("неизвестен")
-                ));
-                out.push_str(&format!("   Тип: {}\n", c.severity.badge_text(Language::Russian)));
-                out.push_str(&format!("   Ошибка: {}\n", c.headline));
-                out.push_str(&format!("   Подробности: {}\n", c.explanation));
-
-                if !c.stack_trace_excerpt.is_empty() {
-                    out.push_str("   Стек вызовов:\n   ```text\n");
-                    for line in c.stack_trace_excerpt.lines().take(20) {
-                        out.push_str(&format!("     {}\n", line));
-                    }
-                    out.push_str("   ```\n");
-                }
-                out.push('\n');
-            }
-        }
-
-        push_log_data(&mut out, report, crate::i18n::Language::Russian);
-        out.push_str("Вопросы:\n");
-        out.push_str("1. В чём причина сбоя?\n");
-        out.push_str("2. Какой мод виноват и с чем он конфликтует?\n");
-        out.push_str("3. Что сделать: отключить мод, поменять порядок загрузки, обновить мод или поставить патч совместимости?\n");
+    out.push_str(if report.is_waylith {
+        s(
+            "Версия игры: RimWorld 1.7+ (движок Waylith, .NET 10)\n",
+            "Game version: RimWorld 1.7+ (Waylith engine, .NET 10)\n",
+            "游戏版本：RimWorld 1.7+（Waylith 引擎，.NET 10）\n",
+        )
     } else {
-        out.push_str("Help me find the cause of a RimWorld error or crash. Data from Player.log is below.\n\n");
-        out.push_str(&format!("Log file: {}\n", report.log_file_name));
-        out.push_str(&format!(
-            "Analysis result: {}\n",
-            summary_for(report, Language::English)
-        ));
+        s(
+            "Версия игры: RimWorld 1.6 или старше (движок Unity, Mono)\n",
+            "Game version: RimWorld 1.6 or older (Unity engine, Mono)\n",
+            "游戏版本：RimWorld 1.6 或更早（Unity 引擎，Mono）\n",
+        )
+    });
 
+    if report.has_hard_crash {
         out.push_str(if report.is_waylith {
-            "Game version: RimWorld 1.7+ (Waylith engine, .NET 10)\n"
+            s(
+                "Игра вылетела на рабочий стол.\n",
+                "The game crashed to desktop.\n",
+                "游戏崩溃并退回桌面。\n",
+            )
         } else {
-            "Game version: RimWorld 1.6 or older (Unity engine, Mono)\n"
+            s(
+                "Игра вылетела на рабочий стол (сбой движка Unity).\n",
+                "The game crashed to desktop (Unity engine fault).\n",
+                "游戏崩溃并退回桌面（Unity 引擎故障）。\n",
+            )
         });
-
-        if report.has_hard_crash {
-            out.push_str(if report.is_waylith {
-                "The game crashed to desktop.\n"
-            } else {
-                "The game crashed to desktop (Unity engine fault).\n"
-            });
-        }
-
-        if !report.culprits.is_empty() {
-            out.push_str("\nMods the log points to:\n\n");
-            for (idx, c) in report.culprits.iter().enumerate() {
-                out.push_str(&format!(
-                    "{}. {} ({})\n",
-                    idx + 1,
-                    c.mod_name,
-                    c.package_id.as_deref().unwrap_or("unknown")
-                ));
-                out.push_str(&format!("   Type: {}\n", c.severity.badge_text(Language::English)));
-                out.push_str(&format!("   Error: {}\n", c.headline));
-                out.push_str(&format!("   Details: {}\n", c.explanation));
-
-                if !c.stack_trace_excerpt.is_empty() {
-                    out.push_str("   Stack trace:\n   ```text\n");
-                    for line in c.stack_trace_excerpt.lines().take(20) {
-                        out.push_str(&format!("     {}\n", line));
-                    }
-                    out.push_str("   ```\n");
-                }
-                out.push('\n');
-            }
-        }
-
-        push_log_data(&mut out, report, crate::i18n::Language::English);
-        out.push_str("Questions:\n");
-        out.push_str("1. What caused the failure?\n");
-        out.push_str("2. Which mod is at fault and what does it conflict with?\n");
-        out.push_str(
-            "3. What should I do: disable a mod, change the load order, update, or add a compatibility patch?\n",
-        );
     }
+
+    if !report.culprits.is_empty() {
+        out.push_str(s(
+            "\nМоды, на которые указывает лог:\n\n",
+            "\nMods the log points to:\n\n",
+            "\n日志指向的模组：\n\n",
+        ));
+        for (idx, c) in report.culprits.iter().enumerate() {
+            out.push_str(&format!(
+                "{}. {} ({})\n",
+                idx + 1,
+                c.mod_name,
+                c.package_id.as_deref().unwrap_or(s("неизвестен", "unknown", "未知"))
+            ));
+            out.push_str(&format!(
+                "   {}: {}\n",
+                s("Тип", "Type", "类型"),
+                c.severity.badge_text(lang)
+            ));
+            out.push_str(&format!("   {}: {}\n", s("Ошибка", "Error", "错误"), c.headline));
+            out.push_str(&format!(
+                "   {}: {}\n",
+                s("Подробности", "Details", "详情"),
+                c.explanation
+            ));
+
+            if !c.stack_trace_excerpt.is_empty() {
+                out.push_str(&format!(
+                    "   {}:
+   ```text\n",
+                    s("Стек вызовов", "Stack trace", "调用堆栈")
+                ));
+                for line in c.stack_trace_excerpt.lines().take(20) {
+                    out.push_str(&format!("     {}\n", line));
+                }
+                out.push_str("   ```\n");
+            }
+            out.push('\n');
+        }
+    }
+
+    push_log_data(&mut out, report, lang);
+    out.push_str(s("Вопросы:\n", "Questions:\n", "问题：\n"));
+    out.push_str(s(
+        "1. В чём причина сбоя?\n",
+        "1. What caused the failure?\n",
+        "1. 故障的原因是什么？\n",
+    ));
+    out.push_str(s(
+        "2. Какой мод виноват и с чем он конфликтует?\n",
+        "2. Which mod is at fault and what does it conflict with?\n",
+        "2. 是哪个模组出了问题，它和什么冲突？\n",
+    ));
+    out.push_str(s(
+        "3. Что сделать: отключить мод, поменять порядок загрузки, обновить мод или поставить патч совместимости?\n",
+        "3. What should I do: disable a mod, change the load order, update, or add a compatibility patch?\n",
+        "3. 应该怎么做：停用模组、调整加载顺序、更新模组，还是安装兼容补丁？\n",
+    ));
 
     out
 }
@@ -1528,7 +1556,7 @@ Runtime:   .NET 10.0.13-waylithclr.dev
         assert!(!report.crash_excerpt.contains("lib299.dll"));
         assert_eq!(report.recent_errors.len(), 1);
 
-        let prompt = generate_ai_diagnostic_prompt(&report, true);
+        let prompt = generate_ai_diagnostic_prompt(&report, Language::Russian);
         assert!(prompt.contains("DXGI_ERROR_DEVICE_REMOVED"), "{prompt}");
         assert!(prompt.contains("Texture is not readable"));
         let _ = std::fs::remove_dir_all(&base);
@@ -1545,7 +1573,7 @@ Runtime:   .NET 10.0.13-waylithclr.dev
             .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
             .expect("no Player.log");
         let report = analyze_rimworld_log(&path, &[]);
-        println!("{}", generate_ai_diagnostic_prompt(&report, true));
+        println!("{}", generate_ai_diagnostic_prompt(&report, Language::Russian));
     }
 
     #[test]
@@ -1583,9 +1611,12 @@ Runtime:   .NET 10.0.13-waylithclr.dev
             summary_text: "русский текст".into(),
             ..Default::default()
         };
-        let en = generate_ai_diagnostic_prompt(&report, false);
+        let en = generate_ai_diagnostic_prompt(&report, Language::English);
         assert!(en.contains("has 3 errors") && !en.contains("русский"));
-        assert!(generate_ai_diagnostic_prompt(&report, true).contains("найдено ошибок: 3"));
+        assert!(generate_ai_diagnostic_prompt(&report, Language::Russian).contains("найдено ошибок: 3"));
+        // Chinese gets a Chinese request, not the English one.
+        let zh = generate_ai_diagnostic_prompt(&report, Language::Chinese);
+        assert!(zh.contains("日志文件") && !zh.contains("Log file") && !zh.contains("русский"));
     }
 
     #[test]

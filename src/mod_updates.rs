@@ -8,10 +8,9 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
-const DETAILS_URL: &str = "https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/";
-const COLLECTION_URL: &str = "https://api.steampowered.com/ISteamRemoteStorage/GetCollectionDetails/v1/";
+use crate::steam_web;
+
 /// Items per request (Steam accepts more, but smaller requests fail less).
 const BATCH: usize = 100;
 /// File dates are rough: only a difference bigger than this counts as "outdated".
@@ -99,7 +98,7 @@ pub fn parse_details(json: &str) -> Result<HashMap<String, RemoteItem>, String> 
             .map(|tags| {
                 tags.iter()
                     .filter_map(|t| t["tag"].as_str())
-                    .filter(|t| is_version_tag(t))
+                    .filter(|t| steam_web::is_version_tag(t))
                     .map(str::to_string)
                     .collect()
             })
@@ -127,30 +126,14 @@ pub fn parse_details(json: &str) -> Result<HashMap<String, RemoteItem>, String> 
     Ok(out)
 }
 
-/// "1.6", "1.7" — not "Mod" or other tags.
-fn is_version_tag(tag: &str) -> bool {
-    let mut parts = tag.split('.');
-    matches!(
-        (parts.next(), parts.next(), parts.next()),
-        (Some(a), Some(b), None) if !a.is_empty() && !b.is_empty() && a.bytes().all(|c| c.is_ascii_digit()) && b.bytes().all(|c| c.is_ascii_digit())
-    )
-}
-
 /// Asks Steam about the items, in batches.
 pub fn fetch_details(ids: &[String]) -> Result<HashMap<String, RemoteItem>, String> {
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).build();
     let mut out = HashMap::new();
     for chunk in ids.chunks(BATCH) {
-        let mut form: Vec<(String, String)> = vec![("itemcount".into(), chunk.len().to_string())];
-        form.extend(
-            chunk
-                .iter()
-                .enumerate()
-                .map(|(i, id)| (format!("publishedfileids[{i}]"), id.clone())),
-        );
-        let pairs: Vec<(&str, &str)> = form.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        let text = agent
-            .post(DETAILS_URL)
+        let form = steam_web::ids_form("itemcount", chunk);
+        let pairs = steam_web::form_pairs(&form);
+        let text = steam_web::agent()
+            .post(steam_web::DETAILS_URL)
             .send_form(&pairs)
             .map_err(|e| e.to_string())?
             .into_string()
@@ -234,9 +217,8 @@ pub fn fetch_collection_or_items(input: &str) -> Result<RemoteCollection, String
     }
     if ids.len() == 1 {
         let col_id = &ids[0];
-        let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).build();
         let pairs = [("collectioncount", "1"), ("publishedfileids[0]", col_id.as_str())];
-        if let Ok(resp) = agent.post(COLLECTION_URL).send_form(&pairs) {
+        if let Ok(resp) = steam_web::agent().post(steam_web::COLLECTION_URL).send_form(&pairs) {
             if let Ok(text) = resp.into_string() {
                 if let Ok(children) = parse_collection_children(&text) {
                     let mut all_ids = vec![col_id.clone()];
@@ -539,14 +521,6 @@ mod tests {
         // A few hours apart: copying shifts dates, so not counted.
         let close = compare(&items, &remote, &empty, None, |_| Some(1786739756 - 3600));
         assert!(close.mods.is_empty());
-    }
-
-    #[test]
-    fn version_tags_only() {
-        assert!(is_version_tag("1.7"));
-        assert!(!is_version_tag("Mod"));
-        assert!(!is_version_tag("1.7.4990"));
-        assert!(!is_version_tag("v1.6"));
     }
 
     #[test]

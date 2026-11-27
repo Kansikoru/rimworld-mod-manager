@@ -57,7 +57,7 @@ fn save_ignored_duplicates(path: &Path, ignored: &HashMap<String, Vec<PathBuf>>)
         std::fs::create_dir_all(dir)?;
     }
     let text = serde_json::to_string_pretty(ignored).map_err(std::io::Error::other)?;
-    std::fs::write(path, text)
+    crate::fs_util::write_atomic(path, text)
 }
 
 fn bisect_session_path() -> PathBuf {
@@ -2034,7 +2034,7 @@ impl App {
                 .join("optimizer_ignore.txt");
 
             let content = self.opt_ignore_list.iter().cloned().collect::<Vec<_>>().join("\n");
-            let _ = std::fs::write(&ignore_path, content);
+            let _ = crate::fs_util::write_atomic(&ignore_path, content);
         }
     }
 
@@ -4452,7 +4452,7 @@ impl App {
         match &self.bisect {
             Some(search) => {
                 if let Ok(text) = serde_json::to_string(search) {
-                    let _ = std::fs::write(path, text);
+                    let _ = crate::fs_util::write_atomic(&path, text);
                 }
             }
             None => {

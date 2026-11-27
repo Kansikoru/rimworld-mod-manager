@@ -329,7 +329,7 @@ pub fn game_version_in_log(log: &str) -> Option<String> {
     let end = rest
         .find(|c: char| !(c.is_ascii_digit() || c == '.'))
         .unwrap_or(rest.len());
-    crate::optimizer::short_game_version(&rest[..end])
+    crate::game_install::major_minor(&rest[..end])
 }
 
 #[cfg(test)]

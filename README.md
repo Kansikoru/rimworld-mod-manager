@@ -55,7 +55,7 @@ The interface is in English, Russian and Chinese.
 
 ## Building
 
-Requires [Rust](https://rustup.rs/) 1.87 or newer.
+Requires [Rust](https://rustup.rs/) 1.95 or newer.
 
 ```bash
 cargo build --release

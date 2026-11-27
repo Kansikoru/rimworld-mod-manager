@@ -1,10 +1,9 @@
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 /// Current interface language for texts built outside the UI code (status lines,
 /// errors from background tasks). Set by `I18n::new` / `I18n::set_language`.
 static CURRENT_LANGUAGE: AtomicU8 = AtomicU8::new(0); // 0 = Russian, 1 = English, 2 = Chinese
-static ENGLISH: AtomicBool = AtomicBool::new(false);
 
 pub fn current_language() -> Language {
     match CURRENT_LANGUAGE.load(Ordering::Relaxed) {
@@ -3181,7 +3180,7 @@ impl TranslationKey {
             TranslationKey::SettingsUpdateCheck => "自动检查更新",
             TranslationKey::SettingsUpdateCheckHint => "每天自动检查 GitHub 上的新版本",
             TranslationKey::SettingsTabsTitle => "标签页显示设置",
-            TranslationKey::SettingsTabsHint => "自定义界面上方显示的标签页",
+            TranslationKey::SettingsTabsHint => "关闭的标签页会从侧边栏消失（按钮指向的功能仍可使用）。“设置”无法隐藏：标签页可在此重新打开。",
 
             // Mod Lists (Sets)
             TranslationKey::SetsPicker => "当前模组列表",
@@ -3928,7 +3927,6 @@ impl I18n {
             Language::Chinese => 2,
         };
         CURRENT_LANGUAGE.store(val, Ordering::Relaxed);
-        ENGLISH.store(lang == Language::English, Ordering::Relaxed);
         Self { lang }
     }
 
@@ -3943,7 +3941,6 @@ impl I18n {
             Language::Chinese => 2,
         };
         CURRENT_LANGUAGE.store(val, Ordering::Relaxed);
-        ENGLISH.store(lang == Language::English, Ordering::Relaxed);
         self.lang = lang;
     }
 

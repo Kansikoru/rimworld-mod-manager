@@ -199,14 +199,7 @@ pub fn default_pick(matches: &[NameMatch]) -> Option<&str> {
 
 /// The Workshop search page for a name (to look further by hand).
 pub fn browse_url(name: &str) -> String {
-    let query: String = clean_name(name)
-        .bytes()
-        .map(|b| match b {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' => (b as char).to_string(),
-            b' ' => "+".to_string(),
-            _ => format!("%{b:02X}"),
-        })
-        .collect();
+    let query = crate::steam_web::encode(&clean_name(name));
     format!("https://steamcommunity.com/workshop/browse/?appid=294100&searchtext={query}&browsesort=textsearch")
 }
 

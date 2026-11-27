@@ -55,7 +55,7 @@
 
 ## Сборка
 
-Нужен [Rust](https://rustup.rs/) 1.87 или новее.
+Нужен [Rust](https://rustup.rs/) 1.95 или новее.
 
 ```bash
 cargo build --release

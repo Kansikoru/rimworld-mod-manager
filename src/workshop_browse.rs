@@ -10,10 +10,9 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use crate::steam;
+use crate::steam_web;
 
 const BROWSE_URL: &str = "https://steamcommunity.com/workshop/browse/";
-const DETAILS_URL: &str = "https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/";
-const COLLECTION_URL: &str = "https://api.steampowered.com/ISteamRemoteStorage/GetCollectionDetails/v1/";
 pub const PER_PAGE: usize = 30;
 
 /// RimWorld's own Workshop tags (as its browse page lists them, 26.11.2026): the item type,
@@ -108,21 +107,6 @@ pub struct WorkshopItem {
     pub children: Vec<String>,
 }
 
-fn encode(s: &str) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::new();
-    for b in s.bytes() {
-        match b {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
-            b' ' => out.push('+'),
-            _ => {
-                let _ = write!(out, "%{b:02X}");
-            }
-        }
-    }
-    out
-}
-
 pub fn browse_url(q: &BrowseQuery) -> String {
     let mut url = format!(
         "{BROWSE_URL}?appid=294100&section={}&numperpage={PER_PAGE}",
@@ -136,10 +120,13 @@ pub fn browse_url(q: &BrowseQuery) -> String {
             url.push_str(&format!("&days={days}"));
         }
     } else {
-        url.push_str(&format!("&searchtext={}&browsesort=textsearch", encode(text)));
+        url.push_str(&format!(
+            "&searchtext={}&browsesort=textsearch",
+            steam_web::encode(text)
+        ));
     }
     for tag in q.tags.iter().chain(q.version.iter()) {
-        url.push_str(&format!("&requiredtags%5B%5D={}", encode(tag)));
+        url.push_str(&format!("&requiredtags%5B%5D={}", steam_web::encode(tag)));
     }
     url.push_str(&format!("&p={}", q.page.max(1)));
     url
@@ -245,15 +232,6 @@ pub fn bbcode_to_text(s: &str) -> String {
     s.trim().to_string()
 }
 
-fn is_version_tag(tag: &str) -> bool {
-    let mut parts = tag.split('.');
-    matches!(
-        (parts.next(), parts.next(), parts.next()),
-        (Some(a), Some(b), None) if !a.is_empty() && !b.is_empty()
-            && a.bytes().all(|c| c.is_ascii_digit()) && b.bytes().all(|c| c.is_ascii_digit())
-    )
-}
-
 /// Reads a `GetPublishedFileDetails` answer, in the order of `ids`; hidden or removed items
 /// are left out.
 pub fn parse_items(json: &str, ids: &[String]) -> Result<Vec<WorkshopItem>, String> {
@@ -285,7 +263,7 @@ pub fn parse_items(json: &str, ids: &[String]) -> Result<Vec<WorkshopItem>, Stri
             })
             .unwrap_or_default()
             .into_iter()
-            .partition(|t| is_version_tag(t));
+            .partition(|t| steam_web::is_version_tag(t));
         by_id.insert(
             id.to_string(),
             WorkshopItem {
@@ -325,14 +303,14 @@ pub fn is_server_error(message: &str) -> bool {
 }
 
 /// One try of a request: the body, or what went wrong and whether another try may help.
-enum Attempt {
+pub(crate) enum Attempt {
     Body(String),
     Again(String),
     Stop(String),
 }
 
 /// A 4xx answer won't change on a retry; a 5xx, a dropped connection or a cut body may.
-fn attempt(result: Result<ureq::Response, ureq::Error>) -> Attempt {
+pub(crate) fn attempt(result: Result<ureq::Response, ureq::Error>) -> Attempt {
     match result {
         Ok(resp) => match resp.into_string() {
             Ok(body) => Attempt::Body(body),
@@ -345,7 +323,7 @@ fn attempt(result: Result<ureq::Response, ureq::Error>) -> Attempt {
 
 /// Steam's sites now and then answer 5xx or drop the connection for a moment: up to
 /// three tries a second or two apart.
-fn with_retries(call: impl FnMut() -> Attempt) -> Result<String, String> {
+pub(crate) fn with_retries(call: impl FnMut() -> Attempt) -> Result<String, String> {
     retry_every(Duration::from_millis(800), call)
 }
 
@@ -485,7 +463,7 @@ fn steam_query(q: &BrowseQuery) -> (steam::UgcPageQuery<'_>, std::ops::RangeIncl
 }
 
 fn item_from_steam(item: steam::UgcItem) -> WorkshopItem {
-    let (versions, tags) = item.tags.into_iter().partition(|t| is_version_tag(t));
+    let (versions, tags) = item.tags.into_iter().partition(|t| steam_web::is_version_tag(t));
     WorkshopItem {
         id: item.id.to_string(),
         title: item.title,
@@ -529,7 +507,7 @@ fn fetch_items_via_steam(dll: &Path, ids: &[String]) -> Result<Vec<WorkshopItem>
 
 /// One page: the browse page for the IDs, then their details.
 pub fn fetch_page(q: &BrowseQuery) -> Result<Vec<WorkshopItem>, String> {
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).build();
+    let agent = steam_web::agent();
     let url = browse_url(q);
     // The headers a browser sends: the page is made for one.
     let html = with_retries(|| {
@@ -554,10 +532,10 @@ pub fn fetch_page(q: &BrowseQuery) -> Result<Vec<WorkshopItem>, String> {
         return Err(crate::i18n::text(crate::i18n::TranslationKey::WsPageWithoutItems).to_string());
     }
     if q.section == Section::Mods {
-        return fetch_details(&agent, &ids);
+        return fetch_details(&ids, DETAILS_TIMEOUT);
     }
-    let mut items = fetch_details(&agent, &ids)?;
-    let mut children = fetch_children(&agent, &ids)?;
+    let mut items = fetch_details(&ids, DETAILS_TIMEOUT)?;
+    let mut children = fetch_children(&ids)?;
     for item in &mut items {
         item.is_collection = true;
         item.children = children.remove(&item.id).unwrap_or_default();
@@ -566,48 +544,43 @@ pub fn fetch_page(q: &BrowseQuery) -> Result<Vec<WorkshopItem>, String> {
 }
 
 /// `GetCollectionDetails` for the given collections.
-fn fetch_children(
-    agent: &ureq::Agent,
-    ids: &[String],
-) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
+fn fetch_children(ids: &[String]) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
     if ids.is_empty() {
         return Ok(Default::default());
     }
-    let mut form: Vec<(String, String)> = vec![("collectioncount".into(), ids.len().to_string())];
-    form.extend(
-        ids.iter()
-            .enumerate()
-            .map(|(i, id)| (format!("publishedfileids[{i}]"), id.clone())),
-    );
-    let pairs: Vec<(&str, &str)> = form.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    let json = with_retries(|| attempt(agent.post(COLLECTION_URL).send_form(&pairs)))?;
+    let form = steam_web::ids_form("collectioncount", ids);
+    let pairs = steam_web::form_pairs(&form);
+    let json = with_retries(|| attempt(steam_web::agent().post(steam_web::COLLECTION_URL).send_form(&pairs)))?;
     parse_collections(&json)
 }
 
 /// Given items by their IDs (a mod opened from another tab).
 pub fn fetch_items(ids: &[String]) -> Result<Vec<WorkshopItem>, String> {
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).build();
-    fetch_details(&agent, ids)
+    fetch_details(ids, DETAILS_TIMEOUT)
 }
 
 /// A collection's mods in its order (hidden or removed ones left out), 100 per request.
 pub fn fetch_collection_mods(children: &[String]) -> Result<Vec<WorkshopItem>, String> {
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(30)).build();
-    fetch_details(&agent, children)
+    fetch_details(children, Duration::from_secs(30))
 }
 
-fn fetch_details(agent: &ureq::Agent, ids: &[String]) -> Result<Vec<WorkshopItem>, String> {
+/// How long one `GetPublishedFileDetails` request may take.
+pub(crate) const DETAILS_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// `GetPublishedFileDetails` for the IDs, 100 per request, in the order of `ids`.
+pub(crate) fn fetch_details(ids: &[String], timeout: Duration) -> Result<Vec<WorkshopItem>, String> {
     let mut out = Vec::new();
     for chunk in ids.chunks(100) {
-        let mut form: Vec<(String, String)> = vec![("itemcount".into(), chunk.len().to_string())];
-        form.extend(
-            chunk
-                .iter()
-                .enumerate()
-                .map(|(i, id)| (format!("publishedfileids[{i}]"), id.clone())),
-        );
-        let pairs: Vec<(&str, &str)> = form.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        let json = with_retries(|| attempt(agent.post(DETAILS_URL).send_form(&pairs)))?;
+        let form = steam_web::ids_form("itemcount", chunk);
+        let pairs = steam_web::form_pairs(&form);
+        let json = with_retries(|| {
+            attempt(
+                steam_web::agent()
+                    .post(steam_web::DETAILS_URL)
+                    .timeout(timeout)
+                    .send_form(&pairs),
+            )
+        })?;
         out.extend(parse_items(&json, chunk)?);
     }
     Ok(out)
@@ -621,7 +594,7 @@ pub fn sized_preview(url: &str, width: u32) -> String {
 
 /// Downloads a preview and makes an RGBA image no wider than `max_width`.
 pub fn load_preview(url: &str, max_width: u32) -> Option<image::RgbaImage> {
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).build();
+    let agent = steam_web::agent();
     let mut bytes = Vec::new();
     use std::io::Read;
     agent

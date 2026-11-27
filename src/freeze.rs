@@ -102,17 +102,7 @@ pub(crate) fn free_dir(mods_dir: &Path, name: &str) -> PathBuf {
 }
 
 fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(to).map_err(|e| failed(to, e))?;
-    for entry in std::fs::read_dir(from).map_err(|e| failed(from, e))? {
-        let entry = entry.map_err(|e| failed(from, e))?;
-        let (src, dst) = (entry.path(), to.join(entry.file_name()));
-        if src.is_dir() {
-            copy_dir(&src, &dst)?;
-        } else {
-            std::fs::copy(&src, &dst).map_err(|e| failed(&src, e))?;
-        }
-    }
-    Ok(())
+    crate::fs_util::copy_dir(from, to).map_err(|e| failed(&e.path, e.error))
 }
 
 /// Freezes a mod; returns the folder the game will load from now on.
