@@ -8,6 +8,7 @@ pub mod view_mods;
 pub mod view_name_search;
 pub mod view_optimizer;
 pub mod view_saves;
+pub mod view_search;
 pub mod view_sets;
 pub mod view_settings;
 pub mod view_steamcmd;

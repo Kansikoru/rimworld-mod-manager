@@ -3,27 +3,29 @@ use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DependencyProblem {
-    /// Зависимость не найдена на диске (ни в Workshop, ни локально)
+    /// The dependency isn't on disk (neither from the Workshop nor local).
     Missing {
         dependent_name: String,
         dependent_id: String,
         required_id: String,
+        /// The name and Workshop item the dependent mod's About.xml gives for it, if any.
+        required_info: crate::models::DependencyInfo,
     },
-    /// Зависимость установлена, но выключена в списке активных
+    /// The dependency is installed but not in the active list.
     Disabled {
         dependent_name: String,
         dependent_id: String,
         required_id: String,
         required_name: String,
     },
-    /// Зависимость включена, но стоит в списке загрузки НИЖЕ зависимого мода
+    /// The dependency is active but loads AFTER the mod that needs it.
     WrongOrder {
         dependent_name: String,
         dependent_id: String,
         required_name: String,
         required_id: String,
     },
-    /// Мод объявил `incompatibleWith`, и этот мод тоже включён
+    /// The mod declares `incompatibleWith` a mod that is also active.
     Incompatible {
         dependent_name: String,
         dependent_id: String,
@@ -115,7 +117,34 @@ impl DependencyReport {
 
     /// Dependencies that aren't installed: `(dependent mod's ID, its name, required ID)`,
     /// each pair once.
-    pub fn missing_list(&self) -> Vec<(String, String, String)> {
+    /// Dependencies that load after the mod needing them: `(mod's ID, its name, dependency's
+    /// ID, its name)`, each pair once.
+    pub fn order_list(&self) -> Vec<(String, String, String, String)> {
+        let mut seen = HashSet::new();
+        self.problems
+            .iter()
+            .filter_map(|p| match p {
+                DependencyProblem::WrongOrder {
+                    dependent_name,
+                    dependent_id,
+                    required_name,
+                    required_id,
+                } => seen
+                    .insert((dependent_id.to_lowercase(), required_id.to_lowercase()))
+                    .then(|| {
+                        (
+                            dependent_id.clone(),
+                            dependent_name.clone(),
+                            required_id.clone(),
+                            required_name.clone(),
+                        )
+                    }),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn missing_list(&self) -> Vec<MissingDependency> {
         let mut seen = HashSet::new();
         self.problems
             .iter()
@@ -124,12 +153,40 @@ impl DependencyReport {
                     dependent_name,
                     dependent_id,
                     required_id,
+                    required_info,
                 } => seen
                     .insert((dependent_id.to_lowercase(), required_id.to_lowercase()))
-                    .then(|| (dependent_id.clone(), dependent_name.clone(), required_id.clone())),
+                    .then(|| MissingDependency {
+                        dependent_id: dependent_id.clone(),
+                        dependent_name: dependent_name.clone(),
+                        required_id: required_id.clone(),
+                        required_info: required_info.clone(),
+                    }),
                 _ => None,
             })
             .collect()
+    }
+}
+
+/// A dependency that isn't installed, once per (mod, dependency) pair.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingDependency {
+    pub dependent_id: String,
+    pub dependent_name: String,
+    pub required_id: String,
+    pub required_info: crate::models::DependencyInfo,
+}
+
+impl MissingDependency {
+    /// The name to show: About.xml's `displayName`, else the one the Workshop database
+    /// knows, else the bare ID.
+    pub fn required_name<'a>(&'a self, index: Option<&'a crate::workshop_db::WorkshopIndex>) -> &'a str {
+        if !self.required_info.name.is_empty() {
+            return &self.required_info.name;
+        }
+        index
+            .and_then(|idx| idx.name_for_package(&self.required_id))
+            .unwrap_or(&self.required_id)
     }
 }
 
@@ -142,7 +199,7 @@ pub fn dependency_substitutes(dep_lower: &str) -> &'static [&'static str] {
     }
 }
 
-/// Выполняет полную валидацию зависимостей для текущего списка активных модов.
+/// Checks every dependency of the current active list.
 pub fn validate_dependencies(active_package_ids: &[String], all_mods: &[ModInfo]) -> DependencyReport {
     let mut report = DependencyReport::default();
 
@@ -204,7 +261,7 @@ pub fn validate_dependencies(active_package_ids: &[String], all_mods: &[ModInfo]
                 continue;
             }
 
-            // 1. Проверяем системные модули и официальные DLC
+            // 1. Core and the official DLCs.
             if is_protected_package_id(&dep_lower) {
                 if let Some(&dep_idx) = active_indices.get(&dep_lower) {
                     if dep_idx > current_idx {
@@ -226,7 +283,7 @@ pub fn validate_dependencies(active_package_ids: &[String], all_mods: &[ModInfo]
                 continue;
             }
 
-            // 2. Проверяем пользовательские моды
+            // 2. Regular mods.
             if let Some(dep_mod) = installed_map.get(&dep_lower) {
                 if let Some(&dep_idx) = active_indices.get(&dep_lower) {
                     if dep_idx > current_idx {
@@ -250,6 +307,7 @@ pub fn validate_dependencies(active_package_ids: &[String], all_mods: &[ModInfo]
                     dependent_name: mod_info.name.clone(),
                     dependent_id: mod_info.package_id.clone(),
                     required_id: dep_raw.clone(),
+                    required_info: mod_info.dependency_info.get(&dep_lower).cloned().unwrap_or_default(),
                 });
             }
         }
@@ -380,13 +438,14 @@ mod tests {
         let report = validate_dependencies(&ids(&["ludeon.rimworld", "someone.genes"]), &mods);
         assert_eq!(report.missing_count(), 1, "reported as not found");
         assert!(!report.auto_fixable(), "auto-fix has nothing on disk to enable");
+        let missing = report.missing_list();
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].dependent_id, "someone.genes");
+        assert_eq!(missing[0].required_id, "ludeon.rimworld.biotech");
         assert_eq!(
-            report.missing_list(),
-            [(
-                "someone.genes".to_string(),
-                "someone.genes".to_string(),
-                "ludeon.rimworld.biotech".to_string()
-            )]
+            missing[0].required_name(None),
+            "ludeon.rimworld.biotech",
+            "no name known: the ID"
         );
         assert_eq!(
             report.disabled_count(),

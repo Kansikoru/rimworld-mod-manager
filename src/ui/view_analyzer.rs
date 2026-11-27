@@ -7,207 +7,197 @@ use crate::analyzer::generate_ai_diagnostic_prompt;
 use crate::app::App;
 use crate::i18n::TranslationKey;
 
+/// The analyzer's sections, listed on the left like the Settings sections.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Section {
+    #[default]
+    Overview,
+    Errors,
+    FullLog,
+    Changes,
+    Bisect,
+    LoadTime,
+    InGame,
+}
+
+impl Section {
+    fn title(self, t: crate::i18n::I18n) -> &'static str {
+        match self {
+            Section::Overview => crate::i18n::tr!("Обзор", "Overview", "概览"),
+            Section::Errors => crate::i18n::tr!("Ошибки", "Errors", "错误"),
+            Section::FullLog => t.get(TranslationKey::AnalyzerTabFullLog),
+            Section::Changes => crate::i18n::tr!("Что изменилось", "What changed", "有何变化"),
+            Section::Bisect => crate::i18n::tr!("Поиск сломанного мода", "Find the broken mod", "查找出错模组"),
+            Section::LoadTime => crate::i18n::tr!("Время загрузки", "Load time", "加载时间"),
+            Section::InGame => crate::i18n::tr!("Нагрузка в игре", "In-game load", "游戏内负载"),
+        }
+    }
+
+    fn icon(self) -> egui::ImageSource<'static> {
+        match self {
+            Section::Overview => ICON_ANALYZER,
+            Section::Errors => ICON_STATUS_ERROR,
+            Section::FullLog => ICON_INFO,
+            Section::Changes => ICON_HISTORY,
+            Section::Bisect => ICON_SEARCH,
+            Section::LoadTime => ICON_ROCKET,
+            Section::InGame => ICON_OPTIMIZER,
+        }
+    }
+}
+
+/// Width of the section list on the left.
+const NAV_W: f32 = 244.0;
+
+/// Where the open section is kept (egui's memory, not the app).
+fn section_id() -> egui::Id {
+    egui::Id::unique("analyzer_section")
+}
+
+/// Opens the Errors section (screenshots: `RWMM_TAB=analyzer`).
+pub fn open_errors(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.insert_temp(section_id(), Section::Errors));
+}
+
 pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
+    let section_id = section_id();
+    let mut section: Section = ui.data(|d| d.get_temp(section_id).unwrap_or_default());
 
-    section_header(
-        ui,
-        t.get(TranslationKey::CrashTitle),
-        t.get(TranslationKey::CrashSubtitle),
-        None,
-    );
+    // Counts next to the names: the mods the log blames (lit when there are any).
+    let errors_count = app
+        .log_report
+        .as_ref()
+        .map(|r| (r.culprits.len().max(usize::from(r.has_hard_crash)), true));
 
-    ui.add_space(8.0);
-
-    // Action Header Card
-    card_container(ui, |ui| {
-        ui.horizontal(|ui| {
-            let analyzing = app.log_rx.is_some();
-            ui.add_enabled_ui(!analyzing, |ui| {
-                if primary_button_icon(ui, ICON_SEARCH, t.get(TranslationKey::CrashBtnAnalyze)).clicked() {
-                    app.run_log_analysis();
+    egui::Panel::left("analyzer_nav")
+        .resizable(false)
+        .default_size(NAV_W)
+        .size_range(NAV_W..=NAV_W)
+        .show_separator_line(false)
+        .frame(egui::Frame {
+            outer_margin: egui::Margin {
+                left: 0,
+                right: 12,
+                top: 0,
+                bottom: 12,
+            },
+            inner_margin: egui::Margin::same(10),
+            ..raised_frame(10)
+        })
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(t.get(TranslationKey::CrashTitle))
+                    .color(THEME.text_primary)
+                    .size(18.0)
+                    .strong(),
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let analyzing = app.log_rx.is_some();
+                ui.add_enabled_ui(!analyzing, |ui| {
+                    if primary_button_icon(ui, ICON_SEARCH, t.get(TranslationKey::CrashBtnAnalyze)).clicked() {
+                        app.run_log_analysis();
+                        section = Section::Overview;
+                    }
+                });
+                if analyzing {
+                    ui.spinner();
                 }
             });
-            if analyzing {
-                ui.spinner();
-            }
-
-            if let Some(ref report) = app.log_report {
-                // Also useful when there are errors but no identified culprit.
-                if (!report.culprits.is_empty() || report.total_errors > 0 || report.has_hard_crash)
-                    && success_button_icon(ui, ICON_COPY, t.get(TranslationKey::CrashBtnCopyPrompt)).clicked()
-                {
-                    let prompt = generate_ai_diagnostic_prompt(report, app.is_russian);
-                    ui.ctx().copy_text(prompt);
-                }
-
-                if secondary_button_icon(ui, ICON_SAVE, t.get(TranslationKey::AnalyzerSaveReport)).clicked() {
-                    app.save_log_report();
-                }
-            }
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::AnalyzerBrowseLog)).clicked() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("RimWorld Log (*.log)", &["log"])
-                        .pick_file()
-                    {
-                        app.custom_log_path = Some(path);
-                        app.run_log_analysis();
+            ui.add_space(4.0);
+            ui.spacing_mut().item_spacing.y = 2.0;
+            let groups: [(&str, &[Section]); 2] = [
+                (
+                    crate::i18n::tr!("ОТЧЁТ", "REPORT", "报告"),
+                    &[Section::Overview, Section::Errors, Section::FullLog],
+                ),
+                (
+                    crate::i18n::tr!("ДИАГНОСТИКА", "DIAGNOSTICS", "诊断"),
+                    &[Section::Changes, Section::Bisect, Section::LoadTime, Section::InGame],
+                ),
+            ];
+            for (title, items) in groups {
+                side_nav_group(ui, title, false);
+                for &item in items {
+                    let count = match item {
+                        Section::Errors => errors_count.filter(|(n, _)| *n > 0),
+                        _ => None,
+                    };
+                    if side_nav_item(ui, item.icon(), item.title(t), item == section, false, count).clicked() {
+                        section = item;
                     }
                 }
-            });
-        });
-    });
-
-    ui.add_space(8.0);
-
-    // Mode Switcher (Report vs Full Log)
-    if app.log_report.is_some() {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            let is_report = app.log_view_mode == crate::analyzer::LogViewMode::Report;
-            let is_full = app.log_view_mode == crate::analyzer::LogViewMode::FullLog;
-
-            if small_button(
-                ui,
-                t.get(TranslationKey::AnalyzerTabReport),
-                if is_report {
-                    ButtonStyle::Primary
-                } else {
-                    ButtonStyle::Secondary
-                },
-            )
-            .clicked()
-            {
-                app.log_view_mode = crate::analyzer::LogViewMode::Report;
-            }
-
-            if small_button(
-                ui,
-                t.get(TranslationKey::AnalyzerTabFullLog),
-                if is_full {
-                    ButtonStyle::Primary
-                } else {
-                    ButtonStyle::Secondary
-                },
-            )
-            .clicked()
-            {
-                app.log_view_mode = crate::analyzer::LogViewMode::FullLog;
             }
         });
-        ui.add_space(8.0);
-    }
+    ui.data_mut(|d| d.insert_temp(section_id, section));
 
-    if app.log_report.is_some() && app.log_view_mode == crate::analyzer::LogViewMode::FullLog {
-        render_full_log_view(app, ui);
-        return;
-    }
-
-    // The page scrolls as a whole (like Optimizer and Settings): nothing below the window
-    // edge is cut off.
     let mut switch_to_optimizer = false;
     let mut measure_launch = false;
     let mut request_ticks = false;
-    egui::ScrollArea::vertical()
-        .id_salt("analyzer_page_scroll")
-        .auto_shrink([false, false])
+    egui::CentralPanel::default()
+        .frame(egui::Frame::NONE.inner_margin(egui::Margin {
+            left: 8,
+            right: 8,
+            top: 4,
+            bottom: 4,
+        }))
         .show(ui, |ui| {
-            super::view_bisect::render_bisect_card(app, ui);
+            ui.label(
+                egui::RichText::new(section.title(t))
+                    .color(THEME.text_primary)
+                    .size(20.0)
+                    .strong(),
+            );
             ui.add_space(8.0);
-            render_last_good_card(app, ui);
-            ui.add_space(8.0);
-            render_load_time_card(app, ui);
-            ui.add_space(8.0);
-
-            // Report Results
-            if let Some(ref report) = app.log_report {
-                // Summary Card
-                card_container(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        let (icon, color) = if report.has_hard_crash {
-                            (ICON_STATUS_CRASH, THEME.accent_rose)
-                        } else if !report.culprits.is_empty() {
-                            (ICON_STATUS_WARNING, THEME.accent_amber)
-                        } else if report.total_errors > 0 {
-                            (ICON_STATUS_ERROR, THEME.accent_amber)
-                        } else {
-                            (ICON_STATUS_OK, THEME.accent_emerald)
-                        };
-
-                        let summary_text = if let Some(issue) = report.system_issue {
-                            match issue {
-                                crate::analyzer::SystemCrashIssue::GpuReset => {
-                                    t.get(TranslationKey::CrashGpuResetTitle).to_string()
-                                }
-                                crate::analyzer::SystemCrashIssue::OutOfMemory => {
-                                    t.get(TranslationKey::CrashOomTitle).to_string()
+            // The full log scrolls inside its own view; the other sections scroll as a page.
+            if section == Section::FullLog {
+                if app.log_report.is_some() {
+                    render_full_log_view(app, ui);
+                } else {
+                    no_report_hint(ui, t);
+                }
+                return;
+            }
+            egui::ScrollArea::vertical()
+                .id_salt(("analyzer_section_scroll", section as u8))
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.set_max_width(920.0);
+                    match section {
+                        Section::Overview => {
+                            if render_overview(app, ui) {
+                                switch_to_optimizer = true;
+                            }
+                        }
+                        Section::Errors => match app.log_report.as_ref() {
+                            Some(report) => render_culprits(ui, t, report),
+                            None => no_report_hint(ui, t),
+                        },
+                        Section::FullLog => {}
+                        Section::Changes => render_last_good_card(app, ui),
+                        Section::Bisect => super::view_bisect::render_bisect_card(app, ui),
+                        Section::LoadTime => {
+                            render_load_time_card(app, ui);
+                            if let Some(report) = app.log_report.as_ref() {
+                                ui.add_space(8.0);
+                                if render_load_profile_card(app, ui, report) {
+                                    measure_launch = true;
                                 }
                             }
-                        } else if report.has_hard_crash {
-                            t.get(TranslationKey::CrashSummaryHardCrash)
-                                .replace("{}", &report.culprits.len().to_string())
-                        } else if !report.culprits.is_empty() {
-                            t.get(TranslationKey::CrashSummaryCulprits)
-                                .replace("{}", &report.culprits.len().to_string())
-                        } else if report.total_errors > 0 {
-                            t.get(TranslationKey::CrashSummaryErrorsOnly)
-                                .replace("{}", &report.total_errors.to_string())
-                        } else {
-                            t.get(TranslationKey::CrashSummaryClean).to_string()
-                        };
-
-                        let mut file_stats = crate::i18n::fmt(
-                            t.get(TranslationKey::CrashFileStats),
-                            &[
-                                &report.log_file_name,
-                                &report.total_lines.to_string(),
-                                &report.total_errors.to_string(),
-                            ],
-                        );
-                        if let Some(load_time) = report.load_time_secs {
-                            let dur_str = crate::load_time::format_duration(load_time);
-                            file_stats.push_str(&format!(" • {}: {}", t.get(TranslationKey::LoadTimeTitle), dur_str));
                         }
-
-                        ui.add(svg_icon(icon, egui::Vec2::splat(22.0), color));
-                        ui.vertical(|ui| {
-                            ui.label(egui::RichText::new(summary_text).color(color).size(14.0).strong());
-                            ui.label(egui::RichText::new(file_stats).color(THEME.text_muted).size(12.0));
-                        });
-                    });
-                });
-
-                ui.add_space(8.0);
-
-                if let Some(issue) = report.system_issue {
-                    // On 1.7 the game compresses textures itself: no optimizer to send to.
-                    if render_system_issue_card(ui, t, issue, !report.is_waylith) {
-                        switch_to_optimizer = true;
+                        Section::InGame => {
+                            if app.companion_report.is_some() {
+                                render_companion_report_card(app, ui);
+                                ui.add_space(8.0);
+                            }
+                            if render_tick_profile_card(app, ui) {
+                                request_ticks = true;
+                            }
+                        }
                     }
-                    ui.add_space(8.0);
-                }
-
-                render_culprits(ui, t, report);
-                ui.add_space(8.0);
-                if render_load_profile_card(app, ui, report) {
-                    measure_launch = true;
-                }
-                ui.add_space(8.0);
-            }
-            if app.companion_report.is_some() {
-                // RWMM_TAB=analyzer-companion (screenshots): the card at the top, once the
-                // analysis above it is in.
-                if app.log_report.is_some() && std::mem::take(&mut app.scroll_to_companion_report) {
-                    ui.scroll_to_cursor(Some(egui::Align::TOP));
-                }
-                render_companion_report_card(app, ui);
-            }
-            ui.add_space(8.0);
-            if render_tick_profile_card(app, ui) {
-                request_ticks = true;
-            }
+                    ui.add_space(12.0);
+                });
         });
 
     if request_ticks {
@@ -219,6 +209,136 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
     if switch_to_optimizer {
         app.current_tab = crate::app::AppTab::Optimizer;
     }
+}
+
+/// No log read yet: what to press.
+fn no_report_hint(ui: &mut Ui, t: crate::i18n::I18n) {
+    card_container(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(
+            egui::RichText::new(crate::i18n::tr!(
+                "Лог ещё не разобран. Нажмите «{}» слева — программа прочитает Player.log последнего запуска.",
+                "The log isn't read yet. Press \"{}\" on the left: the app reads Player.log of the last run.",
+                "尚未分析日志。点击左侧的“{}”，程序会读取上次运行的 Player.log。",
+                t.get(TranslationKey::CrashBtnAnalyze)
+            ))
+            .color(THEME.text_muted),
+        );
+    });
+}
+
+/// The summary of the last analysis, what to do with the report, a system cause if any.
+/// Returns whether "open the optimizer" was clicked.
+fn render_overview(app: &mut App, ui: &mut Ui) -> bool {
+    let t = app.i18n;
+    let mut to_optimizer = false;
+    let Some(report) = app.log_report.as_ref() else {
+        no_report_hint(ui, t);
+        // A log from elsewhere can be picked before any analysis.
+        ui.add_space(4.0);
+        if secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::AnalyzerBrowseLog)).clicked() {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("RimWorld Log (*.log)", &["log"])
+                .pick_file()
+            {
+                app.custom_log_path = Some(path);
+                app.run_log_analysis();
+            }
+        }
+        return false;
+    };
+
+    let is_russian = app.is_russian;
+    let (mut save, mut browse) = (false, false);
+    card_container(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            let (icon, color) = if report.has_hard_crash {
+                (ICON_STATUS_CRASH, THEME.accent_rose)
+            } else if !report.culprits.is_empty() {
+                (ICON_STATUS_WARNING, THEME.accent_amber)
+            } else if report.total_errors > 0 {
+                (ICON_STATUS_ERROR, THEME.accent_amber)
+            } else {
+                (ICON_STATUS_OK, THEME.accent_emerald)
+            };
+            let summary_text = if let Some(issue) = report.system_issue {
+                match issue {
+                    crate::analyzer::SystemCrashIssue::GpuReset => {
+                        t.get(TranslationKey::CrashGpuResetTitle).to_string()
+                    }
+                    crate::analyzer::SystemCrashIssue::OutOfMemory => t.get(TranslationKey::CrashOomTitle).to_string(),
+                }
+            } else if report.has_hard_crash {
+                t.get(TranslationKey::CrashSummaryHardCrash)
+                    .replace("{}", &report.culprits.len().to_string())
+            } else if !report.culprits.is_empty() {
+                t.get(TranslationKey::CrashSummaryCulprits)
+                    .replace("{}", &report.culprits.len().to_string())
+            } else if report.total_errors > 0 {
+                t.get(TranslationKey::CrashSummaryErrorsOnly)
+                    .replace("{}", &report.total_errors.to_string())
+            } else {
+                t.get(TranslationKey::CrashSummaryClean).to_string()
+            };
+            let mut file_stats = crate::i18n::fmt(
+                t.get(TranslationKey::CrashFileStats),
+                &[
+                    &report.log_file_name,
+                    &report.total_lines.to_string(),
+                    &report.total_errors.to_string(),
+                ],
+            );
+            if let Some(load_time) = report.load_time_secs {
+                let dur_str = crate::load_time::format_duration(load_time);
+                file_stats.push_str(&format!(" • {}: {}", t.get(TranslationKey::LoadTimeTitle), dur_str));
+            }
+            ui.add(svg_icon(icon, egui::Vec2::splat(26.0), color));
+            ui.vertical(|ui| {
+                // A long summary wraps inside the card instead of running past it.
+                ui.set_max_width(ui.available_width());
+                ui.add(egui::Label::new(egui::RichText::new(summary_text).color(color).size(16.0).strong()).wrap());
+                ui.add(egui::Label::new(egui::RichText::new(file_stats).color(THEME.text_muted).size(12.0)).wrap());
+            });
+        });
+        ui.add_space(10.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::Vec2::new(8.0, 8.0);
+            // Also useful when there are errors but no identified culprit.
+            if (!report.culprits.is_empty() || report.total_errors > 0 || report.has_hard_crash)
+                && success_button_icon(ui, ICON_COPY, t.get(TranslationKey::CrashBtnCopyPrompt)).clicked()
+            {
+                let prompt = generate_ai_diagnostic_prompt(report, is_russian);
+                ui.ctx().copy_text(prompt);
+            }
+            save = secondary_button_icon(ui, ICON_SAVE, t.get(TranslationKey::AnalyzerSaveReport)).clicked();
+            browse = secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::AnalyzerBrowseLog)).clicked();
+        });
+    });
+    if save {
+        app.save_log_report();
+    }
+    if browse {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("RimWorld Log (*.log)", &["log"])
+            .pick_file()
+        {
+            app.custom_log_path = Some(path);
+            app.run_log_analysis();
+        }
+    }
+
+    let Some(report) = app.log_report.as_ref() else {
+        return false;
+    };
+    if let Some(issue) = report.system_issue {
+        ui.add_space(8.0);
+        // On 1.7 the game compresses textures itself: no optimizer to send to.
+        if render_system_issue_card(ui, t, issue, !report.is_waylith) {
+            to_optimizer = true;
+        }
+    }
+    to_optimizer
 }
 
 /// The mods the log points at, then performance tips.

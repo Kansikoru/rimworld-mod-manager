@@ -2718,6 +2718,7 @@ dependencies = [
  "libloading",
  "open",
  "quick-xml 0.36.2",
+ "raw-window-handle",
  "rayon",
  "regex",
  "rfd",

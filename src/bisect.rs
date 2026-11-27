@@ -168,11 +168,6 @@ impl Bisect {
         self.ordered(&on)
     }
 
-    /// The suspects that are on in the current test.
-    pub fn tested_suspects(&self) -> &[String] {
-        self.stage.test.as_ref().map(|t| t.part.as_slice()).unwrap_or(&[])
-    }
-
     pub fn outcome(&self) -> Option<&Outcome> {
         self.stage.outcome.as_ref()
     }

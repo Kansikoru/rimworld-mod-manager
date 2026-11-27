@@ -338,6 +338,24 @@ pub fn apply_theme(ctx: &egui::Context) {
     visuals.selection.bg_fill = tint(THEME.accent_cyan);
     visuals.selection.stroke = Stroke::new(1.0_f32, THEME.accent_cyan);
 
+    // Softer shapes: rounder windows and menus, a light shadow, round slider handles.
+    visuals.window_corner_radius = CornerRadius::same(12);
+    visuals.menu_corner_radius = CornerRadius::same(8);
+    visuals.window_shadow = egui::epaint::Shadow {
+        offset: [0, 8],
+        blur: 24,
+        spread: 0,
+        color: Color32::from_black_alpha(90),
+    };
+    visuals.popup_shadow = egui::epaint::Shadow {
+        offset: [0, 4],
+        blur: 12,
+        spread: 0,
+        color: Color32::from_black_alpha(70),
+    };
+    visuals.handle_shape = egui::style::HandleShape::Circle;
+    visuals.slider_trailing_fill = true;
+
     ctx.set_visuals(visuals);
 
     // egui 0.37 made buttons roomier (padding 8x2, height 20); the layout of every tab is
@@ -345,8 +363,113 @@ pub fn apply_theme(ctx: &egui::Context) {
     ctx.global_style_mut(|style| {
         style.spacing.button_padding = egui::vec2(4.0, 1.0);
         style.spacing.interact_size = egui::vec2(40.0, 18.0);
+        // Thin scrollbars that keep their own 6 px (so row buttons never sit under them) and
+        // widen under the mouse, a thin slider rail,
+        // bigger checkboxes, roomier menus.
+        style.spacing.scroll = egui::style::ScrollStyle::thin();
+        style.spacing.slider_rail_height = 4.0;
+        style.spacing.icon_width = 16.0;
+        style.spacing.icon_width_inner = 9.0;
+        style.spacing.icon_spacing = 6.0;
+        style.spacing.menu_margin = egui::Margin::same(6);
     });
 }
+
+/// Paints the window's title bar (Windows 11) in the theme's colors: the caption like the
+/// side bar, its text like the app's text, the window border like the card edges. Called
+/// every frame; it touches the window only when the colors change. Older Windows ignores it.
+#[cfg(windows)]
+pub fn paint_title_bar(frame: &eframe::Frame) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use std::sync::atomic::AtomicU64;
+
+    static LAST: AtomicU64 = AtomicU64::new(u64::MAX);
+    let colorref = |c: Color32| -> u32 { c.r() as u32 | (c.g() as u32) << 8 | (c.b() as u32) << 16 };
+    let caption = colorref(THEME.bg_surface);
+    let text = colorref(THEME.text_primary);
+    let border = colorref(THEME.border_subtle);
+    let key = (caption as u64) << 32 | text as u64 ^ (border as u64) << 8;
+    if LAST.swap(key, Ordering::Relaxed) == key {
+        return;
+    }
+    let Ok(handle) = frame.window_handle() else {
+        LAST.store(u64::MAX, Ordering::Relaxed);
+        return;
+    };
+    let RawWindowHandle::Win32(win) = handle.as_raw() else {
+        return;
+    };
+    #[link(name = "dwmapi")]
+    extern "system" {
+        fn DwmSetWindowAttribute(hwnd: isize, attribute: u32, value: *const u32, size: u32) -> i32;
+    }
+    // DWMWA_BORDER_COLOR = 34, DWMWA_CAPTION_COLOR = 35, DWMWA_TEXT_COLOR = 36.
+    for (attribute, value) in [(34u32, border), (35, caption), (36, text)] {
+        unsafe {
+            DwmSetWindowAttribute(win.hwnd.get(), attribute, &value, 4);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn paint_title_bar(_frame: &eframe::Frame) {}
+
+/// Gives the window both its icons from the exe's own resource (id 1, `build.rs`): the small
+/// one for the title bar and the big one the taskbar shows (eframe sets only the small one,
+/// so the taskbar had a blank page). Once per run.
+#[cfg(windows)]
+pub fn set_window_icons(frame: &eframe::Frame) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use std::sync::atomic::AtomicBool;
+
+    static DONE: AtomicBool = AtomicBool::new(false);
+    if DONE.load(Ordering::Relaxed) {
+        return;
+    }
+    let Ok(handle) = frame.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::Win32(win) = handle.as_raw() else {
+        return;
+    };
+    DONE.store(true, Ordering::Relaxed);
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetSystemMetrics(index: i32) -> i32;
+        fn LoadImageW(instance: isize, name: *const u16, kind: u32, cx: i32, cy: i32, flags: u32) -> isize;
+        fn SendMessageW(hwnd: isize, msg: u32, wparam: usize, lparam: isize) -> isize;
+        fn SetClassLongPtrW(hwnd: isize, index: i32, value: isize) -> usize;
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetModuleHandleW(name: *const u16) -> isize;
+    }
+    const IMAGE_ICON: u32 = 1;
+    const WM_SETICON: u32 = 0x0080;
+    // (ICON_SMALL / ICON_BIG, SM_CXSMICON / SM_CXICON, GCLP_HICONSM / GCLP_HICON). The window
+    // class gets them too: winit leaves its icons empty, and the taskbar may ask the class.
+    for (which, metric, class_index) in [(0usize, 49, -34), (1usize, 11, -14)] {
+        unsafe {
+            let size = GetSystemMetrics(metric);
+            // MAKEINTRESOURCE(1): the icon's id as the pointer value.
+            let icon = LoadImageW(
+                GetModuleHandleW(std::ptr::null()),
+                std::ptr::without_provenance::<u16>(1),
+                IMAGE_ICON,
+                size,
+                size,
+                0,
+            );
+            if icon != 0 {
+                SendMessageW(win.hwnd.get(), WM_SETICON, which, icon);
+                SetClassLongPtrW(win.hwnd.get(), class_index, icon);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn set_window_icons(_frame: &eframe::Frame) {}
 
 #[cfg(test)]
 mod tests {

@@ -342,10 +342,6 @@ pub fn unsubscribe_workshop_items_batch_native(dll_path: &Path, item_ids: &[&str
     ugc_batch(dll_path, b"SteamAPI_ISteamUGC_UnsubscribeItem\0", item_ids)
 }
 
-pub fn subscribe_workshop_items_batch_native(dll_path: &Path, item_ids: &[&str]) -> Result<usize, String> {
-    ugc_batch(dll_path, b"SteamAPI_ISteamUGC_SubscribeItem\0", item_ids)
-}
-
 /// Steam `EItemState` flags returned by `SteamAPI_ISteamUGC_GetItemState`.
 const ITEM_STATE_INSTALLED: u32 = 4;
 const ITEM_STATE_NEEDS_UPDATE: u32 = 8;
@@ -568,7 +564,8 @@ pub struct UgcPageQuery<'a> {
     /// The period of `UGC_RANKED_BY_TREND` (0 = Steam's default).
     pub trend_days: u32,
     pub text: &'a str,
-    pub required_tag: Option<&'a str>,
+    /// Tags an item must all have (`AddRequiredTag` for each).
+    pub required_tags: Vec<&'a str>,
 }
 
 /// A Workshop item as the Steam client describes it.
@@ -792,7 +789,11 @@ pub fn ugc_query_pages(
     pages: std::ops::RangeInclusive<u32>,
 ) -> Result<Vec<UgcItem>, String> {
     let text = std::ffi::CString::new(q.text.trim()).unwrap_or_default();
-    let tag = q.required_tag.and_then(|t| std::ffi::CString::new(t).ok());
+    let tags: Vec<std::ffi::CString> = q
+        .required_tags
+        .iter()
+        .filter_map(|t| std::ffi::CString::new(*t).ok())
+        .collect();
     unsafe {
         with_steam_ugc(dll_path, Session::Query, |ugc, lib| {
             let api = UgcQueryApi::load(ugc, lib)?;
@@ -808,7 +809,7 @@ pub fn ugc_query_pages(
                 if q.trend_days > 0 {
                     (api.set_trend_days)(ugc, handle, q.trend_days);
                 }
-                if let Some(tag) = &tag {
+                for tag in &tags {
                     (api.add_required_tag)(ugc, handle, tag.as_ptr());
                 }
                 let (items, returned) = api.run(handle)?;
@@ -841,27 +842,6 @@ pub fn ugc_item_details(dll_path: &Path, ids: &[u64]) -> Result<Vec<UgcItem>, St
             Ok(out)
         })
     }
-}
-
-fn parse_item_id(item_id_str: &str) -> Result<u64, String> {
-    item_id_str.parse::<u64>().map_err(|_| {
-        tr!(
-            "Неверный Steam Item ID: {}",
-            "Invalid Steam item ID: {}",
-            "无效的 Steam 物品 ID：{}",
-            item_id_str
-        )
-    })
-}
-
-pub fn unsubscribe_workshop_item_native(dll_path: &Path, item_id_str: &str) -> Result<bool, String> {
-    parse_item_id(item_id_str)?;
-    Ok(unsubscribe_workshop_items_batch_native(dll_path, &[item_id_str])? > 0)
-}
-
-pub fn subscribe_workshop_item_native(dll_path: &Path, item_id_str: &str) -> Result<bool, String> {
-    parse_item_id(item_id_str)?;
-    Ok(subscribe_workshop_items_batch_native(dll_path, &[item_id_str])? > 0)
 }
 
 /// Steam Workshop page of an item.

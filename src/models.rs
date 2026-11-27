@@ -77,12 +77,26 @@ pub struct ModInfo {
     /// `alternativePackageIds`: lowercase dependency id -> IDs that satisfy it as well.
     #[serde(default)]
     pub dependency_alternatives: std::collections::HashMap<String, Vec<String>>,
+    /// What About.xml says about each dependency besides its ID (lowercase dependency id ->
+    /// `displayName` and the Workshop ID from `steamWorkshopUrl`): a missing mod is shown by
+    /// a name the player can find, and downloaded even without the Workshop database.
+    #[serde(default)]
+    pub dependency_info: std::collections::HashMap<String, DependencyInfo>,
     /// Raw `*ByVersion` blocks from About.xml (resolved into the lists above after scanning).
     #[serde(default)]
     pub by_version: VersionedLists,
     /// Frozen by the user (`freeze.rs`): this version stays, nothing updates it.
     #[serde(default)]
     pub frozen: bool,
+}
+
+/// A dependency's name and Workshop item as the mod that needs it declares them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DependencyInfo {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub workshop_id: Option<String>,
 }
 
 /// `modDependenciesByVersion`, `loadAfterByVersion`, ... keyed by game version ("1.6").
@@ -495,7 +509,7 @@ pub fn contains_chinese_chars(s: &str) -> bool {
 }
 
 /// The text has one of `words` as a whole word ("Rus Dubs Bad Hygiene", "Allow Tool - CN").
-fn has_word(lower: &str, words: &[&str]) -> bool {
+pub(crate) fn has_word(lower: &str, words: &[&str]) -> bool {
     lower.split(|c: char| !c.is_alphanumeric()).any(|w| words.contains(&w))
 }
 

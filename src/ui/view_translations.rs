@@ -1,4 +1,4 @@
-use eframe::egui::{self, CornerRadius, Stroke, Ui};
+use eframe::egui::{self, Ui};
 
 use super::components::*;
 use super::icons::*;
@@ -7,105 +7,146 @@ use crate::app::App;
 use crate::i18n::{fmt, tr, TranslationKey};
 use crate::models::{ModInfo, TranslationTargetLang};
 
-pub fn render_translations_view(app: &mut App, ui: &mut Ui) {
-    let t = app.i18n;
+/// The tab's sections, listed on the left like the Settings sections.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Section {
+    /// Translations for every active mod at once (the main way).
+    #[default]
+    Batch,
+    /// A Workshop search by text, or for the mod selected on the Mods tab.
+    Search,
+    /// Translation mods already installed for the chosen language.
+    Installed,
+}
 
-    section_header(
-        ui,
-        t.get(TranslationKey::TransTitle),
-        t.get(TranslationKey::TransSubtitle),
-        None,
-    );
-
-    ui.add_space(8.0);
-
-    // Filter and search tabs
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(format!("{}:", t.get(TranslationKey::TransTargetLang)))
-                .color(THEME.text_secondary)
-                .strong(),
-        );
-
-        // Dropdown of the most common languages, most popular first.
-        // The language can't change under a running modpack search.
-        let lang_text = |l: TranslationTargetLang| format!("{} ({})", l.label(), l.code());
-        let before = app.trans_target_lang;
-        ui.add_enabled_ui(!app.is_batch_searching(), |ui| {
-            egui::ComboBox::from_id_salt("translation_target_language")
-                .selected_text(lang_text(app.trans_target_lang))
-                .width(200.0)
-                .show_ui(ui, |ui| {
-                    for lang in TranslationTargetLang::POPULAR {
-                        ui.selectable_value(&mut app.trans_target_lang, lang, lang_text(lang));
-                    }
-                });
-        });
-        if app.trans_target_lang != before {
-            // Results of another language would only confuse.
-            app.batch_results.clear();
-            app.batch_checked.clear();
+impl Section {
+    fn title(self) -> &'static str {
+        match self {
+            Section::Batch => tr!("Для сборки", "For my mods", "为我的模组"),
+            Section::Search => tr!("Поиск в Workshop", "Workshop search", "创意工坊搜索"),
+            Section::Installed => tr!("Установленные", "Installed", "已安装"),
         }
-
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if danger_button_icon(ui, ICON_TRASH, t.get(TranslationKey::TransBtnDeleteAll)).clicked() {
-                app.request_delete_translations();
-            }
-        });
-    });
-
-    ui.add_space(8.0);
-
-    // Narrow window: installed translations above, the Workshop search below.
-    if ui.available_width() < NARROW_TWO_COLUMNS {
-        let width = ui.available_width();
-        let top_h = (ui.available_height() * 0.35).max(120.0);
-        ui.allocate_ui_with_layout(
-            egui::Vec2::new(width, top_h),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                ui.set_width(width);
-                ui.set_max_height(top_h);
-                render_installed_translations_column(app, ui);
-            },
-        );
-        ui.separator();
-        ui.allocate_ui_with_layout(
-            egui::Vec2::new(width, ui.available_height()),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                ui.set_width(width);
-                render_workshop_search_column(app, ui);
-            },
-        );
-        return;
     }
 
-    // Two sections: Detected Translations in Collection (Left) & Workshop Search Results (Right)
-    let available_width = ui.available_width();
-    let col_width = (available_width - 16.0) / 2.0;
+    fn icon(self) -> egui::ImageSource<'static> {
+        match self {
+            Section::Batch => ICON_MODS,
+            Section::Search => ICON_SEARCH,
+            Section::Installed => ICON_TRANSLATIONS,
+        }
+    }
+}
 
-    ui.horizontal_top(|ui| {
-        // Left Column: Detected Local Translation Mods
-        ui.allocate_ui_with_layout(
-            egui::Vec2::new(col_width, ui.available_height() - 20.0),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                render_installed_translations_column(app, ui);
+const NAV_W: f32 = 244.0;
+
+pub fn render_translations_view(app: &mut App, ui: &mut Ui) {
+    let t = app.i18n;
+    let section_id = egui::Id::unique("translations_section");
+    let flag_id = egui::Id::unique("translations_batch_flag");
+    let mut section: Section = ui.data(|d| d.get_temp(section_id).unwrap_or_default());
+    // The app switches between the modpack results and a single search: follow it.
+    let last_flag: Option<bool> = ui.data(|d| d.get_temp(flag_id));
+    if last_flag.is_some_and(|f| f != app.show_batch_results) {
+        section = if app.show_batch_results {
+            Section::Batch
+        } else {
+            Section::Search
+        };
+    }
+    ui.data_mut(|d| d.insert_temp(flag_id, app.show_batch_results));
+
+    let installed = app.translations_for_target_lang().len();
+    let found: usize = app.batch_results.iter().map(|r| r.items.len()).sum();
+
+    egui::Panel::left("translations_nav")
+        .resizable(false)
+        .default_size(NAV_W)
+        .size_range(NAV_W..=NAV_W)
+        .show_separator_line(false)
+        .frame(egui::Frame {
+            outer_margin: egui::Margin {
+                left: 0,
+                right: 12,
+                top: 0,
+                bottom: 12,
             },
-        );
+            inner_margin: egui::Margin::same(10),
+            ..raised_frame(10)
+        })
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(t.get(TranslationKey::TransTitle))
+                    .color(THEME.text_primary)
+                    .size(18.0)
+                    .strong(),
+            );
+            ui.add_space(10.0);
+            ui.label(
+                egui::RichText::new(t.get(TranslationKey::TransTargetLang))
+                    .color(THEME.text_muted)
+                    .size(11.0)
+                    .strong(),
+            );
+            ui.add_space(2.0);
+            // Dropdown of the most common languages, most popular first.
+            // The language can't change under a running modpack search.
+            let lang_text = |l: TranslationTargetLang| format!("{} ({})", l.label(), l.code());
+            let before = app.trans_target_lang;
+            ui.add_enabled_ui(!app.is_batch_searching(), |ui| {
+                egui::ComboBox::from_id_salt("translation_target_language")
+                    .selected_text(lang_text(app.trans_target_lang))
+                    .width(ui.available_width() - 4.0)
+                    .show_ui(ui, |ui| {
+                        for lang in TranslationTargetLang::POPULAR {
+                            ui.selectable_value(&mut app.trans_target_lang, lang, lang_text(lang));
+                        }
+                    });
+            });
+            if app.trans_target_lang != before {
+                // Results of another language would only confuse.
+                app.batch_results.clear();
+                app.batch_checked.clear();
+            }
+            ui.add_space(4.0);
+            ui.spacing_mut().item_spacing.y = 2.0;
+            side_nav_group(ui, tr!("ПЕРЕВОДЫ", "TRANSLATIONS", "翻译"), false);
+            for item in [Section::Batch, Section::Search, Section::Installed] {
+                let count = match item {
+                    Section::Batch => (found > 0).then_some((found, true)),
+                    Section::Search => {
+                        (!app.workshop_search_results.is_empty()).then_some((app.workshop_search_results.len(), false))
+                    }
+                    Section::Installed => (installed > 0).then_some((installed, false)),
+                };
+                if side_nav_item(ui, item.icon(), item.title(), item == section, false, count).clicked() {
+                    section = item;
+                }
+            }
+        });
+    ui.data_mut(|d| d.insert_temp(section_id, section));
 
-        ui.separator();
-
-        // Right Column: Steam Workshop Search & Recommendations
-        ui.allocate_ui_with_layout(
-            egui::Vec2::new(col_width, ui.available_height() - 20.0),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                render_workshop_search_column(app, ui);
-            },
-        );
-    });
+    egui::CentralPanel::default()
+        .frame(egui::Frame::NONE.inner_margin(egui::Margin {
+            left: 8,
+            right: 8,
+            top: 4,
+            bottom: 4,
+        }))
+        .show(ui, |ui| {
+            ui.set_max_width(920.0);
+            ui.label(
+                egui::RichText::new(section.title())
+                    .color(THEME.text_primary)
+                    .size(20.0)
+                    .strong(),
+            );
+            ui.add_space(8.0);
+            match section {
+                Section::Batch => render_batch_section(app, ui),
+                Section::Search => render_search_section(app, ui),
+                Section::Installed => render_installed_translations_column(app, ui),
+            }
+        });
 }
 
 fn render_installed_translations_column(app: &mut App, ui: &mut Ui) {
@@ -113,20 +154,26 @@ fn render_installed_translations_column(app: &mut App, ui: &mut Ui) {
 
     // Same list that "Delete all translations" would act on: selected language only.
     let translation_mods: Vec<&ModInfo> = app.translations_for_target_lang();
+    let mut delete_all = false;
 
     ui.horizontal(|ui| {
-        ui.heading(
+        ui.label(
             egui::RichText::new(format!(
                 "{} ({})",
                 t.get(TranslationKey::TransFoundTitle),
                 translation_mods.len()
             ))
-            .color(THEME.accent_purple)
-            .size(15.0),
+            .color(THEME.text_muted),
         );
+        if !translation_mods.is_empty() {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if danger_button_icon(ui, ICON_TRASH, t.get(TranslationKey::TransBtnDeleteAll)).clicked() {
+                    delete_all = true;
+                }
+            });
+        }
     });
-
-    ui.add_space(4.0);
+    ui.add_space(6.0);
 
     let mut to_delete_single = None;
 
@@ -145,14 +192,12 @@ fn render_installed_translations_column(app: &mut App, ui: &mut Ui) {
                 return;
             }
 
-            for (idx, m) in translation_mods.iter().enumerate() {
+            for m in translation_mods.iter() {
                 let frame = egui::Frame {
-                    inner_margin: egui::Margin::symmetric(8, 6),
-                    outer_margin: egui::Margin::symmetric(0, 2),
-                    corner_radius: CornerRadius::same(6),
-                    fill: if idx % 2 == 0 { THEME.bg_card } else { THEME.bg_surface },
-                    stroke: Stroke::new(1.0_f32, THEME.border_subtle),
+                    inner_margin: egui::Margin::symmetric(12, 8),
+                    outer_margin: egui::Margin::symmetric(0, 3),
                     shadow: egui::epaint::Shadow::NONE,
+                    ..raised_frame(8)
                 };
 
                 frame.show(ui, |ui| {
@@ -197,21 +242,13 @@ fn render_installed_translations_column(app: &mut App, ui: &mut Ui) {
     if let Some(pkg_id) = to_delete_single {
         app.request_delete_single(&pkg_id);
     }
+    if delete_all {
+        app.request_delete_translations();
+    }
 }
 
-fn render_workshop_search_column(app: &mut App, ui: &mut Ui) {
-    let t = app.i18n;
-
-    ui.horizontal(|ui| {
-        ui.heading(
-            egui::RichText::new(t.get(TranslationKey::TransWorkshopResultsTitle))
-                .color(THEME.accent_cyan)
-                .size(15.0),
-        );
-    });
-
-    ui.add_space(4.0);
-
+/// The modpack-wide search: start / stop with its progress, then the results.
+fn render_batch_section(app: &mut App, ui: &mut Ui) {
     // Modpack-wide search (main way) and search for the mod selected in the list.
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
@@ -263,8 +300,13 @@ fn render_workshop_search_column(app: &mut App, ui: &mut Ui) {
         }
     });
 
-    ui.add_space(6.0);
+    ui.add_space(10.0);
+    render_batch_results(app, ui);
+}
 
+/// Search the Workshop by text (or for the mod selected on the Mods tab) and the results.
+fn render_search_section(app: &mut App, ui: &mut Ui) {
+    let t = app.i18n;
     // Search bar for workshop
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
@@ -286,22 +328,6 @@ fn render_workshop_search_column(app: &mut App, ui: &mut Ui) {
     });
 
     ui.add_space(6.0);
-
-    if app.show_batch_results {
-        render_batch_results(app, ui);
-        return;
-    }
-    if !app.batch_results.is_empty()
-        && ui
-            .link(tr!(
-                "← Показать переводы для сборки",
-                "← Back to translations for my mods",
-                "← 返回我的模组的翻译"
-            ))
-            .clicked()
-    {
-        app.show_batch_results = true;
-    }
 
     let mut to_subscribe_id = None;
     // "Download" when SteamCMD does it, "Subscribe" for the Steam client.

@@ -333,7 +333,7 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
     );
     ui.add(
         egui::Label::new(
-            egui::RichText::new(save.path.display().to_string())
+            egui::RichText::new(shown_path(&save.path))
                 .color(THEME.text_muted)
                 .size(11.0),
         )

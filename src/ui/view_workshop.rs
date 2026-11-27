@@ -16,10 +16,21 @@ const CARD_W: f32 = 210.0;
 const GAP: f32 = 10.0;
 const THUMB_W: u32 = 320;
 const BIG_W: u32 = 640;
-const VERSIONS: [&str; 4] = ["1.7", "1.6", "1.5", "1.4"];
+/// A type tag as shown: translated, the Workshop's own word otherwise.
+fn tag_name(tag: &str) -> &'static str {
+    match tag {
+        "Mod" => crate::i18n::tr!("Мод", "Mod", "模组"),
+        "Translation" => crate::i18n::tr!("Перевод", "Translation", "翻译"),
+        "Scenario" => crate::i18n::tr!("Сценарий", "Scenario", "剧本"),
+        _ => "?",
+    }
+}
 
 enum WsAction {
     Section(Section),
+    /// A type tag on / off.
+    ToggleTag(String),
+    ClearTags,
     ImportCollection(String),
     Search,
     Sort(BrowseSort),
@@ -169,6 +180,19 @@ fn apply(app: &mut App, actions: Vec<WsAction>) {
                 app.ws_query.version = v;
                 app.search_workshop_tab();
             }
+            WsAction::ToggleTag(tag) => {
+                if let Some(i) = app.ws_query.tags.iter().position(|t| *t == tag) {
+                    app.ws_query.tags.remove(i);
+                } else {
+                    app.ws_query.tags.push(tag);
+                }
+                app.search_workshop_tab();
+            }
+            WsAction::ClearTags => {
+                app.ws_query.tags.clear();
+                app.ws_query.version = None;
+                app.search_workshop_tab();
+            }
             WsAction::Page(p) => app.workshop_page(p),
             WsAction::Select(id) => app.ws_selected = id,
             WsAction::Download(id) => app.download_workshop_item(&id),
@@ -227,27 +251,66 @@ fn render_toolbar(app: &mut App, ui: &mut Ui, actions: &mut Vec<WsAction>) {
                     }
                 });
         });
-        let version_text = app
-            .ws_query
-            .version
-            .clone()
-            .unwrap_or_else(|| t.get(TranslationKey::WsAnyVersion).to_string());
-        egui::ComboBox::from_id_salt("ws_version")
-            .selected_text(version_text)
-            .width(120.0)
-            .show_ui(ui, |ui| {
-                if ui
-                    .selectable_label(app.ws_query.version.is_none(), t.get(TranslationKey::WsAnyVersion))
+        // Every RimWorld Workshop tag in one menu: the item types (any number), then the game
+        // version (one). The button shows how many are on.
+        let chosen = app.ws_query.tags.len() + usize::from(app.ws_query.version.is_some());
+        let tags_btn = menu_chip(ui, crate::i18n::tr!("Теги", "Tags", "标签"), chosen);
+        egui::Popup::from_toggle_button_response(&tags_btn)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_max_width(320.0);
+                ui.label(
+                    egui::RichText::new(crate::i18n::tr!("ТИП", "TYPE", "类型"))
+                        .color(THEME.text_muted)
+                        .size(11.0)
+                        .strong(),
+                );
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+                    for tag in crate::workshop_browse::TYPE_TAGS {
+                        let on = app.ws_query.tags.iter().any(|t| t == tag);
+                        if chip(ui, None, tag_name(tag), 0, on).clicked() {
+                            actions.push(WsAction::ToggleTag(tag.to_string()));
+                        }
+                    }
+                });
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(crate::i18n::tr!("ВЕРСИЯ ИГРЫ", "GAME VERSION", "游戏版本"))
+                        .color(THEME.text_muted)
+                        .size(11.0)
+                        .strong(),
+                );
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+                    if chip(
+                        ui,
+                        None,
+                        t.get(TranslationKey::WsAnyVersion),
+                        0,
+                        app.ws_query.version.is_none(),
+                    )
                     .clicked()
-                {
-                    actions.push(WsAction::Version(None));
-                }
-                for v in VERSIONS {
-                    if ui
-                        .selectable_label(app.ws_query.version.as_deref() == Some(v), v)
-                        .clicked()
                     {
-                        actions.push(WsAction::Version(Some(v.to_string())));
+                        actions.push(WsAction::Version(None));
+                    }
+                    for v in crate::workshop_browse::VERSION_TAGS {
+                        let on = app.ws_query.version.as_deref() == Some(v);
+                        if chip(ui, None, v, 0, on).clicked() {
+                            actions.push(WsAction::Version(Some(v.to_string())));
+                        }
+                    }
+                });
+                if chosen > 0 {
+                    ui.add_space(8.0);
+                    if small_button(
+                        ui,
+                        crate::i18n::tr!("Сбросить теги", "Clear tags", "清除标签"),
+                        ButtonStyle::Secondary,
+                    )
+                    .clicked()
+                    {
+                        actions.push(WsAction::ClearTags);
                     }
                 }
             });

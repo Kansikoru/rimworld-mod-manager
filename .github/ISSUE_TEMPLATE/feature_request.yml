@@ -1,0 +1,44 @@
+name: Идея / Feature request
+description: Предложить новую функцию или улучшение / Suggest a new feature or an improvement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо за идею! Опишите, чего не хватает и как это должно работать.
+        Thanks for the idea! Describe what's missing and how it should work.
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: Идея / The idea
+      description: Что должна уметь программа / What the app should be able to do
+      placeholder: |
+        Хочу, чтобы сборку можно было отправить другу одной ссылкой.
+        I'd like to send a modpack to a friend as one link.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Зачем / Why
+      description: Какую задачу это решает, как вы делаете это сейчас / What problem it solves, how you do it now
+    validations:
+      required: false
+
+  - type: input
+    id: manager-version
+    attributes:
+      label: Версия программы / App version
+      placeholder: "2.2.0"
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Что ещё / Anything else
+      description: Скриншоты, примеры из других программ / Screenshots, examples from other apps
+    validations:
+      required: false

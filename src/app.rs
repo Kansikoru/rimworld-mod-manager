@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
@@ -458,6 +458,8 @@ pub struct ModSweep {
     pub from_active: bool,
     /// The row the sweep started on; the selection runs from it to the row under the cursor.
     pub anchor: String,
+    /// What stays selected besides the swept rows (the selection before a Ctrl-sweep).
+    pub base: Vec<String>,
 }
 
 /// Where the dragged mods land if the mouse button is released now.
@@ -479,6 +481,20 @@ pub enum AppTab {
     Optimizer,
     Analyzer,
     Settings,
+}
+
+impl AppTab {
+    /// Every tab, in the side bar's order.
+    pub const ALL: [AppTab; 8] = [
+        AppTab::Mods,
+        AppTab::Workshop,
+        AppTab::Sets,
+        AppTab::Saves,
+        AppTab::Translations,
+        AppTab::Optimizer,
+        AppTab::Analyzer,
+        AppTab::Settings,
+    ];
 }
 
 pub struct App {
@@ -597,7 +613,6 @@ pub struct App {
     /// The active list changed while the diff was being computed: compute it again.
     last_good_rerun: bool,
     /// F13: Log viewer mode (Report / FullLog) and filters.
-    pub log_view_mode: crate::analyzer::LogViewMode,
     pub log_filter_text: String,
     pub log_level_filter: crate::analyzer::LogLevelFilter,
 
@@ -703,6 +718,11 @@ pub struct App {
     pub workshop_index: Option<std::sync::Arc<crate::workshop_db::WorkshopIndex>>,
     /// (downloaded now, result): loading the saved index at start, or a download.
     workshop_index_rx: Option<Receiver<(bool, Result<crate::workshop_db::WorkshopIndex, String>)>>,
+    /// Workshop items asked about (missing mods of a modpack), and the answers: the title of
+    /// each one that's there; one Steam doesn't return is removed or hidden.
+    pub ws_item_checked: HashSet<String>,
+    pub ws_item_titles: HashMap<String, String>,
+    ws_item_rx: Option<Receiver<WorkshopItemsAnswer>>,
     /// D1: the "find by name" window for missing mods with no Workshop link.
     pub name_search: Option<crate::name_search::NameSearch>,
     name_search_rx: Option<Receiver<NameSearchMsg>>,
@@ -1021,7 +1041,6 @@ impl App {
             last_good_rx: None,
             last_good_save_rx: None,
             last_good_rerun: false,
-            log_view_mode: crate::analyzer::LogViewMode::default(),
             log_filter_text: String::new(),
             log_level_filter: crate::analyzer::LogLevelFilter::default(),
 
@@ -1091,6 +1110,9 @@ impl App {
             mod_updates_rx: None,
             workshop_index: None,
             workshop_index_rx: None,
+            ws_item_checked: HashSet::new(),
+            ws_item_titles: HashMap::new(),
+            ws_item_rx: None,
             name_search: None,
             name_search_rx: None,
             name_search_stop: Arc::new(AtomicBool::new(false)),
@@ -1187,6 +1209,13 @@ impl App {
         if start_view == "history" {
             app.open_history();
         }
+        // Screenshots of the Log Analyzer: the last log read, its errors shown.
+        if start_view == "analyzer" {
+            app.run_log_analysis();
+            if let Some(ctx) = app.repaint_ctx.clone() {
+                crate::ui::view_analyzer::open_errors(&ctx);
+            }
+        }
         app.batch_search_after_scan = start_view == "translations-batch";
         app.bisect_after_scan = start_view == "bisect";
         app.name_search_after_load = start_view == "saves-findname";
@@ -1197,6 +1226,10 @@ impl App {
         // A measured launch whose game closed after the manager did: verbose logging off now.
         if crate::load_profile::measured_launch_pending() && crate::game_install::game_pid().is_none() {
             crate::load_profile::finish_measured_launch();
+        }
+        // The start tab is hidden (Mods can be): open the first one shown instead.
+        if start_view.is_empty() && !app.tab_visible(app.current_tab) {
+            app.current_tab = app.visible_tabs().first().copied().unwrap_or(AppTab::Settings);
         }
         app
     }
@@ -1284,6 +1317,24 @@ impl App {
                         self.rescan_mods_keep_status();
                     }
                     Err(e) => self.status_message = fmt(t.get(TranslationKey::VersionsRestoreFailed), &[&name, &e]),
+                }
+            }
+        }
+        if let Some(rx) = &self.ws_item_rx {
+            if let Ok((asked, result)) = rx.try_recv() {
+                self.ws_item_rx = None;
+                match result {
+                    Ok(items) => {
+                        for item in items {
+                            self.ws_item_titles.insert(item.id, item.title);
+                        }
+                    }
+                    // No answer at all (offline): ask again next time, mark nothing as removed.
+                    Err(_) => {
+                        for id in &asked {
+                            self.ws_item_checked.remove(id);
+                        }
+                    }
                 }
             }
         }
@@ -1575,8 +1626,77 @@ impl App {
                 self.mod_index.entry(format!("workshop.{ws_id}")).or_insert(i);
             }
         }
+        // The other copies of a duplicated mod: a modpack may name the one that was set
+        // aside ("workshop.<its item>"), it's still the same mod on disk.
+        for dup in &self.duplicate_mods {
+            let Some(&i) = self.mod_index.get(&dup.package_id.to_lowercase()) else {
+                continue;
+            };
+            for (_, dir) in &dup.origins {
+                if let Some(ws_id) = dir
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .filter(|n| crate::modlists::is_workshop_id(n))
+                {
+                    self.mod_index.entry(format!("workshop.{ws_id}")).or_insert(i);
+                }
+            }
+        }
     }
 }
+
+/// Screenshots for the README and the mod pages: with `RWMM_SCREENSHOT=<file.png>` the app
+/// sets its window to `RWMM_WINDOW` (`1282x834`, the inside of the window), waits for the
+/// scan and the icons, saves what it drew to that file and closes. The picture is the app's
+/// own frame, so screen scaling and other windows don't get into it.
+fn promo_screenshot(ctx: &egui::Context) {
+    use std::sync::atomic::{AtomicU8, Ordering};
+    // 0: not started, 1: size set, 2: screenshot asked for.
+    static STAGE: AtomicU8 = AtomicU8::new(0);
+    let Some(path) = std::env::var_os("RWMM_SCREENSHOT").filter(|p| !p.is_empty()) else {
+        return;
+    };
+    let time = ctx.input(|i| i.time);
+    match STAGE.load(Ordering::Relaxed) {
+        0 => {
+            let size = std::env::var("RWMM_WINDOW").ok().and_then(|s| {
+                let (w, h) = s.split_once('x')?;
+                Some(egui::vec2(w.trim().parse().ok()?, h.trim().parse().ok()?))
+            });
+            if let Some(size) = size {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+            }
+            STAGE.store(1, Ordering::Relaxed);
+        }
+        // RWMM_WAIT: seconds before the shot (pages that load from the Workshop need longer).
+        1 if time
+            > std::env::var("RWMM_WAIT")
+                .ok()
+                .and_then(|w| w.parse::<f64>().ok())
+                .unwrap_or(8.0) =>
+        {
+            STAGE.store(2, Ordering::Relaxed);
+            let path = std::path::PathBuf::from(path);
+            let closer = ctx.clone();
+            ctx.request_screenshot(move |image| {
+                let _ = image::save_buffer(
+                    &path,
+                    image.as_raw(),
+                    image.size[0] as u32,
+                    image.size[1] as u32,
+                    image::ExtendedColorType::Rgba8,
+                );
+                closer.send_viewport_cmd(egui::ViewportCommand::Close);
+                closer.request_repaint();
+            });
+        }
+        _ => {}
+    }
+    ctx.request_repaint();
+}
+
+/// The Workshop items asked about and what Steam returned for them.
+type WorkshopItemsAnswer = (Vec<String>, Result<Vec<crate::workshop_browse::WorkshopItem>, String>);
 
 /// Result of a background Workshop search: (items, status text) or an error message.
 pub type WorkshopSearchOutcome = Result<(Vec<WorkshopItemResult>, String), String>;
@@ -2450,16 +2570,45 @@ impl App {
             .enumerate()
             .filter(|(_, id)| self.find_mod(id).is_none())
             .filter_map(|(i, id)| self.workshop_id_for(id, list.steam_id(id), list.names.get(i).map(String::as_str)))
+            .filter(|ws| !self.workshop_item_gone(ws))
             .collect();
         ids.sort();
         ids.dedup();
         ids
     }
 
+    /// Asks Steam (in the background, once per item per run) about Workshop items not on disk:
+    /// the answer tells which are removed or hidden, so they aren't offered for download.
+    pub fn check_workshop_items(&mut self, ids: &[String]) {
+        if self.ws_item_rx.is_some() {
+            return;
+        }
+        let new: Vec<String> = ids
+            .iter()
+            .filter(|id| crate::modlists::is_workshop_id(id) && !self.ws_item_checked.contains(*id))
+            .cloned()
+            .collect();
+        if new.is_empty() {
+            return;
+        }
+        self.ws_item_checked.extend(new.iter().cloned());
+        let asked = new.clone();
+        self.ws_item_rx = Some(self.spawn_task(move || (asked, crate::workshop_browse::fetch_items(&new))));
+    }
+
+    /// The item was asked about and Steam returned nothing: removed by its author or hidden.
+    pub fn workshop_item_gone(&self, id: &str) -> bool {
+        self.ws_item_checked.contains(id) && self.ws_item_rx.is_none() && !self.ws_item_titles.contains_key(id)
+    }
+
     /// D1: a mod's Workshop ID: the one its file remembers, else from the Workshop ID index
     /// (the mod's name tells re-uploads apart).
     pub fn workshop_id_for(&self, package_id: &str, known: Option<&str>, name_hint: Option<&str>) -> Option<String> {
-        known.map(str::to_string).or_else(|| {
+        // "workshop.<ID>" (a collection's mod that wasn't on disk yet) carries its ID itself.
+        let own = package_id
+            .strip_prefix("workshop.")
+            .filter(|id| crate::modlists::is_workshop_id(id));
+        known.or(own).map(str::to_string).or_else(|| {
             self.workshop_index
                 .as_ref()?
                 .lookup(package_id, name_hint)
@@ -2919,10 +3068,6 @@ impl App {
         let route = self.workshop_route();
         self.ws_collection_rx =
             Some(self.spawn_task(move || (id, crate::workshop_browse::load_collection_mods(&children, &route))));
-    }
-
-    pub fn collection_mods_loading(&self) -> bool {
-        self.ws_collection_rx.is_some()
     }
 
     /// "Save as a modpack" on the Workshop tab: the collection becomes a new modpack.
@@ -3755,42 +3900,35 @@ impl App {
             AppTab::Saves => !p.hide_saves,
             AppTab::Translations => !p.hide_translations,
             AppTab::Optimizer => !p.hide_optimizer,
-            AppTab::Mods | AppTab::Analyzer | AppTab::Settings => true,
+            AppTab::Mods => !p.hide_mods,
+            AppTab::Analyzer => !p.hide_analyzer,
+            AppTab::Settings => true,
         }
     }
 
-    /// The tabs of the top bar, as the user set them up in Settings.
-    pub fn top_bar_tabs(&self) -> Vec<(AppTab, crate::ui::components::TabFace)> {
-        use crate::ui::components::TabFace;
-        use crate::ui_prefs::TabLabel;
-        let t = self.i18n;
-        let p = self.ui_prefs.tabs;
-        let analyzer = match p.analyzer_label {
-            TabLabel::Full => TabFace::Text(t.get(TranslationKey::TabAnalyzer)),
-            TabLabel::Short => TabFace::Text(t.get(TranslationKey::TabAnalyzerShort)),
-            TabLabel::Icon => TabFace::Icon(ICON_SEARCH, t.get(TranslationKey::TabAnalyzer)),
+    /// The tabs the side bar shows, as the user set them up in Settings (Settings always).
+    pub fn visible_tabs(&self) -> Vec<AppTab> {
+        AppTab::ALL.into_iter().filter(|tab| self.tab_visible(*tab)).collect()
+    }
+
+    /// A tab's name.
+    pub fn tab_name(&self, tab: AppTab) -> &'static str {
+        Self::tab_title(self.i18n, tab)
+    }
+
+    /// A tab's name in the given language set (no borrow of the app).
+    pub fn tab_title(t: I18n, tab: AppTab) -> &'static str {
+        let key = match tab {
+            AppTab::Mods => TranslationKey::TabMods,
+            AppTab::Workshop => TranslationKey::TabWorkshop,
+            AppTab::Sets => TranslationKey::TabSets,
+            AppTab::Saves => TranslationKey::TabSaves,
+            AppTab::Translations => TranslationKey::TabTranslations,
+            AppTab::Optimizer => TranslationKey::TabOptimizer,
+            AppTab::Analyzer => TranslationKey::TabAnalyzer,
+            AppTab::Settings => TranslationKey::TabSettings,
         };
-        let settings = if p.settings_icon {
-            TabFace::Icon(ICON_SETTINGS, t.get(TranslationKey::TabSettings))
-        } else {
-            TabFace::Text(t.get(TranslationKey::TabSettings))
-        };
-        [
-            (AppTab::Mods, TabFace::Text(t.get(TranslationKey::TabMods))),
-            (AppTab::Workshop, TabFace::Text(t.get(TranslationKey::TabWorkshop))),
-            (AppTab::Sets, TabFace::Text(t.get(TranslationKey::TabSets))),
-            (AppTab::Saves, TabFace::Text(t.get(TranslationKey::TabSaves))),
-            (
-                AppTab::Translations,
-                TabFace::Text(t.get(TranslationKey::TabTranslations)),
-            ),
-            (AppTab::Optimizer, TabFace::Text(t.get(TranslationKey::TabOptimizer))),
-            (AppTab::Analyzer, analyzer),
-            (AppTab::Settings, settings),
-        ]
-        .into_iter()
-        .filter(|(tab, _)| self.tab_visible(*tab))
-        .collect()
+        t.get(key)
     }
 
     // ----- Mod updates (F10) -----
@@ -5051,17 +5189,44 @@ impl App {
         }
     }
 
-    /// Workshop IDs of the missing dependencies that the Workshop database knows.
-    pub fn missing_dependency_workshop_ids(&self) -> Vec<String> {
-        let Some(index) = self.workshop_index.as_ref() else {
-            return Vec::new();
+    /// Puts an active mod right after another one (a dependency it has to load after), then
+    /// checks the dependencies again. The `_steam` copy of either counts as the same mod.
+    pub fn move_mod_after(&mut self, id: &str, after: &str) {
+        let same = |a: &str, b: &str| {
+            let (a, b) = (a.to_lowercase(), b.to_lowercase());
+            a == b || a.strip_suffix("_steam") == Some(&b) || b.strip_suffix("_steam") == Some(&a)
         };
+        let Some(from) = self.active_mods.iter().position(|m| same(m, id)) else {
+            return;
+        };
+        let moved = self.active_mods.remove(from);
+        let Some(target) = self.active_mods.iter().position(|m| same(m, after)) else {
+            self.active_mods.insert(from, moved);
+            return;
+        };
+        self.active_mods.insert(target + 1, moved);
+        self.validate_deps();
+    }
+
+    /// Workshop IDs of the missing dependencies: from the About.xml of the mod that needs
+    /// one (`steamWorkshopUrl`), else from the Workshop database when it's downloaded.
+    pub fn missing_dependency_workshop_ids(&self) -> Vec<String> {
+        let index = self.workshop_index.as_ref();
         let mut ids: Vec<String> = Vec::new();
         for problem in &self.dependency_report.problems {
-            if let DependencyProblem::Missing { required_id, .. } = problem {
-                if let Some(ws) = index.lookup(required_id, None) {
-                    if !ids.iter().any(|i| i == ws) {
-                        ids.push(ws.to_string());
+            if let DependencyProblem::Missing {
+                required_id,
+                required_info,
+                ..
+            } = problem
+            {
+                let ws = required_info
+                    .workshop_id
+                    .clone()
+                    .or_else(|| index.and_then(|idx| idx.lookup(required_id, None)).map(str::to_string));
+                if let Some(ws) = ws {
+                    if !ids.contains(&ws) {
+                        ids.push(ws);
                     }
                 }
             }
@@ -5382,10 +5547,6 @@ impl App {
                 })
             }
         }));
-    }
-
-    pub fn is_deleting(&self) -> bool {
-        self.delete_rx.is_some()
     }
 
     /// Rescan without replacing the current status message (e.g. "moved to Recycle Bin").
@@ -6404,7 +6565,10 @@ impl App {
 impl eframe::App for App {
     /// One frame: the panels of the main window go into `root` (the whole window); windows
     /// and popups still open on the context.
-    fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, root: &mut egui::Ui, frame: &mut eframe::Frame) {
+        crate::ui::theme::paint_title_bar(frame);
+        crate::ui::theme::set_window_icons(frame);
+        promo_screenshot(&root.ctx().clone());
         let ctx = root.ctx().clone();
         let ctx = &ctx;
         // Process loaded mod icons
@@ -6480,19 +6644,96 @@ impl eframe::App for App {
             self.trigger_vram_check();
         }
 
-        // Top Navigation Bar
-        // App bar (64 px): logo + name + version, text tabs, "Play" on the right.
-        let bar_frame = egui::Frame {
-            inner_margin: egui::Margin::symmetric(16, 12),
+        // Navigation sidebar: logo, "Play", the tabs as icon + name, Settings at the bottom.
+        // Icons only (names on hover) unless names are turned on in Settings → Tabs; a window
+        // narrower than 1200 px gets icons only anyway.
+        let compact = !self.ui_prefs.tabs.sidebar_labels || root.available_width() < 1200.0;
+        let nav_frame = egui::Frame {
+            inner_margin: egui::Margin::symmetric(10, 12),
             fill: THEME.bg_surface,
             ..Default::default()
         };
-        egui::Panel::top("top_panel").frame(bar_frame).show(root, |ui| {
-            ui.horizontal(|ui| {
-                ui.set_height(40.0);
-                ui.spacing_mut().item_spacing.x = 8.0;
+        let nav_w = if compact { 64.0 } else { 212.0 };
+        egui::Panel::left("nav_sidebar")
+            .resizable(false)
+            .default_size(nav_w)
+            .size_range(nav_w..=nav_w)
+            .frame(nav_frame)
+            .show(root, |ui| {
                 let t = self.i18n;
-                let tabs = self.top_bar_tabs();
+                let title = "RimWorld Mod Manager";
+                let version = concat!("v", env!("CARGO_PKG_VERSION"));
+
+                // Logo (and the name with the version when there is room).
+                ui.horizontal(|ui| {
+                    if compact {
+                        ui.add_space((ui.available_width() - 36.0).max(0.0) / 2.0);
+                    }
+                    // The logo follows the theme: the planet in the text color, the gear in the accent.
+                    let (logo_rect, logo) = ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::hover());
+                    egui::Image::new(ICON_LOGO_BODY)
+                        .tint(THEME.text_primary)
+                        .paint_at(ui, logo_rect);
+                    egui::Image::new(ICON_LOGO_ACCENT)
+                        .tint(THEME.accent_cyan)
+                        .paint_at(ui, logo_rect);
+                    if compact {
+                        logo.on_hover_text(format!("{title} {version}"));
+                    } else {
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            ui.label(
+                                egui::RichText::new("RimWorld")
+                                    .color(THEME.text_primary)
+                                    .size(15.0)
+                                    .strong(),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!("Mod Manager {version}"))
+                                    .color(THEME.text_muted)
+                                    .size(11.0),
+                            );
+                        });
+                    }
+                });
+                ui.add_space(14.0);
+
+                // "Play": a full-width filled button.
+                let play_label = t.get(TranslationKey::AppPlayBtn);
+                let (rect, play) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 38.0), egui::Sense::click());
+                let fill = if play.hovered() {
+                    THEME.accent_emerald.gamma_multiply(1.15)
+                } else {
+                    THEME.accent_emerald
+                };
+                ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
+                if compact {
+                    let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(18.0, 18.0));
+                    egui::Image::new(ICON_PLAY).tint(THEME.bg_dark).paint_at(ui, icon_rect);
+                } else {
+                    let galley = ui.painter().layout_no_wrap(
+                        play_label.to_string(),
+                        egui::FontId::proportional(14.0),
+                        THEME.bg_dark,
+                    );
+                    let total = 18.0 + 8.0 + galley.size().x;
+                    let left = rect.center().x - total / 2.0;
+                    let icon_rect =
+                        egui::Rect::from_min_size(egui::pos2(left, rect.center().y - 9.0), egui::vec2(18.0, 18.0));
+                    egui::Image::new(ICON_PLAY).tint(THEME.bg_dark).paint_at(ui, icon_rect);
+                    ui.painter().galley(
+                        egui::pos2(left + 26.0, rect.center().y - galley.size().y / 2.0),
+                        galley,
+                        THEME.bg_dark,
+                    );
+                }
+                let play = play.on_hover_cursor(egui::CursorIcon::PointingHand);
+                let play = if compact { play.on_hover_text(play_label) } else { play };
+                if play.clicked() {
+                    self.launch_game();
+                }
+
+                // A new release and a running broken-mod search, as tags under "Play".
                 let update_text = self
                     .update_available
                     .as_ref()
@@ -6501,88 +6742,10 @@ impl eframe::App for App {
                     let step = self.bisect.as_ref().map_or(1, |s| s.stage.answers + 1);
                     fmt(t.get(TranslationKey::BisectHeaderTag), &[&step.to_string()])
                 });
-
-                // What fits in a narrow window, step by step: the title and version go (the
-                // logo keeps them as a tooltip), the tabs get tighter, "Play" becomes an icon,
-                // and the tabs that still don't fit move into a "»" menu.
-                use crate::ui::components::{tab_face_width, TabFace};
-                let title = "RimWorld Mod Manager";
-                let version = concat!("v", env!("CARGO_PKG_VERSION"));
-                let text_w = |s: &str, size: f32| {
-                    ui.painter()
-                        .layout_no_wrap(s.to_string(), egui::FontId::proportional(size), egui::Color32::WHITE)
-                        .size()
-                        .x
-                };
-                let tags_w: f32 = [&update_text, &bisect_text]
-                    .iter()
-                    .filter_map(|s| s.as_deref())
-                    .map(|s| crate::ui::components::badge_width(ui, s) + 8.0)
-                    .sum();
-                let tab_w = |face: &TabFace, pad: f32| tab_face_width(ui, face, pad) + 4.0;
-                let tabs_w = |pad: f32| tabs.iter().map(|(_, face)| tab_w(face, pad)).sum::<f32>();
-                let play_label = t.get(TranslationKey::AppPlayBtn);
-                let play_full = crate::ui::components::styled_button_width(ui, true, play_label);
-                let play_icon = crate::ui::components::styled_button_width(ui, true, "");
-                let more_face = TabFace::Text("»");
-                let base = 32.0 + 8.0 + 16.0 + 8.0 + tags_w;
-                let title_w = text_w(title, 14.0) + text_w(version, 12.0) + 16.0;
-                let avail = ui.available_width();
-                let show_title = base + title_w + tabs_w(24.0) + play_full <= avail;
-                let tab_pad = if show_title || base + tabs_w(24.0) + play_full <= avail {
-                    24.0
-                } else {
-                    14.0
-                };
-                let play_icon_only = base + tabs_w(tab_pad) + play_full > avail;
-                let play_w = if play_icon_only { play_icon } else { play_full };
-                let budget = avail - base - play_w - if show_title { title_w } else { 0.0 };
-                // Still too narrow: every tab becomes an icon (its name on hover).
-                let use_icons = tabs_w(tab_pad) > budget;
-                let tabs: Vec<(AppTab, TabFace)> = if use_icons {
-                    tabs.iter()
-                        .map(|(tab, face)| {
-                            let name = match face {
-                                TabFace::Text(label) => *label,
-                                TabFace::Icon(_, name) => *name,
-                            };
-                            (*tab, TabFace::Icon(tab_icon(*tab), name))
-                        })
-                        .collect()
-                } else {
-                    tabs
-                };
-                let tabs_w = |pad: f32| tabs.iter().map(|(_, face)| tab_w(face, pad)).sum::<f32>();
-                // How many tabs fit in a row; the rest go into the "»" menu.
-                let shown_count = if tabs_w(tab_pad) <= budget {
-                    tabs.len()
-                } else {
-                    let room = budget - tab_w(&more_face, tab_pad);
-                    let mut used = 0.0;
-                    tabs.iter()
-                        .take_while(|(_, face)| {
-                            used += tab_w(face, tab_pad);
-                            used <= room
-                        })
-                        .count()
-                };
-
-                // Logo in a lavender-tinted square
-                let (logo_rect, logo) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
-                ui.painter().rect_filled(
-                    logo_rect,
-                    CornerRadius::same(6),
-                    crate::ui::theme::tint(THEME.accent_cyan),
-                );
-                egui::Image::new(ICON_LOGO).paint_at(ui, logo_rect.shrink(4.0));
-                if show_title {
-                    ui.label(egui::RichText::new(title).color(THEME.accent_cyan).size(14.0).strong());
-                    ui.label(egui::RichText::new(version).color(THEME.text_muted).size(12.0));
-                } else {
-                    logo.on_hover_text(format!("{title} {version}"));
-                }
                 if let (Some(latest), Some(text)) = (self.update_available.clone(), update_text.as_deref()) {
-                    if crate::ui::components::tag(ui, text, THEME.accent_emerald)
+                    ui.add_space(8.0);
+                    let shown = if compact { "↑" } else { text };
+                    if crate::ui::components::tag(ui, shown, THEME.accent_emerald)
                         .interact(egui::Sense::click())
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .on_hover_text(tr!(
@@ -6596,55 +6759,151 @@ impl eframe::App for App {
                     }
                 }
                 if let Some(text) = bisect_text.as_deref() {
-                    if crate::ui::components::tag(ui, text, THEME.accent_amber)
+                    ui.add_space(8.0);
+                    let shown = if compact { "?" } else { text };
+                    if crate::ui::components::tag(ui, shown, THEME.accent_amber)
                         .interact(egui::Sense::click())
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(text)
                         .clicked()
                     {
                         self.open_bisect();
                     }
                 }
+                ui.add_space(14.0);
 
-                ui.add_space(16.0);
-                ui.spacing_mut().item_spacing.x = 4.0;
-                let (shown, hidden) = tabs.split_at(shown_count.min(tabs.len()));
-                for (tab_val, face) in shown {
-                    if crate::ui::components::nav_tab_face(ui, face, self.current_tab == *tab_val, tab_pad).clicked() {
-                        self.current_tab = *tab_val;
+                // The tabs; Settings goes to the bottom of the bar.
+                let tabs = self.visible_tabs();
+                let name_of = move |tab: AppTab| App::tab_title(t, tab);
+                ui.spacing_mut().item_spacing.y = 2.0;
+                // Counts next to the names: active mods, modpacks, saves; mods with a newer
+                // Workshop version light up the Workshop item.
+                let outdated = self.mod_updates.as_ref().map_or(0, |r| r.outdated_count());
+                let count_of = |tab: AppTab| match tab {
+                    AppTab::Mods => Some((self.active_mods.len(), false)),
+                    AppTab::Sets => Some((self.modlists.len(), false)).filter(|(n, _)| *n > 0),
+                    AppTab::Saves => Some((self.saves.len(), false)).filter(|(n, _)| *n > 0),
+                    AppTab::Workshop => (outdated > 0).then_some((outdated, true)),
+                    _ => None,
+                };
+                let groups: [(String, &[AppTab]); 2] = [
+                    (
+                        tr!("БИБЛИОТЕКА", "LIBRARY", "库").to_string(),
+                        &[AppTab::Mods, AppTab::Sets, AppTab::Saves, AppTab::Workshop],
+                    ),
+                    (
+                        tr!("ИНСТРУМЕНТЫ", "TOOLS", "工具").to_string(),
+                        &[AppTab::Translations, AppTab::Optimizer, AppTab::Analyzer],
+                    ),
+                ];
+                for (title, members) in groups {
+                    let shown: Vec<AppTab> = members.iter().copied().filter(|m| tabs.contains(m)).collect();
+                    if shown.is_empty() {
+                        continue;
+                    }
+                    crate::ui::components::side_nav_group(ui, &title, compact);
+                    for tab in shown {
+                        let icon = if tab == AppTab::Analyzer {
+                            ICON_ANALYZER
+                        } else {
+                            tab_icon(tab)
+                        };
+                        if crate::ui::components::side_nav_item(
+                            ui,
+                            icon,
+                            name_of(tab),
+                            self.current_tab == tab,
+                            compact,
+                            count_of(tab),
+                        )
+                        .clicked()
+                        {
+                            self.current_tab = tab;
+                        }
                     }
                 }
-                if !hidden.is_empty() {
-                    let in_menu = hidden.iter().any(|(tab, _)| *tab == self.current_tab);
-                    let more = crate::ui::components::nav_tab_face(ui, &more_face, in_menu, tab_pad)
-                        .on_hover_text(t.get(TranslationKey::TabsMore));
-                    egui::Popup::from_toggle_button_response(&more)
-                        .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
-                        .show(|ui| {
-                            ui.set_min_width(180.0);
-                            for (tab_val, face) in hidden {
-                                let name = match face {
-                                    TabFace::Text(label) => *label,
-                                    TabFace::Icon(_, name) => *name,
-                                };
-                                if ui.selectable_label(self.current_tab == *tab_val, name).clicked() {
-                                    self.current_tab = *tab_val;
-                                }
-                            }
-                        });
-                }
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let play = if play_icon_only {
-                        crate::ui::components::success_button_icon(ui, ICON_PLAY, "").on_hover_text(play_label)
-                    } else {
-                        crate::ui::components::success_button_icon(ui, ICON_PLAY, play_label)
-                    };
-                    if play.clicked() {
-                        self.launch_game();
+                // Bottom: Settings, and above it a small card with the found game.
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    if crate::ui::components::side_nav_item(
+                        ui,
+                        ICON_SETTINGS,
+                        name_of(AppTab::Settings),
+                        self.current_tab == AppTab::Settings,
+                        compact,
+                        None,
+                    )
+                    .clicked()
+                    {
+                        self.current_tab = AppTab::Settings;
+                    }
+                    // Search over the whole app (also Ctrl+K), right above Settings.
+                    let search_label = tr!("Поиск  (Ctrl+K)", "Search  (Ctrl+K)", "搜索 (Ctrl+K)");
+                    if crate::ui::components::side_nav_item(ui, ICON_SEARCH, search_label, false, compact, None)
+                        .clicked()
+                    {
+                        crate::ui::view_search::open(ui.ctx());
+                    }
+                    ui.add_space(12.0);
+                    if !compact {
+                        // "RimWorld 1.7" on top, the full build and the engine under it.
+                        let (version, ok) = match self.steam_paths.game_major_minor() {
+                            Some(v) => (format!("RimWorld {v}"), true),
+                            None => (
+                                tr!("Игра не найдена", "Game not found", "未找到游戏").to_string(),
+                                false,
+                            ),
+                        };
+                        // Its own top-down box: a frame laid out bottom-up gets its margins wrong.
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), 48.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                egui::Frame::NONE
+                                    .fill(THEME.bg_dark)
+                                    .corner_radius(CornerRadius::same(8))
+                                    .inner_margin(egui::Margin::symmetric(10, 8))
+                                    .show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        ui.horizontal(|ui| {
+                                            let (dot, _) =
+                                                ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                                            ui.painter().circle_filled(
+                                                dot.center(),
+                                                4.0,
+                                                if ok { THEME.accent_emerald } else { THEME.accent_amber },
+                                            );
+                                            ui.vertical(|ui| {
+                                                ui.spacing_mut().item_spacing.y = 0.0;
+                                                ui.add(
+                                                    egui::Label::new(
+                                                        egui::RichText::new(version)
+                                                            .color(THEME.text_primary)
+                                                            .size(12.0),
+                                                    )
+                                                    .truncate(),
+                                                );
+                                                if ok {
+                                                    let build =
+                                                        self.steam_paths.game_version.clone().unwrap_or_default();
+                                                    let line = format!("{build} · {}", self.steam_paths.engine.label());
+                                                    ui.add(
+                                                        egui::Label::new(
+                                                            egui::RichText::new(line)
+                                                                .color(THEME.text_muted)
+                                                                .size(11.0),
+                                                        )
+                                                        .truncate(),
+                                                    );
+                                                }
+                                            });
+                                        });
+                                    });
+                            },
+                        );
                     }
                 });
             });
-        });
 
         // Status bar (28 px): last status on the left, game version on the right.
         let status_frame = egui::Frame {
@@ -6673,16 +6932,6 @@ impl eframe::App for App {
                             self.stop_steam_wait();
                         }
                     }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let game = match self.steam_paths.game_version.as_deref() {
-                            Some(v) => format!("RimWorld {v}"),
-                            None => fmt(
-                                self.i18n.get(TranslationKey::AppStatusBarStats),
-                                &[&self.all_mods.len().to_string(), &self.active_mods.len().to_string()],
-                            ),
-                        };
-                        ui.label(egui::RichText::new(game).color(THEME.text_muted).size(12.0));
-                    });
                 });
             });
 
@@ -6713,13 +6962,11 @@ impl eframe::App for App {
                         .show(ui, |ui| crate::ui::view_optimizer::render_optimizer_view(self, ui));
                 }
                 AppTab::Analyzer => crate::ui::view_analyzer::render_analyzer_view(self, ui),
-                AppTab::Settings => {
-                    egui::ScrollArea::vertical()
-                        .id_salt("settings_page_scroll")
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| crate::ui::view_settings::render_settings_view(self, ui));
-                }
+                AppTab::Settings => crate::ui::view_settings::render_settings_view(self, ui),
             });
+
+        // The app-wide search (Ctrl+K or the side bar's magnifier) over everything else.
+        crate::ui::view_search::render(self, &root.ctx().clone());
 
         // Ctrl+Z / Ctrl+Y on the Mods tab, unless a text field has the keyboard.
         if self.current_tab == AppTab::Mods && !ctx.egui_wants_keyboard_input() {

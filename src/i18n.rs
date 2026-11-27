@@ -14,14 +14,6 @@ pub fn current_language() -> Language {
     }
 }
 
-pub fn is_english() -> bool {
-    current_language() == Language::English
-}
-
-pub fn is_chinese() -> bool {
-    current_language() == Language::Chinese
-}
-
 pub fn is_russian() -> bool {
     current_language() == Language::Russian
 }
@@ -295,7 +287,6 @@ pub enum TranslationKey {
     LastGoodSavedMsg,
 
     // F13: Log viewer, export, and extended error patterns
-    AnalyzerTabReport,
     AnalyzerTabFullLog,
     AnalyzerSaveReport,
     AnalyzerFilterHint,
@@ -646,14 +637,9 @@ pub enum TranslationKey {
     SetsTagNewHint,
     SetsTagAdd,
     SetsTagsSaveError,
-    TabAnalyzerShort,
     SettingsTabsTitle,
     SettingsTabsHint,
-    SettingsAnalyzerLabel,
-    SettingsTabIcon,
-    SettingsSettingsIcon,
     SettingsTabsSaveError,
-    TabsMore,
     WorkshopDbHint,
     WorkshopDbNoLink,
     WorkshopDbBtn,
@@ -1420,8 +1406,6 @@ impl TranslationKey {
             (TranslationKey::LastGoodSavedMsg, Language::Russian) => "Текущее состояние модов сохранено как рабочий запуск",
             (TranslationKey::LastGoodSavedMsg, Language::English) => "Current mod configuration saved as working run",
 
-            (TranslationKey::AnalyzerTabReport, Language::Russian) => "Отчёт",
-            (TranslationKey::AnalyzerTabReport, Language::English) => "Report",
             (TranslationKey::AnalyzerTabFullLog, Language::Russian) => "Полный лог",
             (TranslationKey::AnalyzerTabFullLog, Language::English) => "Full log",
             (TranslationKey::AnalyzerSaveReport, Language::Russian) => "Сохранить отчёт",
@@ -2085,18 +2069,10 @@ impl TranslationKey {
             (TranslationKey::SetsTagAdd, Language::English) => "Add tag",
             (TranslationKey::SetsTagsSaveError, Language::Russian) => "Не удалось сохранить метки: {}",
             (TranslationKey::SetsTagsSaveError, Language::English) => "Could not save the tags: {}",
-            (TranslationKey::TabAnalyzerShort, Language::Russian) => "Лог",
-            (TranslationKey::TabAnalyzerShort, Language::English) => "Log",
             (TranslationKey::SettingsTabsTitle, Language::Russian) => "Вкладки",
             (TranslationKey::SettingsTabsTitle, Language::English) => "Tabs",
-            (TranslationKey::SettingsTabsHint, Language::Russian) => "Снятая галочка убирает вкладку из верхней панели (её функции остаются, если на них ведёт кнопка). «Моды» и «Настройки» скрыть нельзя.",
-            (TranslationKey::SettingsTabsHint, Language::English) => "Untick a tab to remove it from the top bar (its features stay where a button leads to them). Mods and Settings can't be hidden.",
-            (TranslationKey::SettingsAnalyzerLabel, Language::Russian) => "Анализатор логов в панели:",
-            (TranslationKey::SettingsAnalyzerLabel, Language::English) => "Log Analyzer in the bar:",
-            (TranslationKey::SettingsTabIcon, Language::Russian) => "Значок",
-            (TranslationKey::SettingsTabIcon, Language::English) => "Icon",
-            (TranslationKey::SettingsSettingsIcon, Language::Russian) => "«Настройки» — только значок шестерёнки",
-            (TranslationKey::SettingsSettingsIcon, Language::English) => "Settings as a gear icon only",
+            (TranslationKey::SettingsTabsHint, Language::Russian) => "Выключенная вкладка пропадает из боковой панели (её функции остаются, если на них ведёт кнопка). «Настройки» не скрываются: отсюда вкладки возвращаются.",
+            (TranslationKey::SettingsTabsHint, Language::English) => "A tab turned off leaves the side bar (its features stay where a button leads to them). Settings can't be hidden: tabs come back from here.",
             (TranslationKey::SettingsTabsSaveError, Language::Russian) => "Не удалось сохранить настройки вкладок: {}",
             (TranslationKey::SettingsTabsSaveError, Language::English) => "Could not save the tab settings: {}",
             (TranslationKey::OptSameNameSkipped, Language::Russian) => " | пропущено с одинаковым именем (icon.png + icon.jpg): {}",
@@ -2385,8 +2361,6 @@ impl TranslationKey {
             (TranslationKey::WsSteamQueryFailed, Language::English) => "Steam turned down the Workshop query (code {})",
             (TranslationKey::WsPageWithoutItems, Language::Russian) => "Сайт Steam прислал вместо каталога страницу без модов",
             (TranslationKey::WsPageWithoutItems, Language::English) => "The Steam site sent a page with no mods instead of the catalog",
-            (TranslationKey::TabsMore, Language::Russian) => "Остальные вкладки",
-            (TranslationKey::TabsMore, Language::English) => "More tabs",
             (TranslationKey::ModsShowAvailable, Language::Russian) => "Доступные",
             (TranslationKey::ModsShowAvailable, Language::English) => "Available",
             (TranslationKey::ModsShowActive, Language::Russian) => "Активные",
@@ -2998,8 +2972,6 @@ impl TranslationKey {
             TranslationKey::TabSets => "模组列表",
             TranslationKey::TabSaves => "存档",
             TranslationKey::TabWorkshop => "创意工坊",
-            TranslationKey::TabAnalyzerShort => "日志",
-            TranslationKey::TabsMore => "更多...",
 
             // Mods View
             TranslationKey::BtnAutoSort => "自动排序",
@@ -3149,7 +3121,6 @@ impl TranslationKey {
             TranslationKey::LastGoodSavedMsg => "已将当前模组状态保存为最新正常状态",
 
             // F13: Log viewer, export, patterns
-            TranslationKey::AnalyzerTabReport => "分析报告",
             TranslationKey::AnalyzerTabFullLog => "完整日志",
             TranslationKey::AnalyzerSaveReport => "保存报告",
             TranslationKey::AnalyzerFilterHint => "过滤日志内容...",
@@ -3566,9 +3537,6 @@ impl TranslationKey {
             TranslationKey::SetsTagNewHint => "自定义标签…",
             TranslationKey::SetsTagAdd => "添加标签",
             TranslationKey::SetsTagsSaveError => "无法保存标签：{}",
-            TranslationKey::SettingsAnalyzerLabel => "顶栏中的日志分析：",
-            TranslationKey::SettingsTabIcon => "图标",
-            TranslationKey::SettingsSettingsIcon => "设置只显示齿轮图标",
             TranslationKey::SettingsTabsSaveError => "无法保存标签页设置：{}",
             TranslationKey::OptSameNameSkipped => " | 已跳过同名文件（icon.png + icon.jpg）：{}",
             TranslationKey::OptVramEstimate => " | 显存：未压缩约 {} MB，DDS 最多 {} MB",

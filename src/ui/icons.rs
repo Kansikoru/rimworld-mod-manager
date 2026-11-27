@@ -46,8 +46,11 @@ pub const ICON_STATUS_WORKSHOP: ImageSource<'static> = egui::include_image!("../
 /// A filled circle, tinted with a mod's colour mark.
 pub const ICON_DOT: ImageSource<'static> = egui::include_image!("../../assets/icons/dot.svg");
 
-// Brand (logo.svg is full colour: draw it without tint)
-pub const ICON_LOGO: ImageSource<'static> = egui::include_image!("../../assets/icons/logo.svg");
+// Brand
+/// The in-app logo in two white layers: the planet (painted in the theme's text color) and the
+/// gear (painted in the accent), so it fits every theme. The app icon itself is `assets/icon.svg`.
+pub const ICON_LOGO_BODY: ImageSource<'static> = egui::include_image!("../../assets/icons/logo_body.svg");
+pub const ICON_LOGO_ACCENT: ImageSource<'static> = egui::include_image!("../../assets/icons/logo_accent.svg");
 
 // Mod categories
 pub const ICON_CAT_FRAMEWORK: ImageSource<'static> = egui::include_image!("../../assets/icons/cat_framework.svg");

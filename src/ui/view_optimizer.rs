@@ -118,12 +118,7 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
                     (OptimizeScope::SelectedOnly, t.get(TranslationKey::OptScopeSelected)),
                 ];
 
-                for (scope_val, label) in scopes {
-                    let is_sel = app.opt_scope == scope_val;
-                    if ui.selectable_label(is_sel, label).clicked() {
-                        app.opt_scope = scope_val;
-                    }
-                }
+                segmented(ui, &mut app.opt_scope, &scopes);
             });
 
             ui.add_space(6.0);
@@ -143,12 +138,7 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
                     (crate::optimizer::MaxTextureSize::S512, "512"),
                 ];
 
-                for (size_val, label) in sizes {
-                    let is_sel = app.opt_max_size == size_val;
-                    if ui.selectable_label(is_sel, label).clicked() {
-                        app.opt_max_size = size_val;
-                    }
-                }
+                segmented(ui, &mut app.opt_max_size, &sizes);
             });
 
             ui.add_space(6.0);

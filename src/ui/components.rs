@@ -124,15 +124,6 @@ pub fn badge_width(ui: &Ui, text: &str) -> f32 {
     galley.size().x + BADGE_PAD.x * 2.0
 }
 
-/// Width an `icon_badge` with this text takes.
-pub fn icon_badge_width(ui: &Ui, text: &str) -> f32 {
-    let galley = ui
-        .painter()
-        .layout_no_wrap(text.to_string(), egui::FontId::proportional(12.0), Color32::WHITE);
-    let gap = if text.is_empty() { 0.0 } else { 5.0 };
-    BADGE_PAD.x * 2.0 + BADGE_ICON + gap + galley.size().x
-}
-
 /// Whether something this wide still fits in the row (plus the spacing before it).
 pub fn fits(ui: &Ui, width: f32) -> bool {
     ui.available_width() >= width + ui.spacing().item_spacing.x
@@ -146,22 +137,6 @@ pub fn badge_if_fits(ui: &mut Ui, text: &str, bg: Color32, fg: Color32) -> Optio
 /// `tag` only if it fits completely.
 pub fn tag_if_fits(ui: &mut Ui, text: &str, color: Color32) -> Option<Response> {
     badge_if_fits(ui, text, tint(color), color)
-}
-
-/// `icon_badge` only if it fits completely.
-pub fn icon_badge_if_fits(
-    ui: &mut Ui,
-    icon: ImageSource<'static>,
-    text: &str,
-    bg: Color32,
-    fg: Color32,
-) -> Option<Response> {
-    fits(ui, icon_badge_width(ui, text)).then(|| icon_badge(ui, icon, text, bg, fg))
-}
-
-/// `icon_badge` with `color` on 18% of it, only if it fits.
-pub fn icon_tag_if_fits(ui: &mut Ui, icon: ImageSource<'static>, text: &str, color: Color32) -> Option<Response> {
-    icon_badge_if_fits(ui, icon, text, tint(color), color)
 }
 
 /// Badge pill with an SVG icon (tinted with `fg`) in front of the text.
@@ -444,105 +419,7 @@ pub fn dialog_size(ctx: &egui::Context, wanted_width: f32) -> (f32, f32) {
     )
 }
 
-/// What a top-bar tab shows: a word, or an icon (with the full name as a tooltip).
-#[derive(Clone)]
-pub enum TabFace {
-    Text(&'static str),
-    Icon(ImageSource<'static>, &'static str),
-}
-
-/// Width of a top-bar tab with `pad` total side padding.
-pub fn tab_face_width(ui: &Ui, face: &TabFace, pad: f32) -> f32 {
-    match face {
-        TabFace::Text(label) => {
-            ui.painter()
-                .layout_no_wrap(label.to_string(), egui::FontId::proportional(13.0), Color32::WHITE)
-                .size()
-                .x
-                + pad
-        }
-        TabFace::Icon(..) => 18.0 + pad,
-    }
-}
-
-/// A top-bar tab: text (`nav_tab_padded`) or an icon in the same box and colors.
-pub fn nav_tab_face(ui: &mut Ui, face: &TabFace, active: bool, pad: f32) -> Response {
-    match face {
-        TabFace::Text(label) => nav_tab_padded(ui, label, active, pad),
-        TabFace::Icon(icon, name) => {
-            let (rect, response) = ui.allocate_exact_size(Vec2::new(18.0 + pad, 40.0), Sense::click());
-            if ui.is_rect_visible(rect) {
-                let hovered = response.hovered();
-                if active || hovered {
-                    ui.painter()
-                        .rect_filled(rect, CornerRadius::same(6), THEME.bg_surface_hover);
-                }
-                let color = if active {
-                    THEME.accent_cyan
-                } else if hovered {
-                    THEME.text_primary
-                } else {
-                    THEME.text_secondary
-                };
-                let icon_rect = Rect::from_center_size(rect.center(), Vec2::splat(18.0));
-                svg_icon(icon.clone(), Vec2::splat(18.0), color).paint_at(ui, icon_rect);
-                if active {
-                    let half = pad / 2.0;
-                    let line = Rect::from_min_max(
-                        Pos2::new(rect.min.x + half, rect.max.y - 2.0),
-                        Pos2::new(rect.max.x - half, rect.max.y),
-                    );
-                    ui.painter().rect_filled(line, CornerRadius::same(1), THEME.accent_cyan);
-                }
-            }
-            response
-                .on_hover_text(*name)
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-        }
-    }
-}
-
-pub fn nav_tab(ui: &mut Ui, label: &str, active: bool) -> Response {
-    nav_tab_padded(ui, label, active, 24.0)
-}
-
-/// `nav_tab` with the given total side padding (smaller in a narrow window).
-pub fn nav_tab_padded(ui: &mut Ui, label: &str, active: bool, pad: f32) -> Response {
-    let color = if active {
-        THEME.accent_cyan
-    } else {
-        THEME.text_secondary
-    };
-    let galley = ui
-        .painter()
-        .layout_no_wrap(label.to_string(), egui::FontId::proportional(13.0), color);
-    let size = Vec2::new(galley.size().x + pad, 40.0);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-    let half = pad / 2.0;
-    if ui.is_rect_visible(rect) {
-        let hovered = response.hovered();
-        if active || hovered {
-            ui.painter()
-                .rect_filled(rect, CornerRadius::same(6), THEME.bg_surface_hover);
-        }
-        let text_color = if hovered && !active { THEME.text_primary } else { color };
-        let pos = Pos2::new(
-            snap(ui, rect.min.x + half),
-            snap(ui, rect.center().y - galley.size().y / 2.0),
-        );
-        ui.painter().galley(pos, galley, text_color);
-        if active {
-            let line = Rect::from_min_max(
-                Pos2::new(rect.min.x + half, rect.max.y - 2.0),
-                Pos2::new(rect.max.x - half, rect.max.y),
-            );
-            ui.painter().rect_filled(line, CornerRadius::same(1), THEME.accent_cyan);
-        }
-    }
-    response.on_hover_cursor(egui::CursorIcon::PointingHand)
-}
-
-/// Filter chip: label + muted count; selected = lavender on 18% lavender.
+/// Filter chip: label + muted count (none for 0); selected = accent on an accent tint.
 pub fn chip(
     ui: &mut Ui,
     icon: Option<(ImageSource<'static>, Color32)>,
@@ -569,10 +446,13 @@ pub fn chip(
     let label_g = ui
         .painter()
         .layout_no_wrap(label.to_string(), label_font.clone(), label_color);
-    let count_g = ui.painter().layout_no_wrap(count.to_string(), label_font, count_color);
+    // A zero count isn't drawn: such a chip is a plain on/off option.
+    let count_text = if count > 0 { count.to_string() } else { String::new() };
+    let count_g = ui.painter().layout_no_wrap(count_text, label_font, count_color);
     let pad = 8.0;
     let icon_w = if icon.is_some() { 14.0 + 6.0 } else { 0.0 };
-    let size = Vec2::new(pad * 2.0 + icon_w + label_g.size().x + 6.0 + count_g.size().x, 28.0);
+    let count_w = if count > 0 { 6.0 + count_g.size().x } else { 0.0 };
+    let size = Vec2::new(pad * 2.0 + icon_w + label_g.size().x + count_w, 28.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     if ui.is_rect_visible(rect) {
         let fill = if response.hovered() && !selected {
@@ -649,17 +529,49 @@ pub fn search_input_width(ui: &mut Ui, query: &mut String, placeholder: &str, wi
     entered
 }
 
-/// Card: panel color, subtle border, 6 px corners.
+/// The soft shadow under raised surfaces (cards, panels): it lifts them off the window.
+pub fn surface_shadow() -> egui::epaint::Shadow {
+    egui::epaint::Shadow {
+        offset: [0, 3],
+        blur: 14,
+        spread: 0,
+        color: Color32::from_black_alpha(90),
+    }
+}
+
+/// A raised surface: lighter than the window, a visible edge, a soft shadow and room for it.
+pub fn raised_frame(radius: u8) -> egui::Frame {
+    egui::Frame {
+        inner_margin: egui::Margin::same(12),
+        outer_margin: egui::Margin::ZERO,
+        corner_radius: CornerRadius::same(radius),
+        shadow: surface_shadow(),
+        fill: THEME.bg_surface,
+        stroke: Stroke::new(1.0_f32, mix(THEME.border_subtle, THEME.border_strong, 0.5)),
+    }
+}
+
+/// A thin light line along the top edge of a raised surface, like light falling on it.
+pub fn paint_top_highlight(ui: &Ui, rect: Rect, radius: u8) {
+    let r = radius as f32;
+    let y = rect.top() + 1.0;
+    ui.painter().hline(
+        (rect.left() + r)..=(rect.right() - r),
+        y,
+        Stroke::new(1.0, Color32::from_white_alpha(14)),
+    );
+}
+
+/// Card: a raised surface with 8 px corners.
 pub fn card_container<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
     let frame = egui::Frame {
-        inner_margin: egui::Margin::same(12),
-        outer_margin: egui::Margin::symmetric(0, 4),
-        corner_radius: CornerRadius::same(6),
-        shadow: egui::epaint::Shadow::NONE,
-        fill: THEME.bg_surface,
-        stroke: Stroke::new(1.0_f32, THEME.border_subtle),
+        outer_margin: egui::Margin::symmetric(0, 5),
+        ..raised_frame(8)
     };
-    frame.show(ui, add_contents).inner
+    let response = frame.show(ui, add_contents);
+    let rect = response.response.rect.shrink2(Vec2::new(0.0, 5.0));
+    paint_top_highlight(ui, rect, 8);
+    response.inner
 }
 
 /// Page title with an optional badge and a muted subtitle.
@@ -676,4 +588,241 @@ pub fn section_header(ui: &mut Ui, title: &str, subtitle: &str, badge_text: Opti
         }
         ui.add_space(4.0);
     });
+}
+
+/// A segmented choice: options side by side in one rounded box, the chosen one on an
+/// accent-tinted segment. Returns whether the choice changed.
+pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T, &str)]) -> bool {
+    let mut changed = false;
+    let font = egui::FontId::proportional(13.0);
+    let pad = Vec2::new(12.0, 5.0);
+    let galleys: Vec<_> = options
+        .iter()
+        .map(|(_, label)| {
+            ui.painter()
+                .layout_no_wrap(label.to_string(), font.clone(), THEME.text_primary)
+        })
+        .collect();
+    let height = galleys.iter().map(|g| g.size().y).fold(0.0, f32::max) + pad.y * 2.0;
+    let width: f32 = galleys.iter().map(|g| g.size().x + pad.x * 2.0).sum::<f32>() + 6.0;
+    let (outer, outer_resp) = ui.allocate_exact_size(Vec2::new(width, height + 6.0), Sense::hover());
+    let painter = ui.painter().clone();
+    painter.rect_filled(outer, CornerRadius::same(8), THEME.bg_dark);
+    painter.rect_stroke(
+        outer,
+        CornerRadius::same(8),
+        Stroke::new(1.0, THEME.border_subtle),
+        egui::StrokeKind::Inside,
+    );
+    let mut x = outer.left() + 3.0;
+    for (i, ((option, _), galley)) in options.iter().zip(galleys).enumerate() {
+        let w = galley.size().x + pad.x * 2.0;
+        let rect = Rect::from_min_size(Pos2::new(x, outer.top() + 3.0), Vec2::new(w, height));
+        x += w;
+        let response = ui
+            .interact(rect, outer_resp.id.with(i), Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        let selected = *value == *option;
+        if selected {
+            painter.rect_filled(rect, CornerRadius::same(6), crate::ui::theme::tint(THEME.accent_cyan));
+        } else if response.hovered() {
+            painter.rect_filled(rect, CornerRadius::same(6), THEME.bg_surface_hover);
+        }
+        let color = if selected {
+            THEME.accent_cyan
+        } else if response.hovered() {
+            THEME.text_primary
+        } else {
+            THEME.text_secondary
+        };
+        let pos = Pos2::new(
+            snap(ui, rect.center().x - galley.size().x / 2.0),
+            snap(ui, rect.center().y - galley.size().y / 2.0),
+        );
+        painter.galley(pos, galley, color);
+        if response.clicked() && !selected {
+            *value = *option;
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// An item of a side navigation list: icon and name, a count on the right, the chosen one on
+/// an accent-tinted pill with a bar at its left edge. `compact` leaves only the centered icon
+/// (name on hover, the count as a dot). An `alert` count is drawn in the accent color.
+pub fn side_nav_item(
+    ui: &mut Ui,
+    icon: ImageSource<'static>,
+    label: &str,
+    selected: bool,
+    compact: bool,
+    count: Option<(usize, bool)>,
+) -> Response {
+    let size = Vec2::new(ui.available_width(), 38.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    if ui.is_rect_visible(rect) {
+        let hovered = response.hovered();
+        if selected {
+            ui.painter()
+                .rect_filled(rect, CornerRadius::same(8), crate::ui::theme::tint(THEME.accent_cyan));
+            let bar = Rect::from_min_size(Pos2::new(rect.left(), rect.center().y - 9.0), Vec2::new(3.0, 18.0));
+            ui.painter().rect_filled(bar, CornerRadius::same(2), THEME.accent_cyan);
+        } else if hovered {
+            ui.painter()
+                .rect_filled(rect, CornerRadius::same(8), THEME.bg_surface_hover);
+        }
+        let color = if selected {
+            THEME.accent_cyan
+        } else if hovered {
+            THEME.text_primary
+        } else {
+            THEME.text_secondary
+        };
+        let icon_x = if compact { rect.center().x } else { rect.left() + 22.0 };
+        let icon_rect = Rect::from_center_size(Pos2::new(icon_x, rect.center().y), Vec2::splat(18.0));
+        egui::Image::new(icon).tint(color).paint_at(ui, icon_rect);
+        if compact {
+            if let Some((_, true)) = count {
+                ui.painter()
+                    .circle_filled(icon_rect.right_top() + Vec2::new(1.0, 1.0), 3.5, THEME.accent_amber);
+            }
+        } else {
+            // The name is cut with "…" before the count (or the right edge), never past it.
+            let count_w = count.map_or(0.0, |(n, _)| {
+                let w = ui
+                    .painter()
+                    .layout_no_wrap(n.to_string(), egui::FontId::proportional(11.0), Color32::WHITE)
+                    .size()
+                    .x;
+                (w + 12.0).max(22.0) + 14.0
+            });
+            let max_w = (rect.right() - 8.0 - count_w - (rect.left() + 42.0)).max(20.0);
+            let mut job = egui::text::LayoutJob::simple_singleline(
+                label.to_string(),
+                egui::FontId::proportional(14.0),
+                if selected { THEME.text_primary } else { color },
+            );
+            job.wrap.max_width = max_w;
+            job.wrap.max_rows = 1;
+            job.wrap.overflow_character = Some('…');
+            let galley = ui.painter().layout_job(job);
+            ui.painter().galley(
+                Pos2::new(rect.left() + 42.0, rect.center().y - galley.size().y / 2.0),
+                galley,
+                THEME.text_primary,
+            );
+            if let Some((n, alert)) = count {
+                let (bg, fg) = if alert {
+                    (crate::ui::theme::tint(THEME.accent_amber), THEME.accent_amber)
+                } else {
+                    (THEME.bg_dark, THEME.text_muted)
+                };
+                let galley = ui
+                    .painter()
+                    .layout_no_wrap(n.to_string(), egui::FontId::proportional(11.0), fg);
+                let pill = Rect::from_center_size(
+                    Pos2::new(rect.right() - 10.0 - (galley.size().x + 12.0) / 2.0, rect.center().y),
+                    Vec2::new((galley.size().x + 12.0).max(22.0), 18.0),
+                );
+                ui.painter().rect_filled(pill, CornerRadius::same(9), bg);
+                let pos = Pos2::new(
+                    snap(ui, pill.center().x - galley.size().x / 2.0),
+                    snap(ui, pill.center().y - galley.size().y / 2.0),
+                );
+                ui.painter().galley(pos, galley, fg);
+            }
+        }
+    }
+    // The name on hover too: in the compact bar it's the only place, a long one may be cut.
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(label)
+}
+
+/// A small muted heading over a group of side navigation items.
+pub fn side_nav_group(ui: &mut Ui, text: &str, compact: bool) {
+    if compact {
+        ui.add_space(4.0);
+        ui.separator();
+        ui.add_space(4.0);
+    } else {
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            ui.label(egui::RichText::new(text).color(THEME.text_muted).size(11.0).strong());
+        });
+        ui.add_space(2.0);
+    }
+}
+
+/// A chip that opens a menu: its name, "· N" when N of its options are chosen, and a "▾".
+/// Drawn as chosen while any option is.
+pub fn menu_chip(ui: &mut Ui, label: &str, chosen: usize) -> Response {
+    let text = if chosen > 0 {
+        format!("{label} · {chosen}")
+    } else {
+        label.to_string()
+    };
+    let selected = chosen > 0;
+    let font = egui::FontId::proportional(12.0);
+    let color = if selected {
+        THEME.accent_cyan
+    } else {
+        THEME.text_secondary
+    };
+    let galley = ui.painter().layout_no_wrap(text, font, color);
+    let size = Vec2::new(galley.size().x + 16.0 + 14.0, 28.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    if ui.is_rect_visible(rect) {
+        // A small chevron at the right edge.
+        let c = Pos2::new(rect.right() - 13.0, rect.center().y + 1.0);
+        let chevron = [
+            c + Vec2::new(-3.5, -2.0),
+            c + Vec2::new(0.0, 1.5),
+            c + Vec2::new(3.5, -2.0),
+        ];
+        let fill = if selected {
+            tint(THEME.accent_cyan)
+        } else if response.hovered() {
+            THEME.bg_surface_hover
+        } else {
+            THEME.bg_surface
+        };
+        let stroke = if selected {
+            THEME.border_strong
+        } else {
+            THEME.border_subtle
+        };
+        ui.painter().rect(
+            rect,
+            CornerRadius::same(6),
+            fill,
+            Stroke::new(1.0_f32, stroke),
+            egui::StrokeKind::Middle,
+        );
+        let pos = Pos2::new(
+            snap(ui, rect.min.x + 8.0),
+            snap(ui, rect.center().y - galley.size().y / 2.0),
+        );
+        ui.painter().galley(pos, galley, color);
+        ui.painter()
+            .add(egui::Shape::line(chevron.to_vec(), Stroke::new(1.5, color)));
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A path as shown on screen. In the screenshot mode (`RWMM_SCREENSHOT`) the user's own
+/// folder becomes `C:\Users\Player`, so a picture for a mod page doesn't show whose PC it is.
+pub fn shown_path(path: &std::path::Path) -> String {
+    let text = path.display().to_string();
+    if std::env::var_os("RWMM_SCREENSHOT").is_none() {
+        return text;
+    }
+    match std::env::var("USERPROFILE") {
+        Ok(home) if !home.is_empty() && text.to_lowercase().starts_with(&home.to_lowercase()) => {
+            format!(r"C:\Users\Player{}", &text[home.len()..])
+        }
+        _ => text,
+    }
 }

@@ -100,7 +100,7 @@ fn search_client(dll: &std::path::Path, query: &str) -> Result<Vec<WorkshopItemR
         matching: crate::steam::UGC_MATCHING_READY_TO_USE,
         trend_days: 0,
         text: trimmed,
-        required_tag: None,
+        required_tags: Vec::new(),
     };
     let mut results: Vec<WorkshopItemResult> = crate::steam::ugc_query_pages(dll, &page, 1..=1)?
         .into_iter()

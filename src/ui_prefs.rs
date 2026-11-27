@@ -65,20 +65,13 @@ impl UiFont {
     }
 }
 
-/// How a tab that can't be hidden is shown in the top bar.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum TabLabel {
-    #[default]
-    Full,
-    /// A short word ("Log").
-    Short,
-    Icon,
-}
-
-/// Which tabs the top bar shows. Mods can't be hidden (the main tab); the Log Analyzer and
-/// Settings can only get shorter (Settings must stay, or hidden tabs couldn't come back).
+/// Which tabs the side bar shows. Any tab can be hidden but Settings (or hidden tabs
+/// couldn't come back). `Default` shows them all (a prefs file from before a tab could be
+/// hidden); a first start shows only Mods and Workshop (`first_start`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct TabPrefs {
+    #[serde(default)]
+    pub hide_mods: bool,
     #[serde(default)]
     pub hide_workshop: bool,
     #[serde(default)]
@@ -90,10 +83,10 @@ pub struct TabPrefs {
     #[serde(default)]
     pub hide_optimizer: bool,
     #[serde(default)]
-    pub analyzer_label: TabLabel,
-    /// The Settings tab as a gear icon only.
+    pub hide_analyzer: bool,
+    /// Names next to the icons in the side bar (off: icons only, names on hover).
     #[serde(default)]
-    pub settings_icon: bool,
+    pub sidebar_labels: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -116,6 +109,20 @@ pub struct UiPrefs {
     pub accent: crate::ui::theme::Accent,
 }
 
+impl TabPrefs {
+    /// The very first start: Mods and Workshop; the rest is turned on in Settings → Tabs.
+    pub fn first_start() -> Self {
+        Self {
+            hide_sets: true,
+            hide_saves: true,
+            hide_translations: true,
+            hide_optimizer: true,
+            hide_analyzer: true,
+            ..Self::default()
+        }
+    }
+}
+
 fn default_text_scale() -> f32 {
     1.1
 }
@@ -129,7 +136,7 @@ impl Default for UiPrefs {
         Self {
             font: UiFont::default(),
             text_scale: default_text_scale(),
-            tabs: TabPrefs::default(),
+            tabs: TabPrefs::first_start(),
             details_side: true,
             theme: Default::default(),
             accent: Default::default(),
@@ -171,7 +178,7 @@ mod tests {
         let prefs: UiPrefs = serde_json::from_str(old).unwrap();
         assert_eq!(prefs.font, UiFont::Montserrat);
         assert_eq!(prefs.tabs, TabPrefs::default());
-        assert!(!prefs.tabs.hide_sets && prefs.tabs.analyzer_label == TabLabel::Full);
+        assert!(!prefs.tabs.hide_sets && !prefs.tabs.hide_analyzer);
         // Saved before themes: the first theme with its own accent.
         assert_eq!(prefs.theme, crate::ui::theme::ThemeKind::Lavender);
         assert_eq!(prefs.accent, crate::ui::theme::Accent::Theme);
@@ -180,11 +187,19 @@ mod tests {
     #[test]
     fn tab_choices_survive_saving() {
         let mut prefs = UiPrefs::default();
-        prefs.tabs.hide_translations = true;
-        prefs.tabs.analyzer_label = TabLabel::Icon;
-        prefs.tabs.settings_icon = true;
+        prefs.tabs.hide_translations = false;
+        prefs.tabs.hide_mods = true;
+        prefs.tabs.sidebar_labels = true;
         let back: UiPrefs = serde_json::from_str(&serde_json::to_string(&prefs).unwrap()).unwrap();
         assert_eq!(back, prefs);
+    }
+
+    #[test]
+    fn first_start_shows_only_mods_and_workshop() {
+        let tabs = UiPrefs::default().tabs;
+        assert!(!tabs.hide_mods && !tabs.hide_workshop);
+        assert!(tabs.hide_sets && tabs.hide_saves && tabs.hide_translations);
+        assert!(tabs.hide_optimizer && tabs.hide_analyzer);
     }
 
     #[test]

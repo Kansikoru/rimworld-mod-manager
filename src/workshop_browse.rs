@@ -16,6 +16,13 @@ const DETAILS_URL: &str = "https://api.steampowered.com/ISteamRemoteStorage/GetP
 const COLLECTION_URL: &str = "https://api.steampowered.com/ISteamRemoteStorage/GetCollectionDetails/v1/";
 pub const PER_PAGE: usize = 30;
 
+/// RimWorld's own Workshop tags (as its browse page lists them, 26.11.2026): the item type,
+/// then every game version, newest first.
+pub const TYPE_TAGS: [&str; 3] = ["Mod", "Translation", "Scenario"];
+pub const VERSION_TAGS: [&str; 14] = [
+    "1.7", "1.6", "1.5", "1.4", "1.3", "1.2", "1.1", "1.0", "0.19", "0.18", "0.17", "0.16", "0.15", "0.14",
+];
+
 /// How the catalog is sorted (a search is always by relevance).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BrowseSort {
@@ -73,6 +80,8 @@ pub struct BrowseQuery {
     pub sort: BrowseSort,
     /// Only items tagged with this game version ("1.6"...).
     pub version: Option<String>,
+    /// Only items with all of these type tags ("Mod", "Translation", "Scenario").
+    pub tags: Vec<String>,
     /// From 1.
     pub page: u32,
 }
@@ -129,8 +138,8 @@ pub fn browse_url(q: &BrowseQuery) -> String {
     } else {
         url.push_str(&format!("&searchtext={}&browsesort=textsearch", encode(text)));
     }
-    if let Some(v) = &q.version {
-        url.push_str(&format!("&requiredtags%5B%5D={}", encode(v)));
+    for tag in q.tags.iter().chain(q.version.iter()) {
+        url.push_str(&format!("&requiredtags%5B%5D={}", encode(tag)));
     }
     url.push_str(&format!("&p={}", q.page.max(1)));
     url
@@ -468,7 +477,7 @@ fn steam_query(q: &BrowseQuery) -> (steam::UgcPageQuery<'_>, std::ops::RangeIncl
             matching,
             trend_days,
             text,
-            required_tag: q.version.as_deref(),
+            required_tags: q.tags.iter().chain(q.version.iter()).map(String::as_str).collect(),
         },
         first as u32..=last as u32,
         start % steam::UGC_PER_PAGE,
@@ -762,7 +771,7 @@ mod tests {
                 matching: steam::UGC_MATCHING_COLLECTIONS,
                 trend_days: 30,
                 text: "",
-                required_tag: Some("1.6"),
+                required_tags: vec!["1.6"],
             }
         );
         // A search is by relevance whatever the sort.

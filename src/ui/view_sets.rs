@@ -45,6 +45,10 @@ enum SetAction {
     CloseCompare,
     /// A new set with the mods of both, in load order.
     Merge(String, String),
+    /// Mod previews the column's rows want (lowercase id, preview file).
+    LoadIcons(Vec<(String, Option<std::path::PathBuf>)>),
+    /// Ask Steam whether these Workshop items still exist.
+    CheckWorkshop(Vec<String>),
 }
 
 /// A tag as shown: built-in ones translated, own ones as typed.
@@ -59,17 +63,7 @@ fn tag_label(t: crate::i18n::I18n, tag: &str) -> String {
     t.get(key).to_string()
 }
 
-const CARD_SIZE: Vec2 = Vec2::new(168.0, 140.0);
-
 pub fn render_sets_view(app: &mut App, ui: &mut Ui) {
-    let t = app.i18n;
-    section_header(
-        ui,
-        t.get(TranslationKey::SetsTitle),
-        t.get(TranslationKey::SetsPickerHint),
-        None,
-    );
-    ui.add_space(8.0);
     app.load_modlist_pictures(ui.ctx());
 
     // Something is always open on the right: the loaded set, else the first one.
@@ -82,84 +76,86 @@ pub fn render_sets_view(app: &mut App, ui: &mut Ui) {
 
     let mut actions: Vec<SetAction> = Vec::new();
 
-    // Narrow window: the cards above, the selected modpack below (scrolling).
-    if ui.available_width() < super::components::NARROW_TWO_COLUMNS {
-        let width = ui.available_width();
-        let list_h = (ui.available_height() * 0.4).max(150.0);
-        ui.allocate_ui_with_layout(
-            Vec2::new(width, list_h),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                ui.set_width(width);
-                ui.set_max_height(list_h);
-                render_cards(app, ui, &mut actions);
+    // Like Settings: the modpacks as a list on the left, the chosen one on the right.
+    egui::Panel::left("sets_list")
+        .resizable(false)
+        .default_size(LIST_W)
+        .size_range(LIST_W..=LIST_W)
+        .show_separator_line(false)
+        .frame(
+            // Raised like the cards; the outer margin leaves room for its shadow (the panel
+            // clips at its own edge).
+            egui::Frame {
+                outer_margin: egui::Margin {
+                    left: 0,
+                    right: 12,
+                    top: 0,
+                    bottom: 12,
+                },
+                inner_margin: egui::Margin::same(12),
+                ..raised_frame(10)
             },
-        );
-        ui.add_space(8.0);
-        egui::ScrollArea::vertical()
-            .id_salt("sets_details_narrow")
-            .auto_shrink([false, false])
-            .show(ui, |ui| render_details(app, ui, &mut actions, true));
-        render_compare_window(app, ui.ctx(), &mut actions);
-        apply_actions(app, actions);
-        return;
-    }
+        )
+        .show(ui, |ui| render_list_panel(app, ui, &mut actions));
 
-    // Wide window: cards | the selected modpack | its mods, each column the full height.
-    // Narrower: the modpack and its mods share the right column, which scrolls.
-    let gap = 24.0;
-    let full = ui.available_rect_before_wrap();
-    let total = full.width();
-    let height = full.height();
-    let three = total >= WIDE_THREE_COLUMNS;
-    let (left_w, mid_w) = if three {
-        let free = total - 2.0 * gap;
-        ((free * 0.36).floor(), (free * 0.34).floor())
-    } else {
-        let left = ((total - gap) * 0.5).floor();
-        (left, total - gap - left)
-    };
-    let right_w = total - 2.0 * gap - left_w - mid_w;
-
-    // Each column has a fixed place and is clipped to it: something too wide inside one
-    // column is cut there instead of pushing the next columns past the window.
-    let column_rect =
-        |left: f32, width: f32| egui::Rect::from_min_size(egui::pos2(left, full.top()), Vec2::new(width, height));
-    let cards_rect = column_rect(full.left(), left_w);
-    let mid_rect = column_rect(cards_rect.right() + gap, mid_w);
-    let mods_rect = column_rect(mid_rect.right() + gap, right_w);
-    let column = |ui: &mut Ui, rect: egui::Rect| {
-        let mut child = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(rect)
-                .layout(egui::Layout::top_down(egui::Align::Min)),
-        );
-        // 2 px on the sides for the card frames on the column edge.
-        child.set_clip_rect(rect.expand2(Vec2::new(2.0, 0.0)).intersect(ui.clip_rect()));
-        child
-    };
-
-    render_cards(app, &mut column(ui, cards_rect), &mut actions);
-    egui::ScrollArea::vertical()
-        .id_salt("sets_details")
-        .auto_shrink([false, false])
-        .show(&mut column(ui, mid_rect), |ui| {
-            render_details(app, ui, &mut actions, !three)
+    egui::CentralPanel::default()
+        .frame(egui::Frame::NONE.inner_margin(egui::Margin {
+            left: 8,
+            right: 8,
+            top: 4,
+            bottom: 4,
+        }))
+        .show(ui, |ui| {
+            // A wide window: the modpack's mods in a full-height column on the right, the same
+            // rows as the active list on the Mods tab; narrower, they stay under the details.
+            let wide = ui.available_width() >= WIDE_WITH_MODS && !app.modlists.is_empty();
+            if wide {
+                if let Some(list) = selected_list(app) {
+                    // The column takes what the details leave, so no empty strip between them.
+                    let avail = ui.available_width();
+                    let column_w = (avail - 12.0 - DETAILS_MAX_W)
+                        .max(avail * 0.45)
+                        .clamp(MODS_COLUMN_MIN_W, 1000.0);
+                    egui::Panel::right("set_mods_column")
+                        .resizable(false)
+                        .default_size(column_w)
+                        .size_range(column_w..=column_w)
+                        .show_separator_line(false)
+                        .frame(egui::Frame::NONE.inner_margin(egui::Margin {
+                            left: 12,
+                            right: 0,
+                            top: 0,
+                            bottom: 12,
+                        }))
+                        .show(ui, |ui| render_set_mods_column(app, ui, list, &mut actions));
+                }
+            }
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("sets_details")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.set_max_width(DETAILS_MAX_W);
+                        if app.modlists.is_empty() {
+                            render_empty(app, ui, &mut actions);
+                        } else {
+                            render_details(app, ui, &mut actions, !wide);
+                        }
+                    });
+            });
         });
-    if three {
-        let mut mods_ui = column(ui, mods_rect);
-        if let Some(list) = selected_list(app) {
-            let max_h = (mods_ui.available_height() - 48.0).max(200.0);
-            render_set_mods(app, &mut mods_ui, list, &mut actions, max_h);
-        }
-    }
-    ui.allocate_rect(full, Sense::hover());
     render_compare_window(app, ui.ctx(), &mut actions);
     apply_actions(app, actions);
 }
 
-/// From this width the Modpacks tab shows the selected modpack's mods in a third column.
-const WIDE_THREE_COLUMNS: f32 = 1150.0;
+/// Width of the modpack list on the left.
+const LIST_W: f32 = 280.0;
+/// The details on the right stop growing here, so lines stay readable on a wide screen.
+const DETAILS_MAX_W: f32 = 820.0;
+/// From this width (right of the modpack list) the modpack's mods get their own column.
+const WIDE_WITH_MODS: f32 = 1000.0;
+/// That column's narrowest width.
+const MODS_COLUMN_MIN_W: f32 = 360.0;
 
 /// Runs what the user clicked (after drawing, when `app` is free to change).
 fn apply_actions(app: &mut App, actions: Vec<SetAction>) {
@@ -199,6 +195,15 @@ fn apply_actions(app: &mut App, actions: Vec<SetAction>) {
             SetAction::Compare(name, with) => app.open_set_compare(&name, with),
             SetAction::CloseCompare => app.set_compare = None,
             SetAction::Merge(first, second) => app.merge_modlists(&first, &second),
+            SetAction::CheckWorkshop(ids) => app.check_workshop_items(&ids),
+            SetAction::LoadIcons(icons) => {
+                for (key, preview) in icons {
+                    app.mod_textures.insert(key.clone(), None);
+                    if let Some(path) = preview {
+                        let _ = app.icon_tx.send((key, path));
+                    }
+                }
+            }
             SetAction::OpenFolder => {
                 if let Some(dir) = app.modlists_folder() {
                     let _ = std::fs::create_dir_all(&dir);
@@ -229,100 +234,41 @@ fn paint_set_picture(app: &App, ui: &Ui, name: &str, rect: egui::Rect, radius: u
     }
 }
 
-/// A button above the modpack cards.
-#[derive(Clone, Copy)]
-enum HeaderItem {
-    New,
-    Import,
-    Collection,
-    /// While a Steam collection loads.
-    Spinner,
-}
-
-fn render_cards(app: &mut App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
-    use HeaderItem::*;
+/// The left list: title with Import / Collection icons, "New from current", search, tag
+/// filter, then one row per modpack.
+fn render_list_panel(app: &mut App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
     let t = app.i18n;
-    // The column's own width, taken before anything is drawn: a row that came out too wide
-    // makes `available_width` larger afterwards.
-    let width = ui.available_width();
-    let gap = 8.0;
-    let sizes = [
-        (
-            New,
-            styled_button_width(ui, true, t.get(TranslationKey::SetsNewFromCurrent)),
-        ),
-        (
-            Import,
-            styled_button_width(ui, true, t.get(TranslationKey::SetsBtnImport)),
-        ),
-        (
-            Collection,
-            styled_button_width(ui, true, t.get(TranslationKey::SetsBtnCollection)),
-        ),
-    ];
-    let buttons_w: f32 = sizes.iter().map(|(_, w)| w + gap).sum();
-    // Search and the buttons in one row while the search keeps 160 px: the buttons go from
-    // the right edge and the search takes what is left. Otherwise the buttons go in rows
-    // of what fits (the widths are exact: the same font and padding the buttons use), and
-    // the search under them over the whole column.
-    if width - buttons_w >= 160.0 {
-        let row = Vec2::new(width, 32.0);
-        ui.allocate_ui_with_layout(row, egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.spacing_mut().item_spacing.x = gap;
-            header_buttons(app, ui, actions, &[Spinner, Collection, Import, New]);
-            let search_w = ui.available_width();
-            search_input_width(ui, &mut app.sets_search, t.get(TranslationKey::SetsSearch), search_w);
-        });
-    } else {
-        let mut rows: Vec<Vec<HeaderItem>> = vec![Vec::new()];
-        let mut used = 0.0;
-        for (item, w) in sizes {
-            let need = if used > 0.0 { gap + w } else { w };
-            if used > 0.0 && used + need > width {
-                rows.push(Vec::new());
-                used = 0.0;
-            }
-            used += if used > 0.0 { gap + w } else { w };
-            rows.last_mut().expect("a row is always there").push(item);
-        }
-        rows.last_mut().expect("a row is always there").push(Spinner);
-        for (i, row) in rows.iter().enumerate() {
-            if i > 0 {
-                ui.add_space(gap);
-            }
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = gap;
-                header_buttons(app, ui, actions, row);
-            });
-        }
-        ui.add_space(6.0);
-        search_input_width(ui, &mut app.sets_search, t.get(TranslationKey::SetsSearch), width);
-    }
-    ui.add_space(10.0);
-    render_card_grid(app, ui, actions);
-}
-
-/// Draws `items` in the given order ("New from current", "Import…", "Collection…", the
-/// spinner while a collection loads).
-fn header_buttons(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, items: &[HeaderItem]) {
-    use HeaderItem as Item;
-    let t = app.i18n;
-    let mut draw = |ui: &mut Ui, item: Item| match item {
-        Item::New => {
-            if primary_button_icon(ui, ICON_PLUS, t.get(TranslationKey::SetsNewFromCurrent)).clicked() {
-                let default = fmt(
-                    t.get(TranslationKey::SetsDefaultName),
-                    &[&(app.modlists.len() + 1).to_string()],
-                );
-                actions.push(SetAction::Dialog(ModListDialog::SaveAs {
-                    name: default,
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(t.get(TranslationKey::SetsTitle))
+                .color(THEME.text_primary)
+                .size(18.0)
+                .strong(),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let busy = app.collection_busy();
+            if ui
+                .add_enabled_ui(!busy, |ui| boxed_icon_button(ui, ICON_STEAM))
+                .inner
+                .on_hover_text(format!(
+                    "{}\n{}",
+                    t.get(TranslationKey::SetsBtnCollection),
+                    t.get(TranslationKey::SetsCollectionHint)
+                ))
+                .clicked()
+            {
+                actions.push(SetAction::Dialog(ModListDialog::Collection {
+                    url: String::new(),
                     error: None,
                 }));
             }
-        }
-        Item::Import => {
-            if secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::SetsBtnImport))
-                .on_hover_text(t.get(TranslationKey::SetsImportHint))
+            if boxed_icon_button(ui, ICON_FOLDER)
+                .on_hover_text(format!(
+                    "{}\n{}",
+                    t.get(TranslationKey::SetsBtnImport),
+                    t.get(TranslationKey::SetsImportHint)
+                ))
                 .clicked()
             {
                 if let Some(file) = rfd::FileDialog::new()
@@ -332,36 +278,20 @@ fn header_buttons(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, items: &
                     actions.push(SetAction::Import(file));
                 }
             }
-        }
-        Item::Collection => {
-            if ui
-                .add_enabled_ui(!app.collection_busy(), |ui| {
-                    secondary_button_icon(ui, ICON_STEAM, t.get(TranslationKey::SetsBtnCollection))
-                })
-                .inner
-                .on_hover_text(t.get(TranslationKey::SetsCollectionHint))
-                .clicked()
-            {
-                actions.push(SetAction::Dialog(ModListDialog::Collection {
-                    url: String::new(),
-                    error: None,
-                }));
-            }
-        }
-        Item::Spinner => {
-            if app.collection_busy() {
+            if busy {
                 ui.spinner();
             }
-        }
-    };
-    for item in items {
-        draw(ui, *item);
+        });
+    });
+    ui.add_space(10.0);
+    if primary_button_icon(ui, ICON_PLUS, t.get(TranslationKey::SetsNewFromCurrent)).clicked() {
+        actions.push(new_set_dialog(app));
     }
-}
+    ui.add_space(10.0);
+    let width = ui.available_width();
+    search_input_width(ui, &mut app.sets_search, t.get(TranslationKey::SetsSearch), width);
+    ui.add_space(8.0);
 
-/// The tag filter and the cards of the sets.
-fn render_card_grid(app: &mut App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
-    let t = app.i18n;
     // Tags in use: clicking one shows only the sets with it (several: any of them).
     let used = crate::modlist_tags::in_use(&app.modlist_tags, app.modlists.iter().map(|l| l.name.as_str()));
     app.sets_tag_filter
@@ -369,19 +299,21 @@ fn render_card_grid(app: &mut App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
     if !used.is_empty() {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
-            if ui
-                .selectable_label(app.sets_tag_filter.is_empty(), t.get(TranslationKey::CategoriesAll))
-                .clicked()
+            if chip(
+                ui,
+                None,
+                t.get(TranslationKey::CategoriesAll),
+                app.modlists.len(),
+                app.sets_tag_filter.is_empty(),
+            )
+            .clicked()
             {
                 app.sets_tag_filter.clear();
             }
             for (tag, n) in &used {
                 let key = tag.to_lowercase();
                 let on = app.sets_tag_filter.contains(&key);
-                if ui
-                    .selectable_label(on, format!("{} · {n}", tag_label(t, tag)))
-                    .clicked()
-                {
+                if chip(ui, None, &tag_label(t, tag), *n, on).clicked() {
                     if on {
                         app.sets_tag_filter.remove(&key);
                     } else {
@@ -392,97 +324,134 @@ fn render_card_grid(app: &mut App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
         });
         ui.add_space(8.0);
     }
-    let app: &App = app;
 
+    let app: &App = app;
     if app.modlists.is_empty() {
-        card_container(ui, |ui| {
-            ui.label(
+        ui.add(
+            egui::Label::new(
                 egui::RichText::new(t.get(TranslationKey::SetsNoneYet))
-                    .color(THEME.text_secondary)
-                    .strong(),
-            );
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(t.get(TranslationKey::SetsHint))
-                        .color(THEME.text_muted)
-                        .size(12.0),
-                )
-                .wrap(),
-            );
-        });
+                    .color(THEME.text_muted)
+                    .size(12.0),
+            )
+            .wrap(),
+        );
         return;
     }
-
     let query = app.sets_search.trim().to_lowercase();
     egui::ScrollArea::vertical()
-        .id_salt("sets_cards_scroll")
+        .id_salt("sets_list_scroll")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = Vec2::new(12.0, 12.0);
-                for list in app
-                    .modlists
-                    .iter()
-                    .filter(|l| query.is_empty() || l.name.to_lowercase().contains(&query))
-                    .filter(|l| {
-                        app.sets_tag_filter.is_empty()
-                            || app
-                                .sets_tag_filter
-                                .iter()
-                                .any(|f| crate::modlist_tags::has(&app.modlist_tags, &l.name, f))
-                    })
-                {
-                    let selected = app.selected_modlist.as_deref() == Some(list.name.as_str());
-                    if set_card(app, ui, list, selected).clicked() {
-                        actions.push(SetAction::Select(list.name.clone()));
-                    }
+            ui.spacing_mut().item_spacing.y = 2.0;
+            for list in app
+                .modlists
+                .iter()
+                .filter(|l| query.is_empty() || l.name.to_lowercase().contains(&query))
+                .filter(|l| {
+                    app.sets_tag_filter.is_empty()
+                        || app
+                            .sets_tag_filter
+                            .iter()
+                            .any(|f| crate::modlist_tags::has(&app.modlist_tags, &l.name, f))
+                })
+            {
+                let selected = app.selected_modlist.as_deref() == Some(list.name.as_str());
+                if set_row(app, ui, list, selected).clicked() {
+                    actions.push(SetAction::Select(list.name.clone()));
                 }
-            });
+            }
         });
 }
 
-fn set_card(app: &App, ui: &mut Ui, list: &ModList, selected: bool) -> egui::Response {
+/// "New from current" opens the name dialog with a numbered default name.
+fn new_set_dialog(app: &App) -> SetAction {
+    let default = fmt(
+        app.i18n.get(TranslationKey::SetsDefaultName),
+        &[&(app.modlists.len() + 1).to_string()],
+    );
+    SetAction::Dialog(ModListDialog::SaveAs {
+        name: default,
+        error: None,
+    })
+}
+
+/// One modpack in the list: picture, name, "N mods · 1.7", and a state mark on the right
+/// (green dot: the game loads it now; red count: mods missing on disk).
+fn set_row(app: &App, ui: &mut Ui, list: &ModList, selected: bool) -> egui::Response {
     let t = app.i18n;
-    let (rect, response) = ui.allocate_exact_size(CARD_SIZE, Sense::click());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 52.0), Sense::click());
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     if !ui.is_rect_visible(rect) {
         return response;
     }
+    let hovered = response.hovered();
+    if selected {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(8), tint(THEME.accent_cyan));
+        let bar = egui::Rect::from_min_size(egui::pos2(rect.left(), rect.center().y - 12.0), Vec2::new(3.0, 24.0));
+        ui.painter().rect_filled(bar, CornerRadius::same(2), THEME.accent_cyan);
+    } else if hovered {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(8), THEME.bg_surface_hover);
+    }
+    let pic = egui::Rect::from_min_size(
+        egui::pos2(rect.left() + 10.0, rect.center().y - 18.0),
+        Vec2::splat(36.0),
+    );
+    paint_set_picture(app, ui, &list.name, pic, 8);
+
+    // State on the right, then the name and the line under it take what is left.
+    let mut right = rect.right() - 10.0;
     let painter = ui.painter();
-    let fill = if selected || response.hovered() {
-        THEME.bg_surface_hover
+    if app.modlist_diff(list).is_same() {
+        painter.circle_filled(egui::pos2(right - 4.0, rect.center().y), 4.0, THEME.accent_emerald);
+        right -= 16.0;
     } else {
-        THEME.bg_card
-    };
-    let stroke = if selected {
-        Stroke::new(1.5_f32, THEME.accent_cyan)
-    } else {
-        Stroke::new(1.0_f32, THEME.border_subtle)
-    };
-    painter.rect(rect, CornerRadius::same(8), fill, stroke, egui::StrokeKind::Middle);
-
-    // Picture: the user's own or the generated one
-    let square = egui::Rect::from_center_size(egui::pos2(rect.center().x, rect.top() + 36.0), Vec2::splat(52.0));
-    paint_set_picture(app, ui, &list.name, square, 8);
-
-    // Name: at most two centred lines, cut with "…" (a third would run into the mod count)
-    let mut job = egui::text::LayoutJob::simple(
+        let missing = app.modlist_missing(list);
+        if missing > 0 {
+            let galley = painter.layout_no_wrap(
+                format!("−{missing}"),
+                egui::FontId::proportional(11.0),
+                THEME.accent_rose,
+            );
+            let w = galley.size().x;
+            painter.galley(
+                egui::pos2(right - w, rect.center().y - galley.size().y / 2.0),
+                galley,
+                THEME.accent_rose,
+            );
+            right -= w + 10.0;
+        }
+    }
+    let text_left = pic.right() + 10.0;
+    let text_w = (right - text_left).max(20.0);
+    let clip = egui::Rect::from_min_max(egui::pos2(text_left, rect.top()), egui::pos2(right, rect.bottom()));
+    let name = painter.layout(
         list.name.clone(),
-        egui::FontId::proportional(13.0),
-        THEME.text_primary,
-        rect.width() - 16.0,
+        egui::FontId::proportional(13.5),
+        if selected {
+            THEME.text_primary
+        } else {
+            THEME.text_secondary
+        },
+        f32::INFINITY,
     );
-    job.wrap.max_rows = 2;
-    job.wrap.overflow_character = Some('…');
-    job.halign = egui::Align::Center;
-    let name_galley = painter.layout_job(job);
-    painter.with_clip_rect(rect.shrink(6.0)).galley(
-        egui::pos2(rect.center().x, rect.top() + 68.0),
-        name_galley,
-        THEME.text_primary,
-    );
-
-    // Mod count and game version
+    let name = if name.size().x > text_w {
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            list.name.clone(),
+            egui::FontId::proportional(13.5),
+            THEME.text_primary,
+        );
+        job.wrap.max_width = text_w;
+        job.wrap.max_rows = 1;
+        job.wrap.overflow_character = Some('…');
+        painter.layout_job(job)
+    } else {
+        name
+    };
+    painter
+        .with_clip_rect(clip)
+        .galley(egui::pos2(text_left, rect.center().y - 16.0), name, THEME.text_primary);
     let version = list
         .game_version
         .as_deref()
@@ -492,38 +461,84 @@ fn set_card(app: &App, ui: &mut Ui, list: &ModList, selected: bool) -> egui::Res
     if !version.is_empty() {
         line.push_str(&format!("  ·  {version}"));
     }
-    painter.text(
-        egui::pos2(rect.center().x, rect.bottom() - 30.0),
-        egui::Align2::CENTER_CENTER,
+    painter.with_clip_rect(clip).text(
+        egui::pos2(text_left, rect.center().y + 9.0),
+        egui::Align2::LEFT_CENTER,
         line,
         egui::FontId::proportional(11.0),
         THEME.text_muted,
     );
+    response
+}
 
-    // State: the set the game loads now, or mods missing on disk
-    let (badge, badge_color) = if app.modlist_diff(list).is_same() {
-        (t.get(TranslationKey::SetsActiveBadge).to_string(), THEME.accent_emerald)
-    } else {
-        let missing = app.modlist_missing(list);
-        if missing > 0 {
-            (
-                fmt(t.get(TranslationKey::SetsMissingShort), &[&missing.to_string()]),
-                THEME.accent_rose,
+/// No modpacks yet: what they are and the three ways to make one.
+fn render_empty(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
+    let t = app.i18n;
+    ui.add_space(40.0);
+    ui.vertical_centered(|ui| {
+        let (rect, _) = ui.allocate_exact_size(Vec2::splat(56.0), Sense::hover());
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(14), tint(THEME.accent_cyan));
+        egui::Image::new(ICON_COPY)
+            .tint(THEME.accent_cyan)
+            .paint_at(ui, rect.shrink(14.0));
+        ui.add_space(14.0);
+        ui.label(
+            egui::RichText::new(t.get(TranslationKey::SetsNoneYet))
+                .color(THEME.text_primary)
+                .size(18.0)
+                .strong(),
+        );
+        ui.add_space(4.0);
+        ui.set_max_width(420.0);
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(t.get(TranslationKey::SetsHint))
+                    .color(THEME.text_muted)
+                    .size(12.5),
             )
-        } else {
-            (String::new(), THEME.text_muted)
+            .halign(egui::Align::Center)
+            .wrap(),
+        );
+        ui.add_space(14.0);
+        if primary_button_icon(ui, ICON_PLUS, t.get(TranslationKey::SetsNewFromCurrent)).clicked() {
+            actions.push(new_set_dialog(app));
         }
-    };
-    if !badge.is_empty() {
-        painter.text(
-            egui::pos2(rect.center().x, rect.bottom() - 13.0),
-            egui::Align2::CENTER_CENTER,
-            badge,
-            egui::FontId::proportional(11.0),
-            badge_color,
+    });
+}
+
+/// A tag of the open modpack: a small pill, lit when the modpack has it.
+fn tag_pill(ui: &mut Ui, label: &str, on: bool) -> egui::Response {
+    let galley = ui.painter().layout_no_wrap(
+        label.to_string(),
+        egui::FontId::proportional(12.0),
+        THEME.text_secondary,
+    );
+    let size = Vec2::new(galley.size().x + 20.0, 26.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    if ui.is_rect_visible(rect) {
+        let hovered = response.hovered();
+        let (fill, stroke, color) = if on {
+            (tint(THEME.accent_cyan), THEME.accent_cyan, THEME.accent_cyan)
+        } else if hovered {
+            (THEME.bg_surface_hover, THEME.border_strong, THEME.text_primary)
+        } else {
+            (THEME.bg_surface, THEME.border_subtle, THEME.text_secondary)
+        };
+        ui.painter().rect(
+            rect,
+            CornerRadius::same(13),
+            fill,
+            Stroke::new(1.0, stroke),
+            egui::StrokeKind::Inside,
+        );
+        ui.painter().galley(
+            egui::pos2(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0),
+            galley,
+            color,
         );
     }
-    response
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// The set open on the right: the loaded one, else the first.
@@ -579,15 +594,15 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, with_mod
             ui.add(
                 egui::Label::new(
                     egui::RichText::new(&list.name)
-                        .color(THEME.accent_cyan)
-                        .size(18.0)
+                        .color(THEME.text_primary)
+                        .size(20.0)
                         .strong(),
                 )
                 .wrap(),
             );
             ui.add(
                 egui::Label::new(
-                    egui::RichText::new(list.path.display().to_string())
+                    egui::RichText::new(shown_path(&list.path))
                         .color(THEME.text_muted)
                         .size(11.0),
                 )
@@ -625,7 +640,7 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, with_mod
         }
         for tag in &offered {
             let on = crate::modlist_tags::has(&app.modlist_tags, &name, tag);
-            if ui.selectable_label(on, tag_label(t, tag)).clicked() {
+            if tag_pill(ui, &tag_label(t, tag), on).clicked() {
                 actions.push(SetAction::ToggleTag(name.clone(), tag.clone()));
             }
         }
@@ -654,6 +669,7 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, with_mod
     });
     ui.add_space(8.0);
 
+    // The three main actions as buttons; the rest in the "More" menu.
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
         if success_button_icon(ui, ICON_CHECK_ALL, t.get(TranslationKey::SetsBtnApply))
@@ -674,80 +690,117 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, with_mod
         if secondary_button_icon(ui, ICON_MODS, t.get(TranslationKey::SetsBtnOpenInMods)).clicked() {
             actions.push(SetAction::OpenInMods(name.clone()));
         }
-        if secondary_button_icon(ui, ICON_SAVE, t.get(TranslationKey::SetsBtnSaveHere)).clicked() {
-            actions.push(SetAction::SaveHere(name.clone()));
-        }
-        if secondary_button_icon(ui, ICON_COPY, t.get(TranslationKey::SetsBtnDuplicate)).clicked() {
-            actions.push(SetAction::Duplicate(name.clone()));
-        }
-        if secondary_button(ui, t.get(TranslationKey::SetsBtnCompare))
-            .on_hover_text(t.get(TranslationKey::SetsCompareHint))
-            .clicked()
-        {
-            actions.push(SetAction::Compare(name.clone(), CompareWith::Current));
-        }
-        // "Merge with…": the other sets in a menu.
-        if app.modlists.len() > 1 {
-            ui.menu_button(t.get(TranslationKey::SetsBtnMerge), |ui| {
-                ui.label(
-                    egui::RichText::new(t.get(TranslationKey::SetsMergeHint))
-                        .color(THEME.text_muted)
-                        .size(12.0),
-                );
+        let more = menu_chip(ui, crate::i18n::tr!("Ещё", "More", "更多"), 0);
+        egui::Popup::from_toggle_button_response(&more)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_min_width(220.0);
+                ui.spacing_mut().button_padding = Vec2::new(8.0, 5.0);
+                // Plain menu rows (no frame), icon or an empty space of the same width.
+                let item = |ui: &mut Ui, icon: Option<egui::ImageSource<'static>>, label: &str| {
+                    let has_icon = icon.is_some();
+                    let image = egui::Image::new(icon.unwrap_or(ICON_DOT))
+                        .tint(if has_icon {
+                            THEME.text_secondary
+                        } else {
+                            Color32::TRANSPARENT
+                        })
+                        .fit_to_exact_size(Vec2::splat(14.0));
+                    ui.add_sized(
+                        [ui.available_width(), 26.0],
+                        egui::Button::image_and_text(image, label).frame(false),
+                    )
+                    .clicked()
+                };
+                if item(ui, Some(ICON_SAVE), t.get(TranslationKey::SetsBtnSaveHere)) {
+                    actions.push(SetAction::SaveHere(name.clone()));
+                    ui.close();
+                }
+                if item(ui, Some(ICON_COPY), t.get(TranslationKey::SetsBtnDuplicate)) {
+                    actions.push(SetAction::Duplicate(name.clone()));
+                    ui.close();
+                }
+                if item(ui, None, t.get(TranslationKey::SetsBtnRename)) {
+                    actions.push(SetAction::Dialog(ModListDialog::Rename {
+                        from: name.clone(),
+                        name: name.clone(),
+                        error: None,
+                    }));
+                    ui.close();
+                }
                 ui.separator();
-                for other in app.modlists.iter().filter(|l| l.name != *name) {
-                    if ui
-                        .button(fmt(
-                            t.get(TranslationKey::SetsMergeItem),
-                            &[&other.name, &other.ids.len().to_string()],
-                        ))
-                        .clicked()
+                if item(ui, None, t.get(TranslationKey::SetsBtnCompare)) {
+                    actions.push(SetAction::Compare(name.clone(), CompareWith::Current));
+                    ui.close();
+                }
+                // "Merge with…": the other sets in a submenu.
+                if app.modlists.len() > 1 {
+                    ui.menu_button(t.get(TranslationKey::SetsBtnMerge), |ui| {
+                        ui.label(
+                            egui::RichText::new(t.get(TranslationKey::SetsMergeHint))
+                                .color(THEME.text_muted)
+                                .size(12.0),
+                        );
+                        ui.separator();
+                        for other in app.modlists.iter().filter(|l| l.name != *name) {
+                            if ui
+                                .button(fmt(
+                                    t.get(TranslationKey::SetsMergeItem),
+                                    &[&other.name, &other.ids.len().to_string()],
+                                ))
+                                .clicked()
+                            {
+                                actions.push(SetAction::Merge(name.clone(), other.name.clone()));
+                                ui.close();
+                            }
+                        }
+                    });
+                }
+                ui.separator();
+                if item(ui, Some(ICON_SAVE), t.get(TranslationKey::SetsBtnExport)) {
+                    if let Some(target) = rfd::FileDialog::new()
+                        .set_file_name(format!("{name}.rml"))
+                        .add_filter(t.get(TranslationKey::SetsImportFilter), &["rml"])
+                        .add_filter(t.get(TranslationKey::SetsExportFilterZip), &["zip"])
+                        .save_file()
                     {
-                        actions.push(SetAction::Merge(name.clone(), other.name.clone()));
-                        ui.close();
+                        actions.push(SetAction::Export {
+                            name: name.clone(),
+                            target,
+                        });
                     }
+                    ui.close();
+                }
+                if item(ui, Some(ICON_COPY), t.get(TranslationKey::SetsBtnCopyText)) {
+                    let text = app.modlist_share_text(list);
+                    ui.ctx().copy_text(text);
+                    actions.push(SetAction::Copied(name.clone()));
+                    ui.close();
+                }
+                if item(ui, Some(ICON_FOLDER), t.get(TranslationKey::ModsBtnFolder)) {
+                    actions.push(SetAction::OpenFolder);
+                    ui.close();
+                }
+                ui.separator();
+                if ui
+                    .add_sized(
+                        [ui.available_width(), 26.0],
+                        egui::Button::image_and_text(
+                            egui::Image::new(ICON_TRASH)
+                                .tint(THEME.accent_rose)
+                                .fit_to_exact_size(Vec2::splat(14.0)),
+                            egui::RichText::new(t.get(TranslationKey::SetsBtnDelete)).color(THEME.accent_rose),
+                        )
+                        .frame(false),
+                    )
+                    .clicked()
+                {
+                    actions.push(SetAction::Dialog(ModListDialog::Delete { name: name.clone() }));
+                    ui.close();
                 }
             });
-        }
-        if secondary_button(ui, t.get(TranslationKey::SetsBtnRename)).clicked() {
-            actions.push(SetAction::Dialog(ModListDialog::Rename {
-                from: name.clone(),
-                name: name.clone(),
-                error: None,
-            }));
-        }
-        if secondary_button_icon(ui, ICON_SAVE, t.get(TranslationKey::SetsBtnExport))
-            .on_hover_text(t.get(TranslationKey::SetsExportHint))
-            .clicked()
-        {
-            if let Some(target) = rfd::FileDialog::new()
-                .set_file_name(format!("{name}.rml"))
-                .add_filter(t.get(TranslationKey::SetsImportFilter), &["rml"])
-                .add_filter(t.get(TranslationKey::SetsExportFilterZip), &["zip"])
-                .save_file()
-            {
-                actions.push(SetAction::Export {
-                    name: name.clone(),
-                    target,
-                });
-            }
-        }
-        if secondary_button_icon(ui, ICON_COPY, t.get(TranslationKey::SetsBtnCopyText))
-            .on_hover_text(t.get(TranslationKey::SetsCopyTextHint))
-            .clicked()
-        {
-            let text = app.modlist_share_text(list);
-            ui.ctx().copy_text(text);
-            actions.push(SetAction::Copied(name.clone()));
-        }
-        if secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::ModsBtnFolder)).clicked() {
-            actions.push(SetAction::OpenFolder);
-        }
-        if danger_button_icon(ui, ICON_TRASH, t.get(TranslationKey::SetsBtnDelete)).clicked() {
-            actions.push(SetAction::Dialog(ModListDialog::Delete { name: name.clone() }));
-        }
     });
-    ui.add_space(10.0);
+    ui.add_space(12.0);
 
     // Details
     let diff = app.modlist_diff(list);
@@ -756,7 +809,8 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, with_mod
         ui.set_width(ui.available_width());
         ui.label(
             egui::RichText::new(t.get(TranslationKey::SetsDetails))
-                .color(THEME.accent_cyan)
+                .color(THEME.text_primary)
+                .size(15.0)
                 .strong(),
         );
         ui.add_space(4.0);
@@ -822,8 +876,26 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, with_mod
 
     // F6: mods of the set that are not installed
     if missing > 0 {
+        // Whether the missing mods still exist on the Workshop (asked once per item); the
+        // removed ones are neither offered for download nor counted as "find by hand".
+        let links: Vec<String> = list
+            .ids
+            .iter()
+            .enumerate()
+            .filter(|(_, id)| app.find_mod(id).is_none())
+            .filter_map(|(i, id)| app.workshop_id_for(id, list.steam_id(id), list.names.get(i).map(String::as_str)))
+            .collect();
+        let to_check: Vec<String> = links
+            .iter()
+            .filter(|ws| !app.ws_item_checked.contains(*ws))
+            .cloned()
+            .collect();
+        if !to_check.is_empty() {
+            actions.push(SetAction::CheckWorkshop(to_check));
+        }
+        let gone = links.iter().filter(|ws| app.workshop_item_gone(ws)).count();
         let workshop = app.modlist_missing_workshop_ids(list).len();
-        let manual = missing.saturating_sub(workshop);
+        let manual = missing.saturating_sub(workshop + gone);
         let by_name = app.modlist_wanted(list, None).len();
         card_container(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -832,6 +904,21 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, with_mod
                     .color(THEME.accent_rose)
                     .strong(),
             );
+            if gone > 0 {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(crate::i18n::tr!(
+                            "Удалены из Workshop: {} — их уже не скачать. Уберите их из сборки или поставьте замену (другую версию этого мода).",
+                            "Removed from the Workshop: {}, they can't be downloaded any more. Take them out of the modpack or use a replacement (another version of the mod).",
+                            "已从创意工坊移除：{} 个，无法再下载。请将其移出整合包或换用替代版本。",
+                            gone
+                        ))
+                        .color(THEME.accent_amber)
+                        .size(12.0),
+                    )
+                    .wrap(),
+                );
+            }
             ui.add(
                 egui::Label::new(
                     egui::RichText::new(t.get(TranslationKey::SetsMissingHint))
@@ -899,7 +986,8 @@ fn render_settings_card(app: &App, ui: &mut Ui, name: &str, actions: &mut Vec<Se
         ui.set_width(ui.available_width());
         ui.label(
             egui::RichText::new(t.get(TranslationKey::SetsSettingsTitle))
-                .color(THEME.accent_cyan)
+                .color(THEME.text_primary)
+                .size(15.0)
                 .strong(),
         );
         ui.add_space(4.0);
@@ -1077,7 +1165,8 @@ fn render_set_mods(app: &App, ui: &mut Ui, list: &ModList, actions: &mut Vec<Set
                 t.get(TranslationKey::SetsModsTitle),
                 &[&list.ids.len().to_string()],
             ))
-            .color(THEME.accent_cyan)
+            .color(THEME.text_primary)
+            .size(15.0)
             .strong(),
         );
         ui.add_space(4.0);
@@ -1090,10 +1179,28 @@ fn render_set_mods(app: &App, ui: &mut Ui, list: &ModList, actions: &mut Vec<Set
                 for i in range {
                     let id = &list.ids[i];
                     let found = app.find_mod(id);
+                    let link = found
+                        .is_none()
+                        .then(|| app.workshop_id_for(id, list.steam_id(id), list.names.get(i).map(String::as_str)))
+                        .flatten();
+                    let gone = link.as_deref().is_some_and(|ws| app.workshop_item_gone(ws));
                     let name = found
                         .map(|m| m.name.clone())
                         .or_else(|| list.names.get(i).cloned())
                         .unwrap_or_else(|| id.clone());
+                    // Kept as "workshop.<ID>": the title Steam (or the Workshop database) has.
+                    let name = link
+                        .as_deref()
+                        .filter(|_| name.starts_with("workshop."))
+                        .and_then(|ws| {
+                            app.ws_item_titles.get(ws).cloned().or_else(|| {
+                                app.workshop_index
+                                    .as_ref()
+                                    .and_then(|idx| idx.name_for_id(ws))
+                                    .map(str::to_string)
+                            })
+                        })
+                        .unwrap_or(name);
                     ui.horizontal(|ui| {
                         ui.set_height(20.0);
                         // Numbers in a fixed right-aligned column, so names line up past row 9.
@@ -1109,9 +1216,19 @@ fn render_set_mods(app: &App, ui: &mut Ui, list: &ModList, actions: &mut Vec<Set
                             egui::Label::new(egui::RichText::new(name).color(THEME.text_primary).size(12.0)).truncate(),
                         );
                         if found.is_none() {
-                            tag(ui, t.get(TranslationKey::ModsNotOnDisk), THEME.accent_rose);
-                            let link =
-                                app.workshop_id_for(id, list.steam_id(id), list.names.get(i).map(String::as_str));
+                            if gone {
+                                tag(
+                                    ui,
+                                    crate::i18n::tr!(
+                                        "удалён из Workshop",
+                                        "removed from the Workshop",
+                                        "已从创意工坊移除"
+                                    ),
+                                    THEME.accent_rose,
+                                );
+                            } else {
+                                tag(ui, t.get(TranslationKey::ModsNotOnDisk), THEME.accent_rose);
+                            }
                             if let Some(steam_id) = link {
                                 if icon_button(ui, ICON_STEAM, Vec2::splat(14.0), THEME.text_muted)
                                     .on_hover_text(t.get(TranslationKey::SetsOpenWorkshop))
@@ -1131,4 +1248,198 @@ fn render_set_mods(app: &App, ui: &mut Ui, list: &ModList, actions: &mut Vec<Set
                 }
             });
     });
+}
+
+/// The modpack's mods as a full-height column: numbered rows like the active list on the Mods
+/// tab (icon, name, categories, "up to 1.6"); a mod that isn't installed is marked, with its
+/// Workshop page or a search by its name.
+fn render_set_mods_column(app: &App, ui: &mut Ui, list: &ModList, actions: &mut Vec<SetAction>) {
+    let t = app.i18n;
+    let game_mm = app.steam_paths.game_major_minor();
+    let mut missing_icons: Vec<(String, Option<std::path::PathBuf>)> = Vec::new();
+    // Whether the modpack's missing mods still exist on the Workshop (asked once per item).
+    let to_check: Vec<String> = list
+        .ids
+        .iter()
+        .enumerate()
+        .filter(|(_, id)| app.find_mod(id).is_none())
+        .filter_map(|(i, id)| app.workshop_id_for(id, list.steam_id(id), list.names.get(i).map(String::as_str)))
+        .filter(|ws| !app.ws_item_checked.contains(ws))
+        .collect();
+    if !to_check.is_empty() {
+        actions.push(SetAction::CheckWorkshop(to_check));
+    }
+    egui::Frame {
+        inner_margin: egui::Margin::same(0),
+        ..raised_frame(8)
+    }
+    .show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.set_height(ui.available_height());
+        // Header like the Mods tab's panels: title, count, what's missing.
+        ui.horizontal(|ui| {
+            ui.set_height(44.0);
+            ui.add_space(14.0);
+            ui.label(
+                egui::RichText::new(crate::i18n::tr!("МОДЫ СБОРКИ", "MODPACK MODS", "整合包模组"))
+                    .color(THEME.text_secondary)
+                    .size(12.0)
+                    .strong(),
+            );
+            ui.label(
+                egui::RichText::new(list.ids.len().to_string())
+                    .color(THEME.text_muted)
+                    .size(12.0),
+            );
+            let missing = app.modlist_missing(list);
+            if missing > 0 {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(12.0);
+                    tag(
+                        ui,
+                        &fmt(t.get(TranslationKey::SetsMissingShort), &[&missing.to_string()]),
+                        THEME.accent_rose,
+                    );
+                });
+            }
+        });
+        let rows_h = (ui.available_height() - 8.0).max(120.0);
+        egui::Frame::NONE
+            .inner_margin(egui::Margin::symmetric(8, 0))
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt(("set_mods_column_scroll", &list.name))
+                    .auto_shrink([false, false])
+                    .max_height(rows_h)
+                    .show_rows(ui, 34.0, list.ids.len(), |ui, range| {
+                        for i in range {
+                            let id = &list.ids[i];
+                            let found = app.find_mod(id);
+                            let name = found
+                                .map(|m| m.name.clone())
+                                .or_else(|| list.names.get(i).cloned())
+                                .unwrap_or_else(|| id.clone());
+                            super::view_mods::mod_row_frame(false, false, false).show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.horizontal(|ui| {
+                                    ui.set_height(22.0);
+                                    let (num, _) = ui.allocate_exact_size(Vec2::new(28.0, 22.0), Sense::hover());
+                                    ui.painter().text(
+                                        num.right_center(),
+                                        egui::Align2::RIGHT_CENTER,
+                                        format!("{}.", i + 1),
+                                        egui::FontId::proportional(12.0),
+                                        THEME.text_muted,
+                                    );
+                                    match found {
+                                        Some(m) => {
+                                            let key = m.package_id.to_lowercase();
+                                            let tex = app.mod_textures.get(&key);
+                                            if tex.is_none() {
+                                                missing_icons.push((key, m.preview_path.clone()));
+                                            }
+                                            super::view_mods::render_mod_icon_pill(
+                                                ui,
+                                                m.categories.first().copied(),
+                                                crate::models::is_protected_package_id(&m.package_id),
+                                                tex.and_then(|t| t.as_ref()),
+                                            );
+                                            ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(&name).color(THEME.text_primary).size(13.5),
+                                                )
+                                                .truncate(),
+                                            )
+                                            .on_hover_text(&m.package_id);
+                                            super::view_mods::category_badges(ui, &m.categories, t, 2);
+                                            super::view_mods::version_badge(
+                                                ui,
+                                                m,
+                                                game_mm.as_deref(),
+                                                app.mod_updates.as_ref(),
+                                                t,
+                                            );
+                                        }
+                                        None => {
+                                            // Not on disk: the name the modpack kept, a red mark,
+                                            // and where to get it. A row kept as "workshop.<ID>"
+                                            // shows the title Steam (or the Workshop database) has.
+                                            let link = app.workshop_id_for(
+                                                id,
+                                                list.steam_id(id),
+                                                list.names.get(i).map(String::as_str),
+                                            );
+                                            let gone = link.as_deref().is_some_and(|ws| app.workshop_item_gone(ws));
+                                            let name = link
+                                                .as_deref()
+                                                .filter(|_| name.starts_with("workshop."))
+                                                .and_then(|ws| {
+                                                    app.ws_item_titles.get(ws).cloned().or_else(|| {
+                                                        app.workshop_index
+                                                            .as_ref()
+                                                            .and_then(|idx| idx.name_for_id(ws))
+                                                            .map(str::to_string)
+                                                    })
+                                                })
+                                                .unwrap_or(name.clone());
+                                            let (icon, _) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::hover());
+                                            ui.painter().rect_filled(
+                                                icon,
+                                                CornerRadius::same(4),
+                                                tint(THEME.accent_rose),
+                                            );
+                                            egui::Image::new(ICON_STATUS_NOT_ON_DISK)
+                                                .tint(THEME.accent_rose)
+                                                .paint_at(ui, icon.shrink(3.0));
+                                            ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(&name).color(THEME.text_secondary).size(13.5),
+                                                )
+                                                .truncate(),
+                                            )
+                                            .on_hover_text(id);
+                                            if gone {
+                                                tag(
+                                                    ui,
+                                                    crate::i18n::tr!("удалён из Workshop", "removed from the Workshop", "已从创意工坊移除"),
+                                                    THEME.accent_rose,
+                                                )
+                                                .on_hover_text(crate::i18n::tr!(
+                                                    "Автор удалил мод или скрыл его — скачать его нельзя. Уберите его из сборки или поставьте замену (другую версию этого мода).",
+                                                    "The author removed or hid it: it can't be downloaded. Take it out of the modpack or use a replacement (another version of this mod).",
+                                                    "作者已删除或隐藏该模组，无法下载。请将其移出整合包或换用替代版本。"
+                                                ));
+                                            } else {
+                                                tag(ui, t.get(TranslationKey::ModsNotOnDisk), THEME.accent_rose);
+                                            }
+                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                if let Some(steam_id) = link {
+                                                    if icon_button(ui, ICON_STEAM, Vec2::splat(14.0), THEME.text_muted)
+                                                        .on_hover_text(t.get(TranslationKey::SetsOpenWorkshop))
+                                                        .clicked()
+                                                    {
+                                                        open_in_workshop_tab(ui.ctx(), &steam_id);
+                                                    }
+                                                } else if !id.to_lowercase().starts_with("ludeon.rimworld")
+                                                    && icon_button(ui, ICON_SEARCH, Vec2::splat(14.0), THEME.text_muted)
+                                                        .on_hover_text(t.get(TranslationKey::NameSearchRowHint))
+                                                        .clicked()
+                                                {
+                                                    actions.push(SetAction::FindByName(
+                                                        list.name.clone(),
+                                                        Some(id.clone()),
+                                                    ));
+                                                }
+                                            });
+                                        }
+                                    }
+                                });
+                            });
+                        }
+                    });
+            });
+    });
+    if !missing_icons.is_empty() {
+        actions.push(SetAction::LoadIcons(missing_icons));
+    }
 }

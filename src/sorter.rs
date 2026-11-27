@@ -4,11 +4,6 @@ use crate::models::{is_protected_package_id, ModInfo};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
-#[derive(Debug, Clone, Default)]
-pub struct ConflictReport {
-    pub incompatibilities: Vec<(String, String)>,
-}
-
 pub trait CommunityRulesExt {
     fn apply_community_rules(&mut self, db: &CommunityDatabase);
 }
@@ -22,23 +17,6 @@ impl CommunityRulesExt for ModInfo {
             self.force_load_after.extend(rule.force_load_after.clone());
         }
     }
-}
-
-pub fn check_incompatibilities(active_package_ids: &[String], db: &CommunityDatabase) -> ConflictReport {
-    let mut report = ConflictReport::default();
-    let active_set: HashSet<String> = active_package_ids.iter().map(|id| id.to_lowercase()).collect();
-
-    for (id, rule) in &db.rules {
-        if active_set.contains(id) {
-            for incomp in &rule.incompatible {
-                let incomp_lower = incomp.to_lowercase();
-                if active_set.contains(&incomp_lower) {
-                    report.incompatibilities.push((id.clone(), incomp_lower));
-                }
-            }
-        }
-    }
-    report
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -76,20 +54,6 @@ impl ModTier {
             _ => None,
         }
     }
-
-    pub fn to_u8(self) -> u8 {
-        self as u8
-    }
-}
-
-pub fn classify_mod_tier(package_id: &str, name: &str, is_translation: bool) -> ModTier {
-    classify_mod_tier_with_db(
-        package_id,
-        name,
-        is_translation,
-        &[],
-        Some(crate::community_rules::get_default_community_db()),
-    )
 }
 
 /// Tier from the content-based categories (strongest category first). None if there are none.
@@ -132,7 +96,7 @@ pub fn classify_mod_tier_with_db(
     let id = package_id.to_lowercase();
     let n = name.to_lowercase();
 
-    // 1. Проверяем CommunityDatabase (если задана)
+    // 1. The community rules database, if loaded.
     if let Some(database) = db {
         if let Some(rule) = database.rules.get(&id) {
             if let Some(tier_num) = rule.tier {
@@ -143,17 +107,17 @@ pub fn classify_mod_tier_with_db(
         }
     }
 
-    // 2. Официальные моды и Core
+    // 2. Core and the official DLCs.
     if is_protected_package_id(&id) || id.starts_with("ludeon.rimworld") || id == "brrainz.harmony" {
         return ModTier::Tier1CoreOfficial;
     }
 
-    // 3. Prepatcher / Fishery эвристика
+    // 3. Prepatcher / Fishery.
     if id.contains("prepatcher") || n.contains("prepatcher") || id.contains("fishery") {
         return ModTier::Tier0Prepatcher;
     }
 
-    // 4. Оптимизаторы и профилировщики
+    // 4. Optimizers and profilers.
     if id.contains("rocketman")
         || n.contains("rocketman")
         || id.contains("performancefish")
@@ -165,18 +129,18 @@ pub fn classify_mod_tier_with_db(
         return ModTier::Tier11Optimizers;
     }
 
-    // 4b. Категории по содержимому мода (Defs, DLL, Patches...) — надёжнее, чем угадывание по названию.
-    //     Эвристики по подстрокам ниже остаются только для модов без категорий.
+    // 4b. Categories from the mod's content (Defs, DLL, Patches...) are more reliable than guessing by name.
+    //     The substring heuristics below only cover mods without categories.
     if let Some(tier) = tier_from_categories(categories, &n) {
         return tier;
     }
 
-    // 5. Переводы
+    // 5. Translations.
     if crate::models::is_translation_indicator(&id, &n, is_translation) {
         return ModTier::Tier10Translations;
     }
 
-    // 6. Патчи и совместимость
+    // 6. Patches and compatibility.
     if id.contains("patch")
         || n.contains("patch")
         || id.contains("compatibility")
@@ -193,7 +157,7 @@ pub fn classify_mod_tier_with_db(
         return ModTier::Tier9Patches;
     }
 
-    // 7. Фреймворки и библиотеки
+    // 7. Frameworks and libraries.
     if id.contains("hugslib")
         || id.contains("jecstools")
         || id.contains("humanoidalienraces")
@@ -210,7 +174,7 @@ pub fn classify_mod_tier_with_db(
         return ModTier::Tier2Frameworks;
     }
 
-    // 8. Глобальные оверхолы
+    // 8. Overhauls.
     if id.contains("combatextended")
         || n.contains("combat extended")
         || id.contains("saveourship")
@@ -221,7 +185,7 @@ pub fn classify_mod_tier_with_db(
         return ModTier::Tier3Overhauls;
     }
 
-    // 9. Расы и фракции
+    // 9. Races and factions.
     if id.starts_with("vanillafactionsexpanded.")
         || id.starts_with("vanillaracesexpanded.")
         || id.contains("alienrace")
@@ -245,13 +209,14 @@ pub fn classify_mod_tier_with_db(
         || id.contains("kurin")
         || n.contains("faction")
         || id.contains("faction")
-        || n.contains("race")
+        // A whole word in the name: "Terraces", "Bracelets" and "Grace" aren't races.
+        || crate::models::has_word(&n, &["race", "races"])
         || id.contains("race")
     {
         return ModTier::Tier4FactionsRaces;
     }
 
-    // 10. Биомы, животные и растения
+    // 10. Biomes, animals and plants.
     if id.starts_with("biomes.")
         || id.starts_with("vanillaanimalsexpanded.")
         || id.starts_with("vanillaplantssexpanded.")
@@ -266,7 +231,7 @@ pub fn classify_mod_tier_with_db(
         return ModTier::Tier6BiomesAnimals;
     }
 
-    // 11. UI и камера
+    // 11. UI and camera.
     if id.contains("rimhud")
         || n.contains("rimhud")
         || id.contains("dubsmintmenus")
@@ -281,14 +246,15 @@ pub fn classify_mod_tier_with_db(
         || n.contains("camera")
         || id.contains("camera")
         || id.ends_with(".ui")
-        || n.contains("ui")
+        // A whole word: "Quick Build", "Guide" and "Power Suits" aren't UI mods.
+        || crate::models::has_word(&n, &["ui"])
         || id.contains("worktab")
         || n.contains("work tab")
     {
         return ModTier::Tier7UiCamera;
     }
 
-    // 12. QoL и поведение колонистов
+    // 12. QoL and colonist behaviour.
     if id.contains("pickupandhaul")
         || id.contains("commonsense")
         || id.contains("smartspeed")
@@ -355,10 +321,6 @@ pub const CANON_OFFICIAL_ORDER: &[&str] = &[
 pub fn is_canon_official(id: &str) -> bool {
     let lower = id.to_lowercase();
     CANON_OFFICIAL_ORDER.iter().any(|&c| c == lower)
-}
-
-pub fn sort_load_order(active_package_ids: &[String], all_mods: &[ModInfo]) -> Vec<String> {
-    sort_load_order_with_db(active_package_ids, all_mods, None)
 }
 
 pub fn sort_load_order_with_db(
@@ -444,10 +406,30 @@ pub fn sort_load_order_with_db(
         .map(|r| (r.after.to_lowercase(), r.before.to_lowercase()))
         .collect();
 
+    // A mod named in a rule may be enabled as its Steam copy, `<id>_steam` (the game's name
+    // for the second copy of a mod), or the other way round: it's the same mod, so the rule
+    // holds for it. Without this, a dependency enabled as `_steam` got no edge, the sort left
+    // it below the mod that needs it and the dependency check kept saying "wrong order".
+    let resolve = |id: &str| -> Option<String> {
+        let lower = id.trim().to_lowercase();
+        if active_set.contains(&lower) {
+            return Some(lower);
+        }
+        let steam = format!("{lower}_steam");
+        if active_set.contains(&steam) {
+            return Some(steam);
+        }
+        lower
+            .strip_suffix("_steam")
+            .filter(|base| active_set.contains(*base))
+            .map(str::to_string)
+    };
+
     let mut add_edge = |from: &str, to: &str, kind: Edge| {
-        let from_l = from.to_lowercase();
-        let to_l = to.to_lowercase();
-        if from_l != to_l && active_set.contains(&from_l) && active_set.contains(&to_l) {
+        let (Some(from_l), Some(to_l)) = (resolve(from), resolve(to)) else {
+            return;
+        };
+        if from_l != to_l {
             if is_canon_official(&to_l) && !is_canon_official(&from_l) {
                 return;
             }
@@ -486,7 +468,7 @@ pub fn sort_load_order_with_db(
         add_edge(&rule.before, &rule.after, Edge::Own);
     }
 
-    // Правила порядка загрузки из базы сообщества
+    // Load order rules from the community database.
     for (rule_id, rule) in &db_ref.rules {
         for target in &rule.load_before {
             add_edge(rule_id, target, Edge::Soft);
@@ -657,11 +639,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_dependency_enabled_as_its_steam_copy_still_goes_first() {
+        // A library has two copies, the Steam one is enabled as `someone.zetalib_steam`; the
+        // mod that needs it is above it and would stay there by name and tier alone.
+        let library = ModInfo {
+            package_id: "someone.zetalib_steam".into(),
+            name: "Zeta".into(),
+            ..Default::default()
+        };
+        let needs = ModInfo {
+            package_id: "someone.alpha".into(),
+            name: "Alpha".into(),
+            dependencies: vec!["someone.zetalib".into()],
+            ..Default::default()
+        };
+        let mods = vec![library, needs];
+        let active = vec!["someone.alpha".to_string(), "someone.zetalib_steam".to_string()];
+        let sorted = sort_load_order_with_db(&active, &mods, None);
+        let pos = |id: &str| sorted.iter().position(|s| s.eq_ignore_ascii_case(id)).unwrap();
+        assert!(pos("someone.zetalib_steam") < pos("someone.alpha"), "{sorted:?}");
+        let report = crate::dependencies::validate_dependencies(&sorted, &mods);
+        assert_eq!(report.order_count(), 0, "{:?}", report.problems);
+    }
+
+    #[test]
     fn categories_decide_tier_instead_of_name_guessing() {
-        // "Quality" contains "ui": the old substring heuristic put such mods into the UI tier.
-        assert_eq!(
+        // "Quality" contains "ui", "Terraces" contains "race": names match whole words only.
+        assert_ne!(
             classify_mod_tier_with_db("a.b", "Quality Builder", false, &[], None),
             ModTier::Tier7UiCamera
+        );
+        assert_ne!(
+            classify_mod_tier_with_db("a.b", "Terraces", false, &[], None),
+            ModTier::Tier4FactionsRaces
+        );
+        assert_eq!(
+            classify_mod_tier_with_db("a.b", "Better UI", false, &[], None),
+            ModTier::Tier7UiCamera
+        );
+        assert_eq!(
+            classify_mod_tier_with_db("a.b", "Snake Race", false, &[], None),
+            ModTier::Tier4FactionsRaces
         );
         assert_eq!(
             classify_mod_tier_with_db("a.b", "Quality Builder", false, &[ModCategory::QoL], None),

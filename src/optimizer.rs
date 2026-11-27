@@ -44,15 +44,6 @@ impl MaxTextureSize {
             Self::S512 => Some(512),
         }
     }
-
-    pub fn from_pixels(px: Option<u32>) -> Self {
-        match px {
-            Some(2048) => Self::S2048,
-            Some(1024) => Self::S1024,
-            Some(512) => Self::S512,
-            _ => Self::NoLimit,
-        }
-    }
 }
 
 // Messages
@@ -1667,10 +1658,6 @@ pub struct RollbackResult {
 /// 1. every DDS listed in the manifest is removed and its backed-up source restored;
 /// 2. DDS files that are not in the manifest but have a PNG/JPG twin inside a Textures
 ///    folder are only listed (`unlogged`); `delete_files` removes them if the user agrees.
-pub fn rollback_dds(mod_dirs: &[PathBuf]) -> RollbackResult {
-    rollback_with_manifest(mod_dirs, &manifest_path())
-}
-
 pub fn rollback_with_manifest(mod_dirs: &[PathBuf], manifest: &Path) -> RollbackResult {
     rollback_in(mod_dirs, manifest, false)
 }

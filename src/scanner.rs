@@ -149,6 +149,7 @@ pub fn parse_mod_folder(
         categories: Vec::new(),
         incompatible_with: meta.incompatible_with,
         dependency_alternatives: meta.dependency_alternatives,
+        dependency_info: meta.dependency_info,
         by_version: meta.by_version,
         frozen: crate::freeze::is_frozen(dir),
     };
@@ -237,6 +238,22 @@ pub fn scan_content_kinds(dir: &Path) -> (bool, bool, bool) {
 pub struct AboutDependency {
     pub package_id: String,
     pub alternatives: Vec<String>,
+    /// `displayName`.
+    pub name: String,
+    /// The item ID from `steamWorkshopUrl`.
+    pub workshop_id: Option<String>,
+}
+
+/// The Workshop item ID in a `steamWorkshopUrl`: `steam://url/CommunityFilePage/123`,
+/// `https://steamcommunity.com/(sharedfiles|workshop)/filedetails/?id=123`.
+pub fn workshop_id_from_url(url: &str) -> Option<String> {
+    let url = url.trim();
+    let tail = match url.find("CommunityFilePage/") {
+        Some(i) => &url[i + "CommunityFilePage/".len()..],
+        None => &url[url.find("id=")? + 3..],
+    };
+    let digits: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
+    (!digits.is_empty()).then_some(digits)
 }
 
 #[derive(Default, Debug)]
@@ -253,6 +270,8 @@ pub struct ParsedAboutMeta {
     pub dependencies: Vec<String>,
     /// Alternatives per dependency (lowercase dependency id -> alternative ids).
     pub dependency_alternatives: std::collections::HashMap<String, Vec<String>>,
+    /// Name and Workshop ID per dependency (lowercase dependency id).
+    pub dependency_info: std::collections::HashMap<String, crate::models::DependencyInfo>,
     pub incompatible_with: Vec<String>,
     /// `*ByVersion` blocks, keyed by game version ("1.6").
     pub by_version: crate::models::VersionedLists,
@@ -360,6 +379,8 @@ fn parse_dependencies(node: &XmlNode) -> Vec<AboutDependency> {
             (!package_id.is_empty()).then(|| AboutDependency {
                 package_id,
                 alternatives: li.list("alternativepackageids"),
+                name: li.text_of("displayname"),
+                workshop_id: workshop_id_from_url(&li.text_of("steamworkshopurl")),
             })
         })
         .collect()
@@ -407,6 +428,15 @@ pub fn parse_about_xml(xml: &str) -> Option<ParsedAboutMeta> {
             if !d.alternatives.is_empty() {
                 meta.dependency_alternatives
                     .insert(d.package_id.to_lowercase(), d.alternatives.clone());
+            }
+            if !d.name.is_empty() || d.workshop_id.is_some() {
+                meta.dependency_info.insert(
+                    d.package_id.to_lowercase(),
+                    crate::models::DependencyInfo {
+                        name: d.name.clone(),
+                        workshop_id: d.workshop_id.clone(),
+                    },
+                );
             }
             match into_versioned {
                 Some(v) => meta
@@ -574,52 +604,6 @@ pub struct DuplicateModEntry {
     pub origins: Vec<(ModOrigin, std::path::PathBuf)>,
 }
 
-#[derive(Debug, Default)]
-pub struct ModScanReport {
-    pub duplicates: Vec<DuplicateModEntry>,
-    pub unique_mods: std::collections::HashMap<String, ModInfo>,
-}
-
-pub fn scan_and_deduplicate(discovered_mods: Vec<ModInfo>) -> ModScanReport {
-    let mut report = ModScanReport::default();
-    let mut grouped: std::collections::HashMap<String, Vec<ModInfo>> = std::collections::HashMap::new();
-
-    for m in discovered_mods {
-        let key = m.package_id.to_lowercase();
-        grouped.entry(key).or_default().push(m);
-    }
-
-    for (pkg_id, instances) in grouped {
-        if instances.len() > 1 {
-            let mod_name = instances[0].name.clone();
-            let origins = instances
-                .iter()
-                .map(|inst| (inst.origin, inst.dir_path.clone()))
-                .collect();
-
-            report.duplicates.push(DuplicateModEntry {
-                package_id: pkg_id.clone(),
-                name: mod_name,
-                origins,
-            });
-
-            let chosen = instances
-                .into_iter()
-                .max_by_key(|inst| match inst.origin {
-                    ModOrigin::Local => 2,
-                    ModOrigin::Workshop => 1,
-                })
-                .unwrap();
-
-            report.unique_mods.insert(pkg_id, chosen);
-        } else if let Some(single) = instances.into_iter().next() {
-            report.unique_mods.insert(pkg_id, single);
-        }
-    }
-
-    report
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -696,6 +680,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn workshop_id_comes_out_of_every_url_form() {
+        for url in [
+            "steam://url/CommunityFilePage/2009463077",
+            "https://steamcommunity.com/sharedfiles/filedetails/?id=2009463077",
+            "https://steamcommunity.com/workshop/filedetails/?id=2009463077&searchtext=",
+            "  https://steamcommunity.com/sharedfiles/filedetails/?id=2009463077  ",
+        ] {
+            assert_eq!(workshop_id_from_url(url).as_deref(), Some("2009463077"), "{url}");
+        }
+        assert_eq!(workshop_id_from_url(""), None);
+        assert_eq!(workshop_id_from_url("https://github.com/pardeike/Harmony"), None);
+    }
+
     const ABOUT: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <ModMetaData>
   <name>Test &amp; Mod</name>
@@ -708,6 +706,7 @@ mod tests {
       <alternativePackageIds><li>zetrith.prepatcher</li></alternativePackageIds>
       <packageId>brrainz.harmony</packageId>
       <displayName>Harmony</displayName>
+      <steamWorkshopUrl>steam://url/CommunityFilePage/2009463077</steamWorkshopUrl>
     </li>
   </modDependencies>
   <modDependenciesByVersion>
@@ -733,6 +732,12 @@ mod tests {
             vec!["zetrith.prepatcher"]
         );
         assert_eq!(meta.incompatible_with, vec!["bad.mod"]);
+        // The name and Workshop item the player can find a missing dependency by.
+        assert_eq!(meta.dependency_info["brrainz.harmony"].name, "Harmony");
+        assert_eq!(
+            meta.dependency_info["brrainz.harmony"].workshop_id.as_deref(),
+            Some("2009463077")
+        );
         assert_eq!(meta.load_after, vec!["ludeon.rimworld"]);
         assert_eq!(
             meta.by_version.dependencies["1.6"],

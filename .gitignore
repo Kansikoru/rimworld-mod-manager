@@ -4,8 +4,15 @@
 cache/
 crash_log.txt
 
-# Local notes, not part of the project
+# Visual Studio workspace cache
+.vs/
+
+# Local promo material and old release archives
+promo/
+
+# Local notes and personal launch script, not part of the project
 PLAN.md
+run_rust.bat
 
 # Companion mod build leftovers (its dlls in companion/1.6 and companion/1.7 are committed)
 companion/Source/obj/

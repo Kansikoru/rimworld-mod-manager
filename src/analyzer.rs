@@ -73,13 +73,6 @@ pub enum SystemCrashIssue {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum LogViewMode {
-    #[default]
-    Report,
-    FullLog,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LogLevelFilter {
     #[default]
     All,

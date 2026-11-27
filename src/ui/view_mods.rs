@@ -12,7 +12,6 @@ use crate::categories::ModCategory;
 use crate::dependencies::DependencyProblem;
 use crate::i18n::{fmt, tr, TranslationKey};
 use crate::models::{is_protected_package_id, ModInfo, ModOrigin};
-use crate::sorter::ModTier;
 
 pub fn render_mods_view(app: &mut App, ui: &mut Ui) {
     // Any manual change to the active list (enable, disable, move) re-runs the dependency check,
@@ -111,13 +110,10 @@ fn row_drag_handle(ui: &mut Ui, id: egui::Id, row_height: f32) -> egui::Response
     ui.interact(rect, id, egui::Sense::click_and_drag())
 }
 
-/// Whether a drag that starts on a row moves mods: from the name or from a selected row it
-/// does, from the rest of an unselected row it selects the rows it passes instead.
-fn drag_moves(ui: &Ui, name_rect: egui::Rect, in_selection: bool) -> bool {
+/// Whether a drag that starts on a row moves mods: only from a selected row. From any other
+/// row (its name included) it draws a selection frame, as in Windows Explorer.
+fn drag_moves(in_selection: bool) -> bool {
     in_selection
-        || ui
-            .input(|i| i.pointer.press_origin())
-            .is_some_and(|p| name_rect.contains(p))
 }
 
 /// Row under the cursor while sweeping: the drawn row at its height, or the first / last
@@ -156,7 +152,23 @@ fn update_sweep(
     };
     if let Some(cur) = sweep_row_at(rows, pos.y) {
         let range = if anchor <= cur { anchor..=cur } else { cur..=anchor };
-        *selected = visible_ids[range].iter().cloned().collect();
+        *selected = s.base.iter().cloned().collect();
+        selected.extend(visible_ids[range].iter().cloned());
+    }
+    // The selection frame, from where the button went down to the cursor (inside the list).
+    if let Some(origin) = ui.input(|i| i.pointer.press_origin()) {
+        let view = ui.clip_rect();
+        let frame = egui::Rect::from_two_pos(origin, pos).intersect(view);
+        if frame.is_positive() {
+            let painter = ui.painter().with_clip_rect(view);
+            painter.rect(
+                frame,
+                CornerRadius::same(3),
+                THEME.accent_cyan.gamma_multiply(0.14),
+                Stroke::new(1.0_f32, THEME.accent_cyan.gamma_multiply(0.8)),
+                egui::StrokeKind::Inside,
+            );
+        }
     }
     const EDGE: f32 = 36.0;
     let view = ui.clip_rect();
@@ -173,9 +185,17 @@ fn update_sweep(
     ui.ctx().request_repaint();
 }
 
-/// Starts a sweep on a row: the selection becomes this mod, as after a plain click.
-fn start_sweep(app: &mut App, id: String, from_active: bool) {
+/// Starts a sweep on a row: the selection becomes this mod, as after a plain click; with Ctrl
+/// held the swept rows are added to what is already selected.
+fn start_sweep(app: &mut App, ctx: &egui::Context, id: String, from_active: bool) {
+    let adding = ctx.input(|i| i.modifiers.command);
+    let base: Vec<String> = if adding {
+        app.selected_mod_ids.iter().cloned().collect()
+    } else {
+        Vec::new()
+    };
     app.selected_mod_ids.clear();
+    app.selected_mod_ids.extend(base.iter().cloned());
     app.selected_mod_ids.insert(id.clone());
     app.selected_mod_id = Some(id.clone());
     app.last_clicked_mod_id = Some(id.clone());
@@ -183,6 +203,7 @@ fn start_sweep(app: &mut App, id: String, from_active: bool) {
     app.mod_sweep = Some(crate::app::ModSweep {
         from_active,
         anchor: id,
+        base,
     });
 }
 
@@ -530,6 +551,9 @@ fn unclip_edges(ui: &mut Ui) {
 /// so the active list gets no card under it.
 fn render_mods_main(app: &mut App, ui: &mut Ui, side: bool) {
     let t = app.i18n;
+    // The tab's own width, taken before anything is drawn: a row that comes out too wide
+    // makes `available_width` larger afterwards, and the lists would then run past the edge.
+    let full_width = ui.available_width();
 
     // Toolbar: secondary "Auto-Sort", primary "Save Order", amber "● unsaved", library actions, search.
     ui.add_space(4.0);
@@ -789,26 +813,96 @@ fn render_mods_main(app: &mut App, ui: &mut Ui, side: bool) {
             // installs the mod (the Workshop database finds some, button above) or turns off
             // the mod that needs it — often a translation of a mod that isn't in the list.
             let missing = app.dependency_report.missing_list();
-            for (dep_id, dep_name, required) in missing.iter().take(5) {
+            let mut find: Option<(Option<String>, String)> = None;
+            for dep in missing.iter().take(5) {
+                // The name the player can look up (About.xml, the Workshop database, else the ID);
+                // the ID itself on hover.
+                let required = dep.required_name(app.workshop_index.as_deref());
+                let workshop_id = dep.required_info.workshop_id.clone().or_else(|| {
+                    app.workshop_index
+                        .as_ref()
+                        .and_then(|idx| idx.lookup(&dep.required_id, None))
+                        .map(str::to_string)
+                });
                 ui.add_space(4.0);
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = Vec2::new(8.0, 6.0);
                     ui.label(
-                        egui::RichText::new(fmt(t.get(TranslationKey::DepMissingPair), &[dep_name, required]))
-                            .color(THEME.text_secondary)
-                            .size(12.0),
-                    );
+                        egui::RichText::new(fmt(
+                            t.get(TranslationKey::DepMissingPair),
+                            &[&dep.dependent_name, &format!("«{required}»")],
+                        ))
+                        .color(THEME.text_secondary)
+                        .size(12.0),
+                    )
+                    .on_hover_text(format!("packageId: {}", dep.required_id));
+                    // On the Workshop: its page when the ID is known, else a search by the name.
                     if small_button(
                         ui,
-                        &fmt(t.get(TranslationKey::DepTurnOff), &[&short_name(dep_name, 28)]),
-                        ButtonStyle::Secondary,
+                        crate::i18n::tr!("Найти в Workshop", "Find on the Workshop", "在创意工坊中查找"),
+                        ButtonStyle::Primary,
                     )
-                    .on_hover_text(dep_id.as_str())
                     .clicked()
                     {
-                        turn_off = Some(dep_id.clone());
+                        find = Some((workshop_id.clone(), required.to_string()));
+                    }
+                    if small_button(
+                        ui,
+                        &fmt(
+                            t.get(TranslationKey::DepTurnOff),
+                            &[&short_name(&dep.dependent_name, 28)],
+                        ),
+                        ButtonStyle::Secondary,
+                    )
+                    .on_hover_text(dep.dependent_id.as_str())
+                    .clicked()
+                    {
+                        turn_off = Some(dep.dependent_id.clone());
                     }
                 });
+            }
+            match find {
+                Some((Some(id), _)) => open_in_workshop_tab(ui.ctx(), &id),
+                Some((None, name)) => {
+                    app.ws_search = name;
+                    app.current_tab = crate::app::AppTab::Workshop;
+                    app.search_workshop_tab();
+                }
+                None => {}
+            }
+            // Mods above a dependency they need: which ones, and a button that puts each right
+            // after its dependency (the sort does it too, this is for the one pair).
+            let order = app.dependency_report.order_list();
+            let mut move_after: Option<(String, String)> = None;
+            for (dep_id, dep_name, req_id, req_name) in order.iter().take(5) {
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(8.0, 6.0);
+                    ui.label(
+                        egui::RichText::new(crate::i18n::tr!(
+                            "«{}» стоит выше «{}», а должен грузиться после него",
+                            "\"{}\" is above \"{}\" but has to load after it",
+                            "「{}」在「{}」之上，但应在其后加载",
+                            dep_name,
+                            req_name
+                        ))
+                        .color(THEME.text_secondary)
+                        .size(12.0),
+                    )
+                    .on_hover_text(format!("{dep_id} → {req_id}"));
+                    if small_button(
+                        ui,
+                        crate::i18n::tr!("Поставить после", "Move after it", "移到其后"),
+                        ButtonStyle::Primary,
+                    )
+                    .clicked()
+                    {
+                        move_after = Some((dep_id.clone(), req_id.clone()));
+                    }
+                });
+            }
+            if let Some((dep_id, req_id)) = move_after {
+                app.move_mod_after(&dep_id, &req_id);
             }
             if missing.len() > 5 {
                 ui.label(
@@ -938,7 +1032,7 @@ fn render_mods_main(app: &mut App, ui: &mut Ui, side: bool) {
 
     // Two panels side by side with a 16 px gap: available mods | active mods (+ details card).
     let gap = 16.0;
-    let col_width = ((ui.available_width() - gap) / 2.0).floor().max(280.0);
+    let col_width = ((full_width.min(ui.available_width()) - gap) / 2.0).floor().max(280.0);
     let total_height = ui.available_height();
 
     ui.horizontal_top(|ui| {
@@ -988,26 +1082,30 @@ fn render_active_panel(app: &mut App, ui: &mut Ui, details_fit: bool, card: bool
 
 /// Panel card: panel color, subtle border, 6 px corners, fixed size.
 fn panel_card(ui: &mut Ui, width: f32, height: f32, add_contents: impl FnOnce(&mut Ui)) {
-    ui.allocate_ui_with_layout(
-        Vec2::new(width, height),
-        egui::Layout::top_down(egui::Align::Min),
-        |ui| {
-            egui::Frame {
-                inner_margin: egui::Margin::ZERO,
-                outer_margin: egui::Margin::ZERO,
-                corner_radius: CornerRadius::same(6),
-                shadow: egui::epaint::Shadow::NONE,
-                fill: THEME.bg_surface,
-                stroke: Stroke::new(1.0_f32, THEME.border_subtle),
-            }
-            .show(ui, |ui| {
-                ui.set_width(width - 2.0);
-                ui.set_height(height - 2.0);
-                ui.spacing_mut().item_spacing.y = 0.0;
-                add_contents(ui);
-            });
-        },
+    // The card takes exactly its rect: content that comes out too wide is cut inside it
+    // and can't push the next card (or its own frame) past the window.
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::hover());
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
     );
+    // The shadow goes under the card on the parent's painter; the card and its content are
+    // cut at the card's edge, so nothing too wide can spill onto the next card.
+    ui.painter().add(surface_shadow().as_shape(rect, CornerRadius::same(8)));
+    child.set_clip_rect(rect.expand(1.0).intersect(ui.clip_rect()));
+    egui::Frame {
+        inner_margin: egui::Margin::ZERO,
+        shadow: egui::epaint::Shadow::NONE,
+        ..raised_frame(8)
+    }
+    .show(&mut child, |ui| {
+        ui.set_width(width - 2.0);
+        ui.set_height(height - 2.0);
+        ui.spacing_mut().item_spacing.y = 0.0;
+        add_contents(ui);
+    });
+    paint_top_highlight(&child, rect, 8);
 }
 
 /// 48 px panel header: uppercase title + muted count on the left, `right` content on the right.
@@ -1056,19 +1154,25 @@ fn panel_footer(
                 if let Some(icon) = icon {
                     ui.add(svg_icon(icon, Vec2::splat(16.0), THEME.text_muted));
                 }
-                ui.label(egui::RichText::new(left).color(THEME.text_muted).size(12.0));
-                if let Some(right) = right {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // The right text first, then the left one in what is left, cut with "…" (whole
+                // on hover): a long hint must not widen the card past its edge.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some(right) = right {
                         ui.label(egui::RichText::new(right).color(THEME.text_muted).size(12.0));
+                    }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(left).color(THEME.text_muted).size(12.0)).truncate(),
+                        );
                     });
-                }
+                });
             });
         });
 }
 
 /// A list row: lighter when selected, green when related to the selected mod, a little
 /// lighter under the cursor (the whole row is clickable).
-fn mod_row_frame(selected: bool, related: bool, hovered: bool) -> egui::Frame {
+pub(crate) fn mod_row_frame(selected: bool, related: bool, hovered: bool) -> egui::Frame {
     let (fill, stroke) = if selected {
         (THEME.bg_surface_hover, Stroke::NONE)
     } else if related {
@@ -1293,7 +1397,7 @@ fn render_version_issues(app: &mut App, ui: &mut Ui) {
 
 /// Muted "up to 1.6" badge for a mod that doesn't declare the installed game version.
 /// `workshop`: the last update check, which knows whether the Workshop copy does.
-fn version_badge(
+pub(crate) fn version_badge(
     ui: &mut Ui,
     m: &ModInfo,
     game_mm: Option<&str>,
@@ -1527,6 +1631,19 @@ fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
     } else {
         0
     };
+    // One row: everything, the source, the problems; DLCs, categories and colour marks
+    // fold into menus so the row doesn't grow into a wall of chips.
+    let menu_popup = |resp: &egui::Response, ui_fn: &mut dyn FnMut(&mut Ui)| {
+        egui::Popup::from_toggle_button_response(resp)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_max_width(460.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+                    ui_fn(ui);
+                });
+            });
+    };
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
         if chip(
@@ -1546,69 +1663,33 @@ fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
             app.filter_workshop = false;
             app.dlc_filter.clear();
         }
-        // DLCs the mods require; one that isn't installed is shown in red.
-        for (dlc, n) in &dlcs {
-            let selected = app.dlc_filter.contains(dlc);
-            let color = if installed_dlcs.contains(*dlc) {
-                THEME.accent_purple
-            } else {
-                THEME.accent_rose
-            };
-            let hint = if installed_dlcs.contains(*dlc) {
-                t.get(TranslationKey::DlcChipHint)
-            } else {
-                t.get(TranslationKey::DlcChipMissingHint)
-            };
-            if chip(
+        if local > 0
+            && chip(
                 ui,
-                Some((ICON_STATUS_LOCAL, color)),
-                &fmt(t.get(TranslationKey::DlcChip), &[&dlc_name(dlc)]),
-                *n,
-                selected,
+                Some((ICON_STATUS_LOCAL, THEME.text_secondary)),
+                t.get(TranslationKey::LocalChip),
+                local,
+                app.filter_local,
             )
-            .on_hover_text(hint)
+            .on_hover_text(t.get(TranslationKey::LocalChipHint))
             .clicked()
-            {
-                if selected {
-                    app.dlc_filter.remove(dlc);
-                } else {
-                    app.dlc_filter.insert(dlc);
-                }
-            }
+        {
+            app.filter_local = !app.filter_local;
+            app.filter_workshop = false;
         }
-        // Colour marks: a chip per colour in use; right-click deletes the whole group.
-        for (color, n) in &colors {
-            let selected = app.color_filter.contains(color);
-            let [r, g, b] = color.rgb();
-            let resp = chip(
+        if workshop > 0
+            && chip(
                 ui,
-                Some((ICON_DOT, Color32::from_rgb(r, g, b))),
-                t.get(color.key()),
-                *n,
-                selected,
+                Some((ICON_STATUS_WORKSHOP, THEME.accent_info)),
+                t.get(TranslationKey::WorkshopChip),
+                workshop,
+                app.filter_workshop,
             )
-            .on_hover_text(t.get(TranslationKey::ColorChipHint));
-            if resp.clicked() {
-                if selected {
-                    app.color_filter.remove(color);
-                } else {
-                    app.color_filter.insert(*color);
-                }
-            }
-            resp.context_menu(|ui| {
-                let removable = app.mods_with_color(*color).len();
-                if removable > 0
-                    && ui
-                        .button(
-                            egui::RichText::new(fmt(t.get(TranslationKey::ColorDeleteAll), &[&removable.to_string()]))
-                                .color(THEME.accent_rose),
-                        )
-                        .clicked()
-                {
-                    delete_color = Some(*color);
-                    ui.close();
-                }
-            });
+            .on_hover_text(t.get(TranslationKey::WorkshopChipHint))
+            .clicked()
+        {
+            app.filter_workshop = !app.filter_workshop;
+            app.filter_local = false;
         }
         // Status filters: a newer Workshop version, no support for the installed game version.
         if updates > 0 {
@@ -1653,56 +1734,112 @@ fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
                 app.filter_no_version = !app.filter_no_version;
             }
         }
-        if local > 0
-            && chip(
-                ui,
-                Some((ICON_STATUS_LOCAL, THEME.text_secondary)),
-                t.get(TranslationKey::LocalChip),
-                local,
-                app.filter_local,
-            )
-            .on_hover_text(t.get(TranslationKey::LocalChipHint))
-            .clicked()
-        {
-            app.filter_local = !app.filter_local;
-            app.filter_workshop = false;
+        if !dlcs.is_empty() {
+            let resp = menu_chip(ui, "DLC", app.dlc_filter.len());
+            menu_popup(&resp, &mut |ui| {
+                // DLCs the mods require; one that isn't installed is shown in red.
+                for (dlc, n) in &dlcs {
+                    let selected = app.dlc_filter.contains(dlc);
+                    let color = if installed_dlcs.contains(*dlc) {
+                        THEME.accent_purple
+                    } else {
+                        THEME.accent_rose
+                    };
+                    let hint = if installed_dlcs.contains(*dlc) {
+                        t.get(TranslationKey::DlcChipHint)
+                    } else {
+                        t.get(TranslationKey::DlcChipMissingHint)
+                    };
+                    if chip(
+                        ui,
+                        Some((ICON_STATUS_LOCAL, color)),
+                        &fmt(t.get(TranslationKey::DlcChip), &[&dlc_name(dlc)]),
+                        *n,
+                        selected,
+                    )
+                    .on_hover_text(hint)
+                    .clicked()
+                    {
+                        if selected {
+                            app.dlc_filter.remove(dlc);
+                        } else {
+                            app.dlc_filter.insert(dlc);
+                        }
+                    }
+                }
+            });
         }
-        if workshop > 0
-            && chip(
-                ui,
-                Some((ICON_STATUS_WORKSHOP, THEME.accent_info)),
-                t.get(TranslationKey::WorkshopChip),
-                workshop,
-                app.filter_workshop,
-            )
-            .on_hover_text(t.get(TranslationKey::WorkshopChipHint))
-            .clicked()
-        {
-            app.filter_workshop = !app.filter_workshop;
-            app.filter_local = false;
-        }
-        for cat in ModCategory::ALL {
-            let Some(n) = counts.get(&cat) else {
-                continue;
-            };
-            let selected = app.category_filter.contains(&cat);
-            let (_, fg) = cat.colors();
-            let fg = Color32::from_rgb(fg[0], fg[1], fg[2]);
-            if chip(
-                ui,
-                Some((category_icon(cat), fg)),
-                cat.label(t.language()),
-                *n,
-                selected,
-            )
-            .clicked()
-            {
-                if selected {
-                    app.category_filter.remove(&cat);
-                } else {
-                    app.category_filter.insert(cat);
+        let resp = menu_chip(
+            ui,
+            crate::i18n::tr!("Категории", "Categories", "分类"),
+            app.category_filter.len(),
+        );
+        menu_popup(&resp, &mut |ui| {
+            for cat in ModCategory::ALL {
+                let Some(n) = counts.get(&cat) else {
+                    continue;
+                };
+                let selected = app.category_filter.contains(&cat);
+                let (_, fg) = cat.colors();
+                let fg = Color32::from_rgb(fg[0], fg[1], fg[2]);
+                if chip(
+                    ui,
+                    Some((category_icon(cat), fg)),
+                    cat.label(t.language()),
+                    *n,
+                    selected,
+                )
+                .clicked()
+                {
+                    if selected {
+                        app.category_filter.remove(&cat);
+                    } else {
+                        app.category_filter.insert(cat);
+                    }
                 }
             }
+        });
+        if !colors.is_empty() {
+            let resp = menu_chip(ui, crate::i18n::tr!("Цвет", "Color", "颜色"), app.color_filter.len());
+            menu_popup(&resp, &mut |ui| {
+                // Colour marks: a chip per colour in use; right-click deletes the whole group.
+                for (color, n) in &colors {
+                    let selected = app.color_filter.contains(color);
+                    let [r, g, b] = color.rgb();
+                    let resp = chip(
+                        ui,
+                        Some((ICON_DOT, Color32::from_rgb(r, g, b))),
+                        t.get(color.key()),
+                        *n,
+                        selected,
+                    )
+                    .on_hover_text(t.get(TranslationKey::ColorChipHint));
+                    if resp.clicked() {
+                        if selected {
+                            app.color_filter.remove(color);
+                        } else {
+                            app.color_filter.insert(*color);
+                        }
+                    }
+                    resp.context_menu(|ui| {
+                        let removable = app.mods_with_color(*color).len();
+                        if removable > 0
+                            && ui
+                                .button(
+                                    egui::RichText::new(fmt(
+                                        t.get(TranslationKey::ColorDeleteAll),
+                                        &[&removable.to_string()],
+                                    ))
+                                    .color(THEME.accent_rose),
+                                )
+                                .clicked()
+                        {
+                            delete_color = Some(*color);
+                            ui.close();
+                        }
+                    });
+                }
+            });
         }
     });
     if update_all {
@@ -1715,17 +1852,18 @@ fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
 }
 
 /// Up to `max` category badges (strongest first); the rest are listed in the hover text.
-fn category_badges(ui: &mut Ui, cats: &[ModCategory], t: crate::i18n::I18n, max: usize) {
+pub(crate) fn category_badges(ui: &mut Ui, cats: &[ModCategory], t: crate::i18n::I18n, max: usize) {
     // In list rows a badge is drawn only if it fits completely; the ones that don't fit
     // go into the "+N" badge (with the full list on hover).
     let mut shown = 0;
+    // One quiet style for every category: color in a row is kept for problems
+    // (old version, missing DLC, errors), so those stand out.
     for cat in cats.iter().take(max) {
-        let (bg, fg) = cat.colors();
         let drawn = badge_if_fits(
             ui,
             cat.label(t.language()),
-            Color32::from_rgb(bg[0], bg[1], bg[2]),
-            Color32::from_rgb(fg[0], fg[1], fg[2]),
+            THEME.bg_surface_hover,
+            THEME.text_secondary,
         );
         if drawn.is_none() {
             break;
@@ -1840,7 +1978,7 @@ fn mod_fallback_icon(
 }
 
 /// 20 px mod icon: the real preview (rounded corners), or a category icon on its tinted square.
-fn render_mod_icon_pill(
+pub(crate) fn render_mod_icon_pill(
     ui: &mut Ui,
     category: Option<ModCategory>,
     is_protected: bool,
@@ -1887,9 +2025,12 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
         ui.spacing_mut().item_spacing.x = 8.0;
         // The search gives way to the title in a narrow panel (details strip open): a header
         // wider than the panel would widen the whole panel and push the rows past its edge.
+        // Too narrow even for a 90 px field: no search (the buttons and the title stay).
         let buttons = 3.0 * (24.0 + 8.0);
-        let search_w = (ui.available_width() - buttons).clamp(90.0, 192.0);
-        search_input_width(ui, &mut app.active_search_query, search_hint, search_w);
+        let room = ui.available_width() - buttons;
+        if room >= 90.0 {
+            search_input_width(ui, &mut app.active_search_query, search_hint, room.min(192.0));
+        }
         if boxed_icon_button(ui, ICON_ARROW_DOWN)
             .on_hover_text(t.get(TranslationKey::ModsCtxMoveDown))
             .clicked()
@@ -2350,11 +2491,19 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                                 enable_dep_id = Some(required_id.clone());
                                             }
                                         }
-                                        DependencyProblem::Missing { required_id, .. } => {
-                                            let dep_name = workshop_index
-                                                .as_ref()
-                                                .and_then(|idx| idx.name_for_package(required_id))
-                                                .unwrap_or(required_id.as_str());
+                                        DependencyProblem::Missing {
+                                            required_id,
+                                            required_info,
+                                            ..
+                                        } => {
+                                            let dep_name = if required_info.name.is_empty() {
+                                                workshop_index
+                                                    .as_ref()
+                                                    .and_then(|idx| idx.name_for_package(required_id))
+                                                    .unwrap_or(required_id.as_str())
+                                            } else {
+                                                required_info.name.as_str()
+                                            };
                                             if let Some(resp) = tag_if_fits(
                                                 ui,
                                                 app.i18n.get(TranslationKey::ModsDepNotFound),
@@ -2452,7 +2601,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                     sweep_rows.push((first_pos + offset, row.response.rect));
 
                     let in_selection = app.selected_mod_ids.iter().any(|s| s.eq_ignore_ascii_case(pkg_id));
-                    if drag_resp.drag_started() && !drag_moves(ui, name_rect, in_selection) {
+                    if drag_resp.drag_started() && !drag_moves(in_selection) {
                         sweep_from = Some(pkg_id.clone());
                     } else if drag_resp.drag_started() {
                         // A selected row drags the whole selection (in load order), any other row only itself.
@@ -2525,7 +2674,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
         app.mod_drag = start_drag;
     }
     if let Some(id) = sweep_from {
-        start_sweep(app, id, true);
+        start_sweep(app, ui.ctx(), id, true);
     }
 
     // Footer: visible range and a reminder of how the order works.
@@ -2660,7 +2809,18 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
         t.get(TranslationKey::AvailableModsTitle),
         inactive_mods.len(),
         |ui| {
-            ui.label(egui::RichText::new(total_text).color(THEME.text_muted).size(12.0));
+            // "Total: N" only while it fits next to the order list: a header wider than the
+            // column would push the next column past the window.
+            let text_w = |text: &str, size: f32| {
+                ui.painter()
+                    .layout_no_wrap(text.to_string(), egui::FontId::proportional(size), Color32::WHITE)
+                    .size()
+                    .x
+            };
+            let combo_w = text_w(t.get(current_sort.key()), 13.0) + 40.0;
+            if ui.available_width() >= combo_w + text_w(&total_text, 12.0) + 16.0 {
+                ui.label(egui::RichText::new(total_text).color(THEME.text_muted).size(12.0));
+            }
             if sort_loading {
                 ui.spinner().on_hover_text(t.get(TranslationKey::SortLoading));
             }
@@ -2978,7 +3138,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                         }
                         sweep_rows.push((pos, row.response.rect));
                         let in_selection = app.selected_mod_ids.contains(&m.package_id);
-                        if drag_resp.drag_started() && !drag_moves(ui, name_rect, in_selection) {
+                        if drag_resp.drag_started() && !drag_moves(in_selection) {
                             sweep_from = Some(m.package_id.clone());
                         } else if drag_resp.drag_started() {
                             let ids: Vec<String> = if in_selection && app.selected_mod_ids.len() > 1 {
@@ -3013,7 +3173,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
         app.mod_drag = start_drag;
     }
     if let Some(id) = sweep_from {
-        start_sweep(app, id, false);
+        start_sweep(app, ui.ctx(), id, false);
     }
 
     panel_footer(
@@ -3396,71 +3556,4 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui, side: bool) {
     });
     let rect = card.response.rect;
     ui.ctx().data_mut(|d| d.insert_temp(details_rect_id(), rect));
-}
-
-#[allow(dead_code)]
-fn render_tier_badge(ui: &mut Ui, tier: ModTier) {
-    let (label, bg, fg) = match tier {
-        ModTier::Tier0Prepatcher => (
-            "T0 Prepatcher",
-            Color32::from_rgb(88, 28, 135),
-            Color32::from_rgb(216, 180, 254),
-        ),
-        ModTier::Tier1CoreOfficial => (
-            "T1 Core/DLC",
-            Color32::from_rgb(180, 83, 9),
-            Color32::from_rgb(253, 230, 138),
-        ),
-        ModTier::Tier2Frameworks => (
-            "T2 Framework",
-            Color32::from_rgb(30, 58, 138),
-            Color32::from_rgb(191, 219, 254),
-        ),
-        ModTier::Tier3Overhauls => (
-            "T3 Overhaul",
-            Color32::from_rgb(127, 29, 29),
-            Color32::from_rgb(254, 202, 202),
-        ),
-        ModTier::Tier4FactionsRaces => (
-            "T4 Faction",
-            Color32::from_rgb(19, 78, 74),
-            Color32::from_rgb(153, 246, 228),
-        ),
-        ModTier::Tier5ContentItems => (
-            "T5 Items",
-            Color32::from_rgb(31, 41, 55),
-            Color32::from_rgb(209, 213, 219),
-        ),
-        ModTier::Tier6BiomesAnimals => (
-            "T6 Biomes",
-            Color32::from_rgb(20, 83, 45),
-            Color32::from_rgb(187, 247, 208),
-        ),
-        ModTier::Tier7UiCamera => (
-            "T7 UI",
-            Color32::from_rgb(67, 56, 202),
-            Color32::from_rgb(224, 231, 255),
-        ),
-        ModTier::Tier8QolBehaviors => (
-            "T8 QoL",
-            Color32::from_rgb(133, 77, 14),
-            Color32::from_rgb(254, 240, 138),
-        ),
-        ModTier::Tier9Patches => (
-            "T9 Patch",
-            Color32::from_rgb(76, 29, 149),
-            Color32::from_rgb(233, 213, 255),
-        ),
-        ModTier::Tier10Translations => (
-            "T10 Trans",
-            Color32::from_rgb(131, 24, 67),
-            Color32::from_rgb(251, 207, 232),
-        ),
-        ModTier::Tier11Optimizers => (
-            "T11 Opt",
-            Color32::from_rgb(6, 78, 59),
-            Color32::from_rgb(167, 243, 208),
-        ),
-    };
-    badge(ui, label, bg, fg);
 }
