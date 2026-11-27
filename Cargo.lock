@@ -2706,7 +2706,7 @@ dependencies = [
 
 [[package]]
 name = "rimworld-mod-manager"
-version = "2.2.0"
+version = "2.2.1"
 dependencies = [
  "chrono",
  "eframe",
