@@ -46,10 +46,10 @@ fn render_steamcmd_card(app: &mut App, ui: &mut Ui) {
             ui.add_space(4.0);
             hint(ui, t.get(TranslationKey::SteamCmdCardHint));
             ui.add_space(6.0);
-            if setting_row(ui, t.get(TranslationKey::SteamCmdUse), None, &mut app.use_steamcmd) {
-                app.use_steamcmd_set = true;
+            if setting_row(ui, t.get(TranslationKey::SteamCmdUse), None, &mut app.steamcmd.enabled) {
+                app.steamcmd.enabled_set = true;
             }
-            if app.steam_paths.steam_path.is_none() && !app.use_steamcmd {
+            if app.steam_paths.steam_path.is_none() && !app.steamcmd.enabled {
                 ui.add(
                     egui::Label::new(
                         egui::RichText::new(t.get(TranslationKey::SteamCmdAuto))
@@ -77,7 +77,7 @@ fn render_steamcmd_card(app: &mut App, ui: &mut Ui) {
             }
             if path_row(ui, &dir.display().to_string(), t.get(TranslationKey::SteamCmdBtnPick)) {
                 if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                    app.custom_steamcmd_dir = Some(folder);
+                    app.steamcmd.custom_dir = Some(folder);
                 }
             }
             ui.add_space(4.0);
@@ -99,11 +99,11 @@ fn render_steamcmd_card(app: &mut App, ui: &mut Ui) {
                 if secondary_button(ui, t.get(TranslationKey::SteamCmdBtnConsole)).clicked() {
                     app.open_steamcmd_console();
                 }
-                if app.steamcmd_job.is_some()
+                if app.steamcmd.job.is_some()
                     && secondary_button(ui, t.get(TranslationKey::SteamCmdBtnWindow)).clicked()
                 {
-                    app.steamcmd_console = false;
-                    app.steamcmd_window = true;
+                    app.steamcmd.console = false;
+                    app.steamcmd.window = true;
                 }
                 if busy {
                     ui.spinner();

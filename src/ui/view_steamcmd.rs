@@ -13,21 +13,21 @@ use crate::steamcmd::{ItemState, Phase};
 const WIDTH: f32 = 600.0;
 
 pub fn render_steamcmd_window(app: &mut App, ctx: &egui::Context) {
-    if !app.steamcmd_window {
+    if !app.steamcmd.window {
         return;
     }
-    let console = app.steamcmd_console;
-    if app.steamcmd_job.is_none() && !console {
-        app.steamcmd_window = false;
+    let console = app.steamcmd.console;
+    if app.steamcmd.job.is_none() && !console {
+        app.steamcmd.window = false;
         return;
     }
     let t = app.i18n;
     let running = app.steamcmd_busy();
     // The console's text is edited apart from `app` (the job is borrowed while drawing).
-    let mut input = std::mem::take(&mut app.steamcmd_console_input);
+    let mut input = std::mem::take(&mut app.steamcmd.console_input);
     let empty = crate::steamcmd::Job::new(&[]);
-    let has_job = app.steamcmd_job.is_some();
-    let job = app.steamcmd_job.as_ref().unwrap_or(&empty);
+    let has_job = app.steamcmd.job.is_some();
+    let job = app.steamcmd.job.as_ref().unwrap_or(&empty);
     let mut open = !ctx.input(|i| i.key_pressed(egui::Key::Escape));
     let (mut stop, mut close, mut retry, mut run_console) = (false, false, Vec::new(), false);
     let (width, max_height) = dialog_size(ctx, WIDTH);
@@ -318,7 +318,7 @@ pub fn render_steamcmd_window(app: &mut App, ctx: &egui::Context) {
             });
         });
 
-    app.steamcmd_console_input = input;
+    app.steamcmd.console_input = input;
     if run_console {
         app.run_steamcmd_console();
     }
@@ -330,6 +330,6 @@ pub fn render_steamcmd_window(app: &mut App, ctx: &egui::Context) {
     }
     // Closing only hides the window: a download keeps going (Settings can show it again).
     if !open || close {
-        app.steamcmd_window = false;
+        app.steamcmd.window = false;
     }
 }

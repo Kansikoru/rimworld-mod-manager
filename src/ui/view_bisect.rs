@@ -13,7 +13,7 @@ use crate::i18n::{fmt, TranslationKey};
 const WIDTH: f32 = 580.0;
 
 pub fn render_bisect_window(app: &mut App, ctx: &egui::Context) {
-    if !app.bisect_open {
+    if !app.bisect.open {
         return;
     }
     let t = app.i18n;
@@ -35,12 +35,12 @@ pub fn render_bisect_window(app: &mut App, ctx: &egui::Context) {
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     ui.set_width(width);
-                    if app.bisect.is_some() {
+                    if app.bisect.session.is_some() {
                         render_search(app, ui);
                     } else {
                         render_setup(app, ui);
                     }
-                    if let Some(note) = app.bisect_note.clone() {
+                    if let Some(note) = app.bisect.note.clone() {
                         ui.add_space(6.0);
                         ui.add(egui::Label::new(egui::RichText::new(note).color(THEME.accent_rose)).wrap());
                     }
@@ -78,7 +78,7 @@ fn render_setup(app: &mut App, ui: &mut Ui) {
     );
     ui.add_space(10.0);
 
-    let mut keep = app.bisect_keep.clone().unwrap_or_default();
+    let mut keep = app.bisect.keep.clone().unwrap_or_default();
     let order = app.saved_active_mods.clone();
     ui.label(
         egui::RichText::new(fmt(t.get(TranslationKey::BisectKeepTitle), &[&keep.len().to_string()]))
@@ -88,9 +88,9 @@ fn render_setup(app: &mut App, ui: &mut Ui) {
     muted(ui, t.get(TranslationKey::BisectKeepHint));
     ui.add_space(4.0);
     let field_w = ui.available_width();
-    search_input_width(ui, &mut app.bisect_filter, t.get(TranslationKey::BisectFilter), field_w);
+    search_input_width(ui, &mut app.bisect.filter, t.get(TranslationKey::BisectFilter), field_w);
     ui.add_space(4.0);
-    let query = app.bisect_filter.trim().to_lowercase();
+    let query = app.bisect.filter.trim().to_lowercase();
     // The list in a box of its own: its scroll bar stays inside the box.
     list_box(ui, |ui| {
         egui::ScrollArea::vertical()
@@ -148,21 +148,23 @@ fn render_setup(app: &mut App, ui: &mut Ui) {
             .inner
             .clicked()
         {
-            app.bisect_keep = Some(keep.clone());
+            app.bisect.keep = Some(keep.clone());
             app.start_bisect();
         }
         if secondary_button(ui, t.get(TranslationKey::BtnCancel)).clicked() {
             app.close_bisect_window();
         }
     });
-    if app.bisect.is_none() && app.bisect_open {
-        app.bisect_keep = Some(keep);
+    if app.bisect.session.is_none() && app.bisect.open {
+        app.bisect.keep = Some(keep);
     }
 }
 
 fn render_search(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
-    let Some(search) = app.bisect.clone() else { return };
+    let Some(search) = app.bisect.session.clone() else {
+        return;
+    };
     if let Some(outcome) = search.outcome().cloned() {
         render_result(app, ui, &search, &outcome);
         return;
@@ -239,7 +241,7 @@ fn render_search(app: &mut App, ui: &mut Ui) {
             app.bisect_apply(false);
         }
     });
-    let applied = app.bisect.as_ref().is_some_and(|s| s.applied);
+    let applied = app.bisect.session.as_ref().is_some_and(|s| s.applied);
     if applied {
         ui.label(
             egui::RichText::new(t.get(TranslationKey::BisectApplied))
@@ -423,7 +425,7 @@ pub fn render_bisect_card(app: &mut App, ui: &mut Ui) {
                 muted(ui, t.get(TranslationKey::BisectCardText));
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let label = if app.bisect.is_some() {
+                let label = if app.bisect.session.is_some() {
                     t.get(TranslationKey::BisectCardContinue)
                 } else {
                     t.get(TranslationKey::BisectCardBtn)

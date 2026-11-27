@@ -62,7 +62,7 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
 
     // Optimizer DDS stored the wrong way up for this game version (1.6 and 1.7 read DDS
     // differently): flip them or roll them back.
-    if app.opt_wrong_orientation > 0 {
+    if app.optimizer.wrong_orientation > 0 {
         let version = app.steam_paths.game_major_minor().unwrap_or_else(|| "?".into());
         card_container(ui, |ui| {
             ui.vertical(|ui| {
@@ -72,7 +72,7 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
                         egui::Label::new(
                             egui::RichText::new(fmt(
                                 t.get(TranslationKey::OptLeftoverDds),
-                                &[&version, &app.opt_wrong_orientation.to_string()],
+                                &[&version, &app.optimizer.wrong_orientation.to_string()],
                             ))
                             .color(THEME.accent_rose)
                             .strong(),
@@ -118,7 +118,7 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
                     (OptimizeScope::SelectedOnly, t.get(TranslationKey::OptScopeSelected)),
                 ];
 
-                segmented(ui, &mut app.opt_scope, &scopes);
+                segmented(ui, &mut app.optimizer.scope, &scopes);
             });
 
             ui.add_space(6.0);
@@ -138,17 +138,17 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
                     (crate::optimizer::MaxTextureSize::S512, "512"),
                 ];
 
-                segmented(ui, &mut app.opt_max_size, &sizes);
+                segmented(ui, &mut app.optimizer.max_size, &sizes);
             });
 
             ui.add_space(6.0);
 
             ui.horizontal_wrapped(|ui| {
-                ui.checkbox(&mut app.opt_force, t.get(TranslationKey::OptForceReencode));
+                ui.checkbox(&mut app.optimizer.force, t.get(TranslationKey::OptForceReencode));
                 ui.add_space(12.0);
-                ui.checkbox(&mut app.opt_delete_source, t.get(TranslationKey::OptDeleteSource));
+                ui.checkbox(&mut app.optimizer.delete_source, t.get(TranslationKey::OptDeleteSource));
             });
-            if app.opt_delete_source {
+            if app.optimizer.delete_source {
                 ui.add(egui::Label::new(
                     egui::RichText::new(tr!(
                         "Исходники переносятся в %LOCALAPPDATA%\\RimWorldModManager\\texture_backup и возвращаются кнопкой «Откатить».\nОставьте выключенным, если у вас достаточно места на диске: некоторые моды читают PNG напрямую.",
@@ -166,9 +166,9 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
                     egui::RichText::new(format!("{}:", t.get(TranslationKey::OptThreads)))
                         .color(THEME.text_secondary),
                 );
-                ui.add(egui::Slider::new(&mut app.opt_threads, 1..=app.max_system_threads));
+                ui.add(egui::Slider::new(&mut app.optimizer.threads, 1..=app.optimizer.max_system_threads));
                 ui.label(
-                    egui::RichText::new(t.get(TranslationKey::OptThreadsCount).replace("{}", &app.max_system_threads.to_string()))
+                    egui::RichText::new(t.get(TranslationKey::OptThreadsCount).replace("{}", &app.optimizer.max_system_threads.to_string()))
                         .color(THEME.text_muted)
                         .size(12.0),
                 );
@@ -177,7 +177,7 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
             ui.add_space(10.0);
 
             ui.horizontal_wrapped(|ui| {
-                if !app.opt_is_running {
+                if !app.optimizer.is_running {
                     // Buttons are disabled while a scan/rollback runs in the background.
                     let idle = !app.optimizer_busy();
                     let secondary = ButtonStyle::Secondary;
@@ -190,7 +190,7 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
                         app.scan_texture_counts();
                     }
                     // With "Selected mod" chosen, rollback undoes only that mod (O1).
-                    if app.opt_scope == OptimizeScope::SelectedOnly {
+                    if app.optimizer.scope == OptimizeScope::SelectedOnly {
                         if button_if(ui, idle, Some(ICON_UNDO), t.get(TranslationKey::OptBtnRollbackSelected), secondary)
                             .on_hover_text(t.get(TranslationKey::OptBtnRollbackSelectedHint))
                             .clicked()
@@ -217,11 +217,11 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
     ui.add_space(12.0);
 
     // Progress Card
-    if app.opt_is_running || app.opt_total > 0 {
+    if app.optimizer.is_running || app.optimizer.total > 0 {
         card_container(ui, |ui| {
             ui.vertical(|ui| {
-                let progress = if app.opt_total > 0 {
-                    (app.opt_done as f32) / (app.opt_total as f32)
+                let progress = if app.optimizer.total > 0 {
+                    (app.optimizer.done as f32) / (app.optimizer.total as f32)
                 } else {
                     0.0
                 };
@@ -234,17 +234,17 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
                             "Обработано: {} / {} ({}%)",
                             "Processed: {} / {} ({}%)",
                             "已处理：{} / {}（{}%）",
-                            app.opt_done,
-                            app.opt_total,
+                            app.optimizer.done,
+                            app.optimizer.total,
                             progress_pct
                         ))
                         .color(THEME.text_primary)
                         .strong(),
                     );
-                    if app.opt_errors > 0 {
+                    if app.optimizer.errors > 0 {
                         badge(
                             ui,
-                            &tr!("Ошибок: {}", "Errors: {}", "错误：{}", app.opt_errors),
+                            &tr!("Ошибок: {}", "Errors: {}", "错误：{}", app.optimizer.errors),
                             THEME.accent_rose.linear_multiply(0.2),
                             THEME.accent_rose,
                         );
@@ -257,13 +257,13 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
                     ProgressBar::new(progress)
                         .fill(THEME.accent_purple)
                         .show_percentage()
-                        .animate(app.opt_is_running),
+                        .animate(app.optimizer.is_running),
                 );
 
-                if !app.opt_current_file.is_empty() {
+                if !app.optimizer.current_file.is_empty() {
                     ui.add_space(4.0);
                     ui.label(
-                        egui::RichText::new(tr!("Файл: {}", "File: {}", "文件：{}", app.opt_current_file))
+                        egui::RichText::new(tr!("Файл: {}", "File: {}", "文件：{}", app.optimizer.current_file))
                             .color(THEME.text_muted)
                             .size(12.0),
                     );

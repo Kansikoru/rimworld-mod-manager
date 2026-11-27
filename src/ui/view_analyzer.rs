@@ -66,7 +66,8 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
 
     // Counts next to the names: the mods the log blames (lit when there are any).
     let errors_count = app
-        .log_report
+        .analyzer
+        .report
         .as_ref()
         .map(|r| (r.culprits.len().max(usize::from(r.has_hard_crash)), true));
 
@@ -94,7 +95,7 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
             );
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                let analyzing = app.log_rx.is_some();
+                let analyzing = app.analyzer.rx.is_some();
                 ui.add_enabled_ui(!analyzing, |ui| {
                     if primary_button_icon(ui, ICON_SEARCH, t.get(TranslationKey::CrashBtnAnalyze)).clicked() {
                         app.run_log_analysis();
@@ -152,7 +153,7 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
             ui.add_space(8.0);
             // The full log scrolls inside its own view; the other sections scroll as a page.
             if section == Section::FullLog {
-                if app.log_report.is_some() {
+                if app.analyzer.report.is_some() {
                     render_full_log_view(app, ui);
                 } else {
                     no_report_hint(ui, t);
@@ -170,7 +171,7 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
                                 switch_to_optimizer = true;
                             }
                         }
-                        Section::Errors => match app.log_report.as_ref() {
+                        Section::Errors => match app.analyzer.report.as_ref() {
                             Some(report) => render_culprits(ui, t, report),
                             None => no_report_hint(ui, t),
                         },
@@ -179,7 +180,7 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
                         Section::Bisect => super::view_bisect::render_bisect_card(app, ui),
                         Section::LoadTime => {
                             render_load_time_card(app, ui);
-                            if let Some(report) = app.log_report.as_ref() {
+                            if let Some(report) = app.analyzer.report.as_ref() {
                                 ui.add_space(8.0);
                                 if render_load_profile_card(app, ui, report) {
                                     measure_launch = true;
@@ -187,7 +188,7 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
                             }
                         }
                         Section::InGame => {
-                            if app.companion_report.is_some() {
+                            if app.analyzer.companion_report.is_some() {
                                 render_companion_report_card(app, ui);
                                 ui.add_space(8.0);
                             }
@@ -232,7 +233,7 @@ fn no_report_hint(ui: &mut Ui, t: crate::i18n::I18n) {
 fn render_overview(app: &mut App, ui: &mut Ui) -> bool {
     let t = app.i18n;
     let mut to_optimizer = false;
-    let Some(report) = app.log_report.as_ref() else {
+    let Some(report) = app.analyzer.report.as_ref() else {
         no_report_hint(ui, t);
         // A log from elsewhere can be picked before any analysis.
         ui.add_space(4.0);
@@ -241,7 +242,7 @@ fn render_overview(app: &mut App, ui: &mut Ui) -> bool {
                 .add_filter("RimWorld Log (*.log)", &["log"])
                 .pick_file()
             {
-                app.custom_log_path = Some(path);
+                app.analyzer.custom_log_path = Some(path);
                 app.run_log_analysis();
             }
         }
@@ -322,12 +323,12 @@ fn render_overview(app: &mut App, ui: &mut Ui) -> bool {
             .add_filter("RimWorld Log (*.log)", &["log"])
             .pick_file()
         {
-            app.custom_log_path = Some(path);
+            app.analyzer.custom_log_path = Some(path);
             app.run_log_analysis();
         }
     }
 
-    let Some(report) = app.log_report.as_ref() else {
+    let Some(report) = app.analyzer.report.as_ref() else {
         return false;
     };
     if let Some(issue) = report.system_issue {
@@ -512,7 +513,7 @@ pub fn render_last_good_card(app: &mut App, ui: &mut Ui) {
                     if secondary_button(ui, t.get(TranslationKey::LastGoodSaveBtn)).clicked() {
                         app.remember_last_good();
                     }
-                    if let Some(snap) = &app.last_good {
+                    if let Some(snap) = &app.analyzer.last_good {
                         let dt = crate::ui::components::local_date_time(snap.saved_at);
                         ui.label(
                             egui::RichText::new(crate::i18n::fmt(t.get(TranslationKey::LastGoodSavedAt), &[&dt]))
@@ -525,8 +526,8 @@ pub fn render_last_good_card(app: &mut App, ui: &mut Ui) {
 
             ui.add_space(4.0);
 
-            let Some(diff) = &app.last_good_diff else {
-                if app.last_good.is_none() {
+            let Some(diff) = &app.analyzer.last_good_diff else {
+                if app.analyzer.last_good.is_none() {
                     ui.label(
                         egui::RichText::new(t.get(TranslationKey::LastGoodNoSnapshot))
                             .color(THEME.text_muted)
@@ -619,7 +620,7 @@ pub fn render_last_good_card(app: &mut App, ui: &mut Ui) {
 pub fn render_load_time_card(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
     let latest_entry = app.load_time_history.entries.last();
-    let current_log_secs = app.log_report.as_ref().and_then(|r| r.load_time_secs);
+    let current_log_secs = app.analyzer.report.as_ref().and_then(|r| r.load_time_secs);
 
     if latest_entry.is_none() && current_log_secs.is_none() {
         return;
@@ -712,7 +713,7 @@ fn render_load_profile_card(app: &App, ui: &mut Ui, report: &crate::analyzer::Lo
                 )
                 .on_hover_text(t.get(TranslationKey::LoadProfileHint));
             });
-            let pending = app.measure_next_launch || crate::load_profile::measured_launch_pending();
+            let pending = app.analyzer.measure_next_launch || crate::load_profile::measured_launch_pending();
             let Some(profile) = &report.load_profile else {
                 report_note(ui, t.get(TranslationKey::LoadProfileNone), THEME.text_secondary);
                 ui.add_space(4.0);
@@ -770,7 +771,7 @@ fn render_load_profile_card(app: &App, ui: &mut Ui, report: &crate::analyzer::Lo
                                 .size(11.5),
                         );
                     }
-                    if let Some(&(odd, _)) = app.odd_textures.get(&m.id.to_lowercase()).filter(|c| c.0 > 0) {
+                    if let Some(&(odd, _)) = app.analyzer.odd_textures.get(&m.id.to_lowercase()).filter(|c| c.0 > 0) {
                         ui.label(
                             egui::RichText::new(crate::i18n::fmt(
                                 t.get(TranslationKey::LoadProfileOddTextures),
@@ -808,7 +809,7 @@ const REPORT_ROWS: usize = 10;
 /// What the companion mod wrote after loading: texture memory per mod, replaced defs and
 /// methods several mods patch.
 fn render_companion_report_card(app: &App, ui: &mut Ui) {
-    let Some(report) = app.companion_report.as_ref() else {
+    let Some(report) = app.analyzer.companion_report.as_ref() else {
         return;
     };
     let t = app.i18n;
@@ -895,7 +896,7 @@ fn render_tick_profile_card(app: &App, ui: &mut Ui) -> bool {
                 }
             });
 
-            let Some(profile) = app.tick_profile.as_ref() else {
+            let Some(profile) = app.analyzer.tick_profile.as_ref() else {
                 return;
             };
             ui.add_space(8.0);
@@ -1325,22 +1326,22 @@ fn filter_log_lines(content: &str, filter: &str, level_filter: crate::analyzer::
 
 fn render_full_log_view(app: &mut App, ui: &mut Ui) {
     let t = app.i18n;
-    let Some(ref report) = app.log_report else { return };
+    let Some(ref report) = app.analyzer.report else { return };
 
     card_container(ui, |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             search_input_width(
                 ui,
-                &mut app.log_filter_text,
+                &mut app.analyzer.filter_text,
                 t.get(TranslationKey::AnalyzerFilterHint),
                 220.0,
             );
 
-            let all_sel = app.log_level_filter == crate::analyzer::LogLevelFilter::All;
-            let err_sel = app.log_level_filter == crate::analyzer::LogLevelFilter::Errors;
-            let warn_sel = app.log_level_filter == crate::analyzer::LogLevelFilter::Warnings;
-            let info_sel = app.log_level_filter == crate::analyzer::LogLevelFilter::Info;
+            let all_sel = app.analyzer.level_filter == crate::analyzer::LogLevelFilter::All;
+            let err_sel = app.analyzer.level_filter == crate::analyzer::LogLevelFilter::Errors;
+            let warn_sel = app.analyzer.level_filter == crate::analyzer::LogLevelFilter::Warnings;
+            let info_sel = app.analyzer.level_filter == crate::analyzer::LogLevelFilter::Info;
 
             if small_button(
                 ui,
@@ -1353,7 +1354,7 @@ fn render_full_log_view(app: &mut App, ui: &mut Ui) {
             )
             .clicked()
             {
-                app.log_level_filter = crate::analyzer::LogLevelFilter::All;
+                app.analyzer.level_filter = crate::analyzer::LogLevelFilter::All;
             }
             if small_button(
                 ui,
@@ -1366,7 +1367,7 @@ fn render_full_log_view(app: &mut App, ui: &mut Ui) {
             )
             .clicked()
             {
-                app.log_level_filter = crate::analyzer::LogLevelFilter::Errors;
+                app.analyzer.level_filter = crate::analyzer::LogLevelFilter::Errors;
             }
             if small_button(
                 ui,
@@ -1379,7 +1380,7 @@ fn render_full_log_view(app: &mut App, ui: &mut Ui) {
             )
             .clicked()
             {
-                app.log_level_filter = crate::analyzer::LogLevelFilter::Warnings;
+                app.analyzer.level_filter = crate::analyzer::LogLevelFilter::Warnings;
             }
             if small_button(
                 ui,
@@ -1392,15 +1393,15 @@ fn render_full_log_view(app: &mut App, ui: &mut Ui) {
             )
             .clicked()
             {
-                app.log_level_filter = crate::analyzer::LogLevelFilter::Info;
+                app.analyzer.level_filter = crate::analyzer::LogLevelFilter::Info;
             }
         });
     });
 
     ui.add_space(6.0);
 
-    let filter_text = app.log_filter_text.trim().to_lowercase();
-    let level_filter = app.log_level_filter;
+    let filter_text = app.analyzer.filter_text.trim().to_lowercase();
+    let level_filter = app.analyzer.level_filter;
 
     // Matching lines, worked out again only when the search, the level or the log change: a
     // log has tens of thousands of lines, too many to sort through every frame.

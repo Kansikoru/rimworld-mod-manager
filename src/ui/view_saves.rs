@@ -46,8 +46,8 @@ pub fn render_saves_view(app: &mut App, ui: &mut Ui) {
     );
     ui.add_space(8.0);
 
-    if app.selected_save.is_none() {
-        app.selected_save = app.saves.first().map(|s| s.name.clone());
+    if app.saves.selected.is_none() {
+        app.saves.selected = app.saves.list.first().map(|s| s.name.clone());
     }
 
     let mut actions: Vec<SaveAction> = Vec::new();
@@ -105,7 +105,7 @@ pub fn render_saves_view(app: &mut App, ui: &mut Ui) {
 fn apply_actions(app: &mut App, actions: Vec<SaveAction>) {
     for action in actions {
         match action {
-            SaveAction::Select(name) => app.selected_save = Some(name),
+            SaveAction::Select(name) => app.saves.selected = Some(name),
             SaveAction::LoadMods(name) => {
                 app.load_save_mods(&name);
                 app.current_tab = AppTab::Mods;
@@ -120,6 +120,7 @@ fn apply_actions(app: &mut App, actions: Vec<SaveAction>) {
             SaveAction::FindByName(name, only) => {
                 let wanted = app
                     .saves
+                    .list
                     .iter()
                     .find(|s| s.name == name)
                     .map(|save| app.save_wanted(save, only.as_deref()))
@@ -127,7 +128,7 @@ fn apply_actions(app: &mut App, actions: Vec<SaveAction>) {
                 app.start_name_search(name, wanted);
             }
             SaveAction::Refresh => app.refresh_saves(),
-            SaveAction::Dialog(dialog) => app.save_dialog = Some(dialog),
+            SaveAction::Dialog(dialog) => app.saves.dialog = Some(dialog),
             SaveAction::OpenFolder => {
                 if let Some(dir) = app.saves_folder() {
                     open_external(dir);
@@ -151,7 +152,7 @@ fn render_list(app: &mut App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
         ui.spacing_mut().item_spacing.x = 8.0;
         let refresh_w = styled_button_width(ui, true, "");
         let search_w = (ui.available_width() - refresh_w - 8.0).max(140.0);
-        search_input_width(ui, &mut app.saves_search, t.get(TranslationKey::SavesSearch), search_w);
+        search_input_width(ui, &mut app.saves.search, t.get(TranslationKey::SavesSearch), search_w);
         if styled_button(ui, Some(ICON_REFRESH), "", ButtonStyle::Secondary)
             .on_hover_text(t.get(TranslationKey::SavesRefresh))
             .clicked()
@@ -162,7 +163,7 @@ fn render_list(app: &mut App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
     ui.add_space(10.0);
     let app: &App = app;
 
-    if app.saves.is_empty() {
+    if app.saves.list.is_empty() {
         card_container(ui, |ui| {
             ui.set_width(ui.available_width());
             if app.saves_loading() {
@@ -181,9 +182,10 @@ fn render_list(app: &mut App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
         return;
     }
 
-    let query = app.saves_search.trim().to_lowercase();
+    let query = app.saves.search.trim().to_lowercase();
     let shown: Vec<&SaveInfo> = app
         .saves
+        .list
         .iter()
         .filter(|s| query.is_empty() || s.name.to_lowercase().contains(&query))
         .collect();
@@ -192,7 +194,7 @@ fn render_list(app: &mut App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
         .auto_shrink([false, false])
         .show_rows(ui, ROW_H, shown.len(), |ui, range| {
             for save in &shown[range] {
-                let selected = app.selected_save.as_deref() == Some(save.name.as_str());
+                let selected = app.saves.selected.as_deref() == Some(save.name.as_str());
                 let resp = save_row(app, ui, save, selected);
                 if resp.clicked() {
                     actions.push(SaveAction::Select(save.name.clone()));
@@ -300,9 +302,10 @@ fn save_row(app: &App, ui: &mut Ui, save: &SaveInfo, selected: bool) -> egui::Re
 fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
     let t = app.i18n;
     let Some(save) = app
-        .selected_save
+        .saves
+        .selected
         .as_deref()
-        .and_then(|name| app.saves.iter().find(|s| s.name == name))
+        .and_then(|name| app.saves.list.iter().find(|s| s.name == name))
     else {
         card_container(ui, |ui| {
             ui.set_width(ui.available_width());

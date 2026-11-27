@@ -82,7 +82,8 @@ pub fn render_workshop_view(app: &mut App, ui: &mut Ui) {
     // Previews first (they need `app` mutably), then everything is drawn from `&App`.
     let mut thumbs: HashMap<String, egui::TextureHandle> = HashMap::new();
     let urls: Vec<(String, String)> = app
-        .ws_items
+        .workshop
+        .items
         .iter()
         .filter_map(|i| i.preview_url.clone().map(|u| (i.id.clone(), u)))
         .collect();
@@ -92,18 +93,20 @@ pub fn render_workshop_view(app: &mut App, ui: &mut Ui) {
         }
     }
     let big = app
-        .ws_selected
+        .workshop
+        .selected
         .as_ref()
-        .and_then(|id| app.ws_items.iter().find(|i| &i.id == id))
+        .and_then(|id| app.workshop.items.iter().find(|i| &i.id == id))
         .and_then(|i| i.preview_url.clone())
         .and_then(|url| app.workshop_preview(&url, BIG_W));
     let installed = app.installed_workshop_ids();
 
     let narrow = ui.available_width() < NARROW_TWO_COLUMNS;
     let selected = app
-        .ws_selected
+        .workshop
+        .selected
         .as_ref()
-        .and_then(|id| app.ws_items.iter().find(|i| &i.id == id));
+        .and_then(|id| app.workshop.items.iter().find(|i| &i.id == id));
     if narrow {
         // One column: the list, or the picked mod with "Back to the list".
         if let Some(item) = selected {
@@ -149,7 +152,7 @@ pub fn render_workshop_view(app: &mut App, ui: &mut Ui) {
                                 });
                         }
                         None => {
-                            let hint = match app.ws_query.section {
+                            let hint = match app.workshop.query.section {
                                 Section::Mods => TranslationKey::WsPickHint,
                                 Section::Collections => TranslationKey::WsPickCollectionHint,
                             };
@@ -173,28 +176,28 @@ fn apply(app: &mut App, actions: Vec<WsAction>) {
             WsAction::ImportCollection(id) => app.import_workshop_collection(&id),
             WsAction::Search => app.search_workshop_tab(),
             WsAction::Sort(sort) => {
-                app.ws_query.sort = sort;
+                app.workshop.query.sort = sort;
                 app.search_workshop_tab();
             }
             WsAction::Version(v) => {
-                app.ws_query.version = v;
+                app.workshop.query.version = v;
                 app.search_workshop_tab();
             }
             WsAction::ToggleTag(tag) => {
-                if let Some(i) = app.ws_query.tags.iter().position(|t| *t == tag) {
-                    app.ws_query.tags.remove(i);
+                if let Some(i) = app.workshop.query.tags.iter().position(|t| *t == tag) {
+                    app.workshop.query.tags.remove(i);
                 } else {
-                    app.ws_query.tags.push(tag);
+                    app.workshop.query.tags.push(tag);
                 }
                 app.search_workshop_tab();
             }
             WsAction::ClearTags => {
-                app.ws_query.tags.clear();
-                app.ws_query.version = None;
+                app.workshop.query.tags.clear();
+                app.workshop.query.version = None;
                 app.search_workshop_tab();
             }
             WsAction::Page(p) => app.workshop_page(p),
-            WsAction::Select(id) => app.ws_selected = id,
+            WsAction::Select(id) => app.workshop.selected = id,
             WsAction::Download(id) => app.download_workshop_item(&id),
             WsAction::DownloadMany(ids) => app.download_workshop_items(ids),
             WsAction::DownloadWorkshopDb => app.download_workshop_index(),
@@ -214,7 +217,7 @@ fn render_toolbar(app: &mut App, ui: &mut Ui, actions: &mut Vec<WsAction>) {
                 (Section::Mods, TranslationKey::WsSectionMods),
                 (Section::Collections, TranslationKey::WsSectionCollections),
             ] {
-                let style = if app.ws_query.section == section {
+                let style = if app.workshop.query.section == section {
                     ButtonStyle::Primary
                 } else {
                     ButtonStyle::Secondary
@@ -224,26 +227,26 @@ fn render_toolbar(app: &mut App, ui: &mut Ui, actions: &mut Vec<WsAction>) {
                 }
             }
         });
-        let placeholder = match app.ws_query.section {
+        let placeholder = match app.workshop.query.section {
             Section::Mods => TranslationKey::WsSearch,
             Section::Collections => TranslationKey::WsSearchCollections,
         };
         let field_w = ui.available_width().clamp(180.0, 340.0);
-        if search_input_width(ui, &mut app.ws_search, t.get(placeholder), field_w) {
+        if search_input_width(ui, &mut app.workshop.search, t.get(placeholder), field_w) {
             actions.push(WsAction::Search);
         }
         if primary_button_icon(ui, ICON_SEARCH, t.get(TranslationKey::WsBtnSearch)).clicked() {
             actions.push(WsAction::Search);
         }
         // A search is sorted by relevance: the sort applies to the catalog.
-        ui.add_enabled_ui(app.ws_query.text.is_empty(), |ui| {
+        ui.add_enabled_ui(app.workshop.query.text.is_empty(), |ui| {
             egui::ComboBox::from_id_salt("ws_sort")
-                .selected_text(sort_label(t, app.ws_query.sort))
+                .selected_text(sort_label(t, app.workshop.query.sort))
                 .width(200.0)
                 .show_ui(ui, |ui| {
                     for sort in BrowseSort::ALL {
                         if ui
-                            .selectable_label(app.ws_query.sort == sort, sort_label(t, sort))
+                            .selectable_label(app.workshop.query.sort == sort, sort_label(t, sort))
                             .clicked()
                         {
                             actions.push(WsAction::Sort(sort));
@@ -253,7 +256,7 @@ fn render_toolbar(app: &mut App, ui: &mut Ui, actions: &mut Vec<WsAction>) {
         });
         // Every RimWorld Workshop tag in one menu: the item types (any number), then the game
         // version (one). The button shows how many are on.
-        let chosen = app.ws_query.tags.len() + usize::from(app.ws_query.version.is_some());
+        let chosen = app.workshop.query.tags.len() + usize::from(app.workshop.query.version.is_some());
         let tags_btn = menu_chip(ui, crate::i18n::tr!("Теги", "Tags", "标签"), chosen);
         egui::Popup::from_toggle_button_response(&tags_btn)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
@@ -268,7 +271,7 @@ fn render_toolbar(app: &mut App, ui: &mut Ui, actions: &mut Vec<WsAction>) {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
                     for tag in crate::workshop_browse::TYPE_TAGS {
-                        let on = app.ws_query.tags.iter().any(|t| t == tag);
+                        let on = app.workshop.query.tags.iter().any(|t| t == tag);
                         if chip(ui, None, tag_name(tag), 0, on).clicked() {
                             actions.push(WsAction::ToggleTag(tag.to_string()));
                         }
@@ -288,14 +291,14 @@ fn render_toolbar(app: &mut App, ui: &mut Ui, actions: &mut Vec<WsAction>) {
                         None,
                         t.get(TranslationKey::WsAnyVersion),
                         0,
-                        app.ws_query.version.is_none(),
+                        app.workshop.query.version.is_none(),
                     )
                     .clicked()
                     {
                         actions.push(WsAction::Version(None));
                     }
                     for v in crate::workshop_browse::VERSION_TAGS {
-                        let on = app.ws_query.version.as_deref() == Some(v);
+                        let on = app.workshop.query.version.as_deref() == Some(v);
                         if chip(ui, None, v, 0, on).clicked() {
                             actions.push(WsAction::Version(Some(v.to_string())));
                         }
@@ -343,7 +346,7 @@ fn collection_state(app: &App, installed: &HashSet<String>, item: &WorkshopItem)
     for id in &item.children {
         if on_disk(app, installed, id) {
             have += 1;
-        } else if !app.ws_requested.contains(id) {
+        } else if !app.workshop.requested.contains(id) {
             missing.push(id.clone());
         }
     }
@@ -353,7 +356,7 @@ fn collection_state(app: &App, installed: &HashSet<String>, item: &WorkshopItem)
 fn have(item: &WorkshopItem, installed: &HashSet<String>, app: &App) -> Have {
     if installed.contains(&item.id) {
         Have::Installed
-    } else if app.ws_requested.contains(&item.id) {
+    } else if app.workshop.requested.contains(&item.id) {
         Have::Requested
     } else {
         Have::No
@@ -368,7 +371,7 @@ fn render_grid(
     actions: &mut Vec<WsAction>,
 ) {
     let t = app.i18n;
-    if let Some(e) = &app.ws_error {
+    if let Some(e) = &app.workshop.error {
         card_container(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.add(
@@ -400,10 +403,10 @@ fn render_grid(
                 )
                 .clicked()
                 {
-                    actions.push(WsAction::Page(app.ws_query.page));
+                    actions.push(WsAction::Page(app.workshop.query.page));
                 }
                 if secondary_button(ui, t.get(TranslationKey::WsOpenInBrowser)).clicked() {
-                    open_external(crate::workshop_browse::browse_url(&app.ws_query));
+                    open_external(crate::workshop_browse::browse_url(&app.workshop.query));
                 }
                 if app.workshop_loading() {
                     ui.spinner();
@@ -412,7 +415,7 @@ fn render_grid(
         });
         return;
     }
-    if app.ws_items.is_empty() {
+    if app.workshop.items.is_empty() {
         if !app.workshop_loading() {
             ui.label(egui::RichText::new(t.get(TranslationKey::WsEmpty)).color(THEME.text_muted));
         }
@@ -423,9 +426,9 @@ fn render_grid(
     egui::ScrollArea::vertical()
         .id_salt((
             "ws_grid",
-            app.ws_query.section == Section::Mods,
-            app.ws_query.page,
-            &app.ws_query.text,
+            app.workshop.query.section == Section::Mods,
+            app.workshop.query.page,
+            &app.workshop.query.text,
         ))
         .auto_shrink([false, false])
         .max_height((ui.available_height() - pager_h).max(120.0))
@@ -433,11 +436,11 @@ fn render_grid(
             let width = ui.available_width();
             let cols = (((width + GAP) / (CARD_W + GAP)).floor() as usize).max(1);
             let card_w = ((width - GAP * (cols as f32 - 1.0)) / cols as f32).floor();
-            for row in app.ws_items.chunks(cols) {
+            for row in app.workshop.items.chunks(cols) {
                 ui.horizontal_top(|ui| {
                     ui.spacing_mut().item_spacing.x = GAP;
                     for item in row {
-                        let selected = app.ws_selected.as_deref() == Some(item.id.as_str());
+                        let selected = app.workshop.selected.as_deref() == Some(item.id.as_str());
                         let state = if item.is_collection {
                             CardState::Collection(collection_state(app, installed, item).0)
                         } else {
@@ -456,7 +459,7 @@ fn render_grid(
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        let page = app.ws_query.page.max(1);
+        let page = app.workshop.query.page.max(1);
         let busy = app.workshop_loading();
         if ui
             .add_enabled_ui(page > 1 && !busy, |ui| {
@@ -471,7 +474,7 @@ fn render_grid(
             egui::RichText::new(fmt(t.get(TranslationKey::WsPage), &[&page.to_string()])).color(THEME.text_secondary),
         );
         if ui
-            .add_enabled_ui(app.ws_items.len() >= PER_PAGE && !busy, |ui| {
+            .add_enabled_ui(app.workshop.items.len() >= PER_PAGE && !busy, |ui| {
                 secondary_button(ui, t.get(TranslationKey::WsNext))
             })
             .inner
@@ -479,7 +482,7 @@ fn render_grid(
         {
             actions.push(WsAction::Page(page + 1));
         }
-        if app.ws_source == crate::workshop_browse::Source::SteamClient {
+        if app.workshop.source == crate::workshop_browse::Source::SteamClient {
             ui.add_space(8.0);
             ui.label(
                 egui::RichText::new(t.get(TranslationKey::WsViaSteamClient))
@@ -632,7 +635,7 @@ fn render_details(
                 .unwrap_or_default();
             let is_dep_installed = |dep_id: &str| {
                 installed.contains(dep_id)
-                    || app.ws_requested.contains(dep_id)
+                    || app.workshop.requested.contains(dep_id)
                     || app
                         .workshop_index
                         .as_ref()
@@ -707,7 +710,7 @@ fn render_details(
                     );
                     for (dep_id, dep_name) in &direct_deps {
                         let have_dep = installed.contains(dep_id)
-                            || app.ws_requested.contains(dep_id)
+                            || app.workshop.requested.contains(dep_id)
                             || idx
                                 .package_for_id(dep_id)
                                 .is_some_and(|pkg| app.find_mod(pkg).is_some());
@@ -912,14 +915,14 @@ fn render_collection_details(
                 .strong(),
         );
         ui.add_space(4.0);
-        match app.ws_collection.as_ref().filter(|(id, _)| id == &item.id) {
+        match app.workshop.collection.as_ref().filter(|(id, _)| id == &item.id) {
             Some((_, Ok(mods))) => {
                 for m in mods {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
                         if on_disk(app, installed, &m.id) {
                             tag(ui, t.get(TranslationKey::WsInstalled), THEME.accent_emerald);
-                        } else if app.ws_requested.contains(&m.id) {
+                        } else if app.workshop.requested.contains(&m.id) {
                             tag(ui, t.get(TranslationKey::WsRequested), THEME.accent_cyan);
                         }
                         if ui

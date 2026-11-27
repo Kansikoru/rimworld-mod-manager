@@ -67,11 +67,12 @@ pub fn render_sets_view(app: &mut App, ui: &mut Ui) {
     app.load_modlist_pictures(ui.ctx());
 
     // Something is always open on the right: the loaded set, else the first one.
-    if app.selected_modlist.is_none() {
-        app.selected_modlist = app
-            .current_modlist
+    if app.modpacks.selected.is_none() {
+        app.modpacks.selected = app
+            .modpacks
+            .current
             .clone()
-            .or_else(|| app.modlists.first().map(|l| l.name.clone()));
+            .or_else(|| app.modpacks.lists.first().map(|l| l.name.clone()));
     }
 
     let mut actions: Vec<SetAction> = Vec::new();
@@ -108,7 +109,7 @@ pub fn render_sets_view(app: &mut App, ui: &mut Ui) {
         .show(ui, |ui| {
             // A wide window: the modpack's mods in a full-height column on the right, the same
             // rows as the active list on the Mods tab; narrower, they stay under the details.
-            let wide = ui.available_width() >= WIDE_WITH_MODS && !app.modlists.is_empty();
+            let wide = ui.available_width() >= WIDE_WITH_MODS && !app.modpacks.lists.is_empty();
             if wide {
                 if let Some(list) = selected_list(app) {
                     // The column takes what the details leave, so no empty strip between them.
@@ -136,7 +137,7 @@ pub fn render_sets_view(app: &mut App, ui: &mut Ui) {
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         cap_width(ui, DETAILS_MAX_W);
-                        if app.modlists.is_empty() {
+                        if app.modpacks.lists.is_empty() {
                             render_empty(app, ui, &mut actions);
                         } else {
                             render_details(app, ui, &mut actions, !wide);
@@ -162,7 +163,7 @@ fn apply_actions(app: &mut App, actions: Vec<SetAction>) {
     let t = app.i18n;
     for action in actions {
         match action {
-            SetAction::Select(name) => app.selected_modlist = Some(name),
+            SetAction::Select(name) => app.modpacks.selected = Some(name),
             SetAction::Apply { name, launch } => app.apply_modlist(&name, launch),
             SetAction::OpenInMods(name) => {
                 app.load_modlist(&name);
@@ -170,11 +171,12 @@ fn apply_actions(app: &mut App, actions: Vec<SetAction>) {
             }
             SetAction::SaveHere(name) => app.overwrite_modlist(&name),
             SetAction::Duplicate(name) => app.duplicate_modlist(&name),
-            SetAction::Dialog(dialog) => app.modlist_dialog = Some(dialog),
+            SetAction::Dialog(dialog) => app.modpacks.dialog = Some(dialog),
             SetAction::SubscribeMissing(name) => app.subscribe_modlist_missing(&name),
             SetAction::FindByName(name, only) => {
                 let wanted = app
-                    .modlists
+                    .modpacks
+                    .lists
                     .iter()
                     .find(|l| l.name == name)
                     .map(|list| app.modlist_wanted(list, only.as_deref()))
@@ -193,7 +195,7 @@ fn apply_actions(app: &mut App, actions: Vec<SetAction>) {
             SetAction::RestoreSettings(name) => app.restore_modlist_settings(&name),
             SetAction::ForgetSettings(name) => app.forget_modlist_settings(&name),
             SetAction::Compare(name, with) => app.open_set_compare(&name, with),
-            SetAction::CloseCompare => app.set_compare = None,
+            SetAction::CloseCompare => app.modpacks.compare = None,
             SetAction::Merge(first, second) => app.merge_modlists(&first, &second),
             SetAction::CheckWorkshop(ids) => app.check_workshop_items(&ids),
             SetAction::LoadIcons(icons) => {
@@ -217,7 +219,7 @@ fn apply_actions(app: &mut App, actions: Vec<SetAction>) {
 /// The picture of a set in `rect`: the user's own, or the generated placeholder with the
 /// modpack icon on top. Before the textures are made, a plain tinted square.
 fn paint_set_picture(app: &App, ui: &Ui, name: &str, rect: egui::Rect, radius: u8) {
-    let Some((tex, custom)) = app.modlist_pictures.get(name) else {
+    let Some((tex, custom)) = app.modpacks.pictures.get(name) else {
         ui.painter()
             .rect_filled(rect, CornerRadius::same(radius), tint(THEME.accent_cyan));
         return;
@@ -289,12 +291,13 @@ fn render_list_panel(app: &mut App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
     }
     ui.add_space(10.0);
     let width = ui.available_width();
-    search_input_width(ui, &mut app.sets_search, t.get(TranslationKey::SetsSearch), width);
+    search_input_width(ui, &mut app.modpacks.search, t.get(TranslationKey::SetsSearch), width);
     ui.add_space(8.0);
 
     // Tags in use: clicking one shows only the sets with it (several: any of them).
-    let used = crate::modlist_tags::in_use(&app.modlist_tags, app.modlists.iter().map(|l| l.name.as_str()));
-    app.sets_tag_filter
+    let used = crate::modlist_tags::in_use(&app.modpacks.tags, app.modpacks.lists.iter().map(|l| l.name.as_str()));
+    app.modpacks
+        .tag_filter
         .retain(|f| used.iter().any(|(tag, _)| tag.to_lowercase() == *f));
     if !used.is_empty() {
         ui.horizontal_wrapped(|ui| {
@@ -303,21 +306,21 @@ fn render_list_panel(app: &mut App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
                 ui,
                 None,
                 t.get(TranslationKey::CategoriesAll),
-                app.modlists.len(),
-                app.sets_tag_filter.is_empty(),
+                app.modpacks.lists.len(),
+                app.modpacks.tag_filter.is_empty(),
             )
             .clicked()
             {
-                app.sets_tag_filter.clear();
+                app.modpacks.tag_filter.clear();
             }
             for (tag, n) in &used {
                 let key = tag.to_lowercase();
-                let on = app.sets_tag_filter.contains(&key);
+                let on = app.modpacks.tag_filter.contains(&key);
                 if chip(ui, None, &tag_label(t, tag), *n, on).clicked() {
                     if on {
-                        app.sets_tag_filter.remove(&key);
+                        app.modpacks.tag_filter.remove(&key);
                     } else {
-                        app.sets_tag_filter.insert(key);
+                        app.modpacks.tag_filter.insert(key);
                     }
                 }
             }
@@ -326,7 +329,7 @@ fn render_list_panel(app: &mut App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
     }
 
     let app: &App = app;
-    if app.modlists.is_empty() {
+    if app.modpacks.lists.is_empty() {
         ui.add(
             egui::Label::new(
                 egui::RichText::new(t.get(TranslationKey::SetsNoneYet))
@@ -337,25 +340,27 @@ fn render_list_panel(app: &mut App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
         );
         return;
     }
-    let query = app.sets_search.trim().to_lowercase();
+    let query = app.modpacks.search.trim().to_lowercase();
     egui::ScrollArea::vertical()
         .id_salt("sets_list_scroll")
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             for list in app
-                .modlists
+                .modpacks
+                .lists
                 .iter()
                 .filter(|l| query.is_empty() || l.name.to_lowercase().contains(&query))
                 .filter(|l| {
-                    app.sets_tag_filter.is_empty()
+                    app.modpacks.tag_filter.is_empty()
                         || app
-                            .sets_tag_filter
+                            .modpacks
+                            .tag_filter
                             .iter()
-                            .any(|f| crate::modlist_tags::has(&app.modlist_tags, &l.name, f))
+                            .any(|f| crate::modlist_tags::has(&app.modpacks.tags, &l.name, f))
                 })
             {
-                let selected = app.selected_modlist.as_deref() == Some(list.name.as_str());
+                let selected = app.modpacks.selected.as_deref() == Some(list.name.as_str());
                 if set_row(app, ui, list, selected).clicked() {
                     actions.push(SetAction::Select(list.name.clone()));
                 }
@@ -367,7 +372,7 @@ fn render_list_panel(app: &mut App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
 fn new_set_dialog(app: &App) -> SetAction {
     let default = fmt(
         app.i18n.get(TranslationKey::SetsDefaultName),
-        &[&(app.modlists.len() + 1).to_string()],
+        &[&(app.modpacks.lists.len() + 1).to_string()],
     );
     SetAction::Dialog(ModListDialog::SaveAs {
         name: default,
@@ -543,9 +548,10 @@ fn tag_pill(ui: &mut Ui, label: &str, on: bool) -> egui::Response {
 
 /// The set open on the right: the loaded one, else the first.
 fn selected_list(app: &App) -> Option<&ModList> {
-    app.selected_modlist
+    app.modpacks
+        .selected
         .as_deref()
-        .and_then(|name| app.modlists.iter().find(|l| l.name == name))
+        .and_then(|name| app.modpacks.lists.iter().find(|l| l.name == name))
 }
 
 /// The selected set: picture, tags, actions, details, missing mods; its mod list too when
@@ -569,7 +575,7 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, with_mod
     let name = list.name.clone();
 
     // Picture (click to choose another), name, file, picture buttons
-    let custom_picture = app.modlist_pictures.get(&name).is_some_and(|(_, custom)| *custom);
+    let custom_picture = app.modpacks.pictures.get(&name).is_some_and(|(_, custom)| *custom);
     let pick_picture = || {
         rfd::FileDialog::new()
             .add_filter(t.get(TranslationKey::SetsPictureFilter), &["png", "jpg", "jpeg", "gif"])
@@ -632,14 +638,14 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, with_mod
         ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
         ui.label(egui::RichText::new(t.get(TranslationKey::SetsTagsLabel)).color(THEME.text_muted));
         let mut offered: Vec<String> = crate::modlist_tags::BUILT_IN.iter().map(|s| s.to_string()).collect();
-        let used = crate::modlist_tags::in_use(&app.modlist_tags, app.modlists.iter().map(|l| l.name.as_str()));
+        let used = crate::modlist_tags::in_use(&app.modpacks.tags, app.modpacks.lists.iter().map(|l| l.name.as_str()));
         for (tag, _) in used {
             if !offered.iter().any(|o| o.eq_ignore_ascii_case(&tag)) {
                 offered.push(tag);
             }
         }
         for tag in &offered {
-            let on = crate::modlist_tags::has(&app.modlist_tags, &name, tag);
+            let on = crate::modlist_tags::has(&app.modpacks.tags, &name, tag);
             if tag_pill(ui, &tag_label(t, tag), on).clicked() {
                 actions.push(SetAction::ToggleTag(name.clone(), tag.clone()));
             }
@@ -659,7 +665,7 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, with_mod
             .clicked();
         if enter || plus {
             if let Some(tag) = crate::modlist_tags::clean(&text) {
-                if !crate::modlist_tags::has(&app.modlist_tags, &name, &tag) {
+                if !crate::modlist_tags::has(&app.modpacks.tags, &name, &tag) {
                     actions.push(SetAction::ToggleTag(name.clone(), tag));
                 }
                 text.clear();
@@ -734,7 +740,7 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, with_mod
                     ui.close();
                 }
                 // "Merge with…": the other sets in a submenu.
-                if app.modlists.len() > 1 {
+                if app.modpacks.lists.len() > 1 {
                     ui.menu_button(t.get(TranslationKey::SetsBtnMerge), |ui| {
                         ui.label(
                             egui::RichText::new(t.get(TranslationKey::SetsMergeHint))
@@ -742,7 +748,7 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, with_mod
                                 .size(12.0),
                         );
                         ui.separator();
-                        for other in app.modlists.iter().filter(|l| l.name != *name) {
+                        for other in app.modpacks.lists.iter().filter(|l| l.name != *name) {
                             if ui
                                 .button(fmt(
                                     t.get(TranslationKey::SetsMergeItem),
@@ -985,7 +991,7 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, with_mod
 /// Mod settings kept with the modpack: whether a copy exists, and its buttons.
 fn render_settings_card(app: &App, ui: &mut Ui, name: &str, actions: &mut Vec<SetAction>) {
     let t = app.i18n;
-    let saved = app.modlist_settings.get(name);
+    let saved = app.modpacks.settings.get(name);
     card_container(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(
@@ -1045,7 +1051,7 @@ fn render_settings_card(app: &App, ui: &mut Ui, name: &str, actions: &mut Vec<Se
 /// "Compare" window: the selected modpack against the current list, another modpack or a
 /// save: what only one of them has, and which shared mods sit elsewhere.
 fn render_compare_window(app: &App, ctx: &egui::Context, actions: &mut Vec<SetAction>) {
-    let Some(compare) = app.set_compare.as_ref() else {
+    let Some(compare) = app.modpacks.compare.as_ref() else {
         return;
     };
     let t = app.i18n;
@@ -1078,12 +1084,13 @@ fn render_compare_window(app: &App, ctx: &egui::Context, actions: &mut Vec<SetAc
                     .show_ui(ui, |ui| {
                         let mut choices = vec![CompareWith::Current];
                         choices.extend(
-                            app.modlists
+                            app.modpacks
+                                .lists
                                 .iter()
                                 .filter(|l| l.name != compare.first)
                                 .map(|l| CompareWith::Modpack(l.name.clone())),
                         );
-                        choices.extend(app.saves.iter().map(|s| CompareWith::Save(s.name.clone())));
+                        choices.extend(app.saves.list.iter().map(|s| CompareWith::Save(s.name.clone())));
                         for choice in choices {
                             if ui
                                 .selectable_label(choice == compare.with, with_label(&choice))

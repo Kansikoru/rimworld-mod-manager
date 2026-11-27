@@ -46,17 +46,17 @@ pub fn render_translations_view(app: &mut App, ui: &mut Ui) {
     let mut section: Section = ui.data(|d| d.get_temp(section_id).unwrap_or_default());
     // The app switches between the modpack results and a single search: follow it.
     let last_flag: Option<bool> = ui.data(|d| d.get_temp(flag_id));
-    if last_flag.is_some_and(|f| f != app.show_batch_results) {
-        section = if app.show_batch_results {
+    if last_flag.is_some_and(|f| f != app.translations.show_batch_results) {
+        section = if app.translations.show_batch_results {
             Section::Batch
         } else {
             Section::Search
         };
     }
-    ui.data_mut(|d| d.insert_temp(flag_id, app.show_batch_results));
+    ui.data_mut(|d| d.insert_temp(flag_id, app.translations.show_batch_results));
 
     let installed = app.translations_for_target_lang().len();
-    let found: usize = app.batch_results.iter().map(|r| r.items.len()).sum();
+    let found: usize = app.translations.batch_results.iter().map(|r| r.items.len()).sum();
 
     egui::Panel::left("translations_nav")
         .resizable(false)
@@ -91,21 +91,21 @@ pub fn render_translations_view(app: &mut App, ui: &mut Ui) {
             // Dropdown of the most common languages, most popular first.
             // The language can't change under a running modpack search.
             let lang_text = |l: TranslationTargetLang| format!("{} ({})", l.label(), l.code());
-            let before = app.trans_target_lang;
+            let before = app.translations.target_lang;
             ui.add_enabled_ui(!app.is_batch_searching(), |ui| {
                 egui::ComboBox::from_id_salt("translation_target_language")
-                    .selected_text(lang_text(app.trans_target_lang))
+                    .selected_text(lang_text(app.translations.target_lang))
                     .width(ui.available_width() - 4.0)
                     .show_ui(ui, |ui| {
                         for lang in TranslationTargetLang::POPULAR {
-                            ui.selectable_value(&mut app.trans_target_lang, lang, lang_text(lang));
+                            ui.selectable_value(&mut app.translations.target_lang, lang, lang_text(lang));
                         }
                     });
             });
-            if app.trans_target_lang != before {
+            if app.translations.target_lang != before {
                 // Results of another language would only confuse.
-                app.batch_results.clear();
-                app.batch_checked.clear();
+                app.translations.batch_results.clear();
+                app.translations.batch_checked.clear();
             }
             ui.add_space(4.0);
             ui.spacing_mut().item_spacing.y = 2.0;
@@ -113,9 +113,8 @@ pub fn render_translations_view(app: &mut App, ui: &mut Ui) {
             for item in [Section::Batch, Section::Search, Section::Installed] {
                 let count = match item {
                     Section::Batch => (found > 0).then_some((found, true)),
-                    Section::Search => {
-                        (!app.workshop_search_results.is_empty()).then_some((app.workshop_search_results.len(), false))
-                    }
+                    Section::Search => (!app.translations.search_results.is_empty())
+                        .then_some((app.translations.search_results.len(), false)),
                     Section::Installed => (installed > 0).then_some((installed, false)),
                 };
                 if side_nav_item(ui, item.icon(), item.title(), item == section, false, count).clicked() {
@@ -256,7 +255,7 @@ fn render_batch_section(app: &mut App, ui: &mut Ui) {
             if danger_button_icon(ui, ICON_STOP, tr!("Остановить", "Stop", "停止")).clicked() {
                 app.stop_batch_translation_search();
             }
-            let (done, total) = app.batch_progress;
+            let (done, total) = app.translations.batch_progress;
             ui.add(
                 egui::ProgressBar::new(if total > 0 { done as f32 / total as f32 } else { 0.0 })
                     .desired_width(240.0)
@@ -264,7 +263,7 @@ fn render_batch_section(app: &mut App, ui: &mut Ui) {
                     .text(format!("{done} / {total}")),
             );
         } else {
-            let lang = app.trans_target_lang.label();
+            let lang = app.translations.target_lang.label();
             if primary_button_icon(ui, ICON_SEARCH, tr!("Найти переводы для сборки", "Find translations for my mods", "为我的模组查找翻译"))
                 .on_hover_text(tr!(
                     "Ищет перевод на {} для каждого активного мода. Показывает только переводы, в названии которых есть название мода. Моды, где этот язык уже есть, пропускаются.",
@@ -284,7 +283,7 @@ fn render_batch_section(app: &mut App, ui: &mut Ui) {
                 Some(name) => tr!("Искать перевод только для «{}» (выбран на вкладке «Моды»)", "Search only for \"{}\" (selected on the Mods tab)", "只搜索「{}」（在「模组」页中所选）", name),
                 None => tr!("Сначала выберите мод на вкладке «Моды»", "Select a mod on the Mods tab first", "请先在「模组」页选择一个模组").to_string(),
             };
-            let searching = app.workshop_rx.is_some();
+            let searching = app.translations.search_rx.is_some();
             if button_if(
                 ui,
                 !searching && selected_name.is_some(),
@@ -318,11 +317,11 @@ fn render_search_section(app: &mut App, ui: &mut Ui) {
         let field_w = (ui.available_width() - button_w - 16.0).max(120.0);
         search_input_width(
             ui,
-            &mut app.workshop_search_query,
+            &mut app.translations.search_query,
             t.get(TranslationKey::TransSearchPlaceholder),
             field_w,
         );
-        let searching = app.workshop_rx.is_some();
+        let searching = app.translations.search_rx.is_some();
         ui.add_enabled_ui(!searching, |ui| {
             if primary_button_icon(ui, ICON_SEARCH, t.get(TranslationKey::TransBtnSearch)).clicked() {
                 app.search_workshop_custom();
@@ -340,7 +339,7 @@ fn render_search_section(app: &mut App, ui: &mut Ui) {
         .id_salt("workshop_search_scroll")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            if app.workshop_search_results.is_empty() {
+            if app.translations.search_results.is_empty() {
                 card_container(ui, |ui| {
                     ui.label(
                         egui::RichText::new(t.get(TranslationKey::TransSearchHint))
@@ -351,7 +350,7 @@ fn render_search_section(app: &mut App, ui: &mut Ui) {
                 return;
             }
 
-            for item in &app.workshop_search_results {
+            for item in &app.translations.search_results {
                 card_container(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
@@ -389,32 +388,32 @@ fn render_search_section(app: &mut App, ui: &mut Ui) {
 /// Results of the modpack-wide search: each mod with its translations, ticked ones get
 /// subscribed with one button.
 fn render_batch_results(app: &mut App, ui: &mut Ui) {
-    let lang = app.batch_lang.label();
-    let (done, total) = app.batch_progress;
-    let found_items: usize = app.batch_results.iter().map(|r| r.items.len()).sum();
+    let lang = app.translations.batch_lang.label();
+    let (done, total) = app.translations.batch_progress;
+    let found_items: usize = app.translations.batch_results.iter().map(|r| r.items.len()).sum();
 
     let mut summary = tr!(
         "Модов с переводом на {}: {} (проверено {} из {})",
         "Mods with a {} translation: {} (checked {} of {})",
         "有 {} 翻译的模组：{}（已检查 {}/{}）",
         lang,
-        app.batch_results.len(),
+        app.translations.batch_results.len(),
         done,
         total
     );
-    if app.batch_skipped > 0 {
+    if app.translations.batch_skipped > 0 {
         summary.push_str(&tr!(
             " · пропущено {}: язык уже есть",
             " · {} skipped: language already there",
             " · 已跳过 {} 个：已有该语言",
-            app.batch_skipped
+            app.translations.batch_skipped
         ));
     }
     ui.label(egui::RichText::new(summary).color(THEME.text_secondary).size(12.0));
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        let n = app.batch_checked.len();
+        let n = app.translations.batch_checked.len();
         let key = if app.steamcmd_active() {
             TranslationKey::NameSearchDownload
         } else {
@@ -429,16 +428,16 @@ fn render_batch_results(app: &mut App, ui: &mut Ui) {
         if found_items > 0 && !app.is_batch_searching() {
             if small_button(ui, tr!("Отметить все", "Tick all", "全选"), ButtonStyle::Secondary).clicked()
             {
-                for r in &app.batch_results {
+                for r in &app.translations.batch_results {
                     for item in &r.items {
-                        if !app.batch_subscribed.contains(&item.id) {
-                            app.batch_checked.insert(item.id.clone());
+                        if !app.translations.batch_subscribed.contains(&item.id) {
+                            app.translations.batch_checked.insert(item.id.clone());
                         }
                     }
                 }
             }
             if small_button(ui, tr!("Снять все", "Untick all", "全不选"), ButtonStyle::Secondary).clicked() {
-                app.batch_checked.clear();
+                app.translations.batch_checked.clear();
             }
         }
     });
@@ -448,7 +447,7 @@ fn render_batch_results(app: &mut App, ui: &mut Ui) {
         .id_salt("batch_translations_scroll")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            if app.batch_results.is_empty() {
+            if app.translations.batch_results.is_empty() {
                 card_container(ui, |ui| {
                     let text = if app.is_batch_searching() {
                         tr!(
@@ -473,24 +472,24 @@ fn render_batch_results(app: &mut App, ui: &mut Ui) {
                 });
                 return;
             }
-            for r in &app.batch_results {
+            for r in &app.translations.batch_results {
                 card_container(ui, |ui| {
                     ui.label(egui::RichText::new(&r.mod_name).color(THEME.accent_cyan).strong());
                     for item in &r.items {
                         ui.horizontal(|ui| {
-                            if app.batch_subscribed.contains(&item.id) {
+                            if app.translations.batch_subscribed.contains(&item.id) {
                                 tag(
                                     ui,
                                     tr!("подписка отправлена", "subscribed", "已订阅"),
                                     THEME.accent_emerald,
                                 );
                             } else {
-                                let mut on = app.batch_checked.contains(&item.id);
+                                let mut on = app.translations.batch_checked.contains(&item.id);
                                 if ui.checkbox(&mut on, "").changed() {
                                     if on {
-                                        app.batch_checked.insert(item.id.clone());
+                                        app.translations.batch_checked.insert(item.id.clone());
                                     } else {
-                                        app.batch_checked.remove(&item.id);
+                                        app.translations.batch_checked.remove(&item.id);
                                     }
                                 }
                             }

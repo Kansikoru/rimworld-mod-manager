@@ -156,7 +156,7 @@ fn collect(app: &App, query: &str) -> Vec<Hit> {
     // Modpacks and saves only for a typed query.
     if !query.is_empty() {
         let set_kind = tr!("Сборка", "Modpack", "整合包");
-        for l in &app.modlists {
+        for l in &app.modpacks.lists {
             push(
                 &mut hits,
                 ICON_COPY,
@@ -167,7 +167,7 @@ fn collect(app: &App, query: &str) -> Vec<Hit> {
             );
         }
         let save_kind = tr!("Сохранение", "Save", "存档");
-        for s in &app.saves {
+        for s in &app.saves.list {
             push(
                 &mut hits,
                 ICON_SAVE,
@@ -206,11 +206,11 @@ fn run(app: &mut App, ctx: &egui::Context, target: Target) {
         }
         Target::Modpack(name) => {
             app.current_tab = AppTab::Sets;
-            app.selected_modlist = Some(name);
+            app.modpacks.selected = Some(name);
         }
         Target::Save(name) => {
             app.current_tab = AppTab::Saves;
-            app.selected_save = Some(name);
+            app.saves.selected = Some(name);
         }
         Target::Action(action) => match action {
             Action::AutoSort => {

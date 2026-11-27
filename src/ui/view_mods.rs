@@ -864,7 +864,7 @@ fn render_mods_main(app: &mut App, ui: &mut Ui, side: bool) {
             match find {
                 Some((Some(id), _)) => open_in_workshop_tab(ui.ctx(), &id),
                 Some((None, name)) => {
-                    app.ws_search = name;
+                    app.workshop.search = name;
                     app.current_tab = crate::app::AppTab::Workshop;
                     app.search_workshop_tab();
                 }
@@ -1330,7 +1330,7 @@ fn render_version_issues(app: &mut App, ui: &mut Ui) {
 
     // Optimizer DDS stored the wrong way up for this game version: upside down in the game
     // until flipped or rolled back on the Optimizer tab.
-    let leftover = app.opt_wrong_orientation;
+    let leftover = app.optimizer.wrong_orientation;
     if leftover > 0 {
         let mut open = false;
         card_container(ui, |ui| {
@@ -2008,7 +2008,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
     let mut open_analyzer = false;
     // T2: mods the modpack translation search found a translation for.
     let trans_hints = app.translation_hints();
-    let trans_lang = app.batch_lang;
+    let trans_lang = app.translations.batch_lang;
     let mut open_translations = false;
     let game_data = app.steam_paths.game_data_path.clone();
 
@@ -2367,7 +2367,7 @@ fn render_active_mods_column(app: &mut App, ui: &mut Ui) {
                                         && !pkg_id.to_lowercase().starts_with("ludeon.rimworld")
                                     {
                                         ui.separator();
-                                        let is_ignored = app.opt_ignore_list.contains(&pkg_id.to_lowercase());
+                                        let is_ignored = app.optimizer.ignore_list.contains(&pkg_id.to_lowercase());
                                         let ignore_text = if is_ignored {
                                             app.i18n.get(TranslationKey::ModsCtxOptSkip)
                                         } else {
@@ -2774,7 +2774,7 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
     let mut open_analyzer = false;
     // T2: mods the modpack translation search found a translation for.
     let trans_hints = app.translation_hints();
-    let trans_lang = app.batch_lang;
+    let trans_lang = app.translations.batch_lang;
     let mut open_translations = false;
     // "x_steam" in ModsConfig refers to the Workshop copy of "x": it is active too.
     let active_set: HashSet<String> = app
@@ -3019,7 +3019,8 @@ fn render_inactive_mods_column(app: &mut App, ui: &mut Ui) {
                                             && !pkg_id_ctx.to_lowercase().starts_with("ludeon.rimworld")
                                         {
                                             ui.separator();
-                                            let is_ignored = app.opt_ignore_list.contains(&pkg_id_ctx.to_lowercase());
+                                            let is_ignored =
+                                                app.optimizer.ignore_list.contains(&pkg_id_ctx.to_lowercase());
                                             let ignore_text = if is_ignored {
                                                 app.i18n.get(TranslationKey::ModsCtxOptSkip)
                                             } else {
