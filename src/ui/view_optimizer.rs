@@ -180,27 +180,28 @@ pub fn render_optimizer_view(app: &mut App, ui: &mut Ui) {
                 if !app.opt_is_running {
                     // Buttons are disabled while a scan/rollback runs in the background.
                     let idle = !app.optimizer_busy();
-                    ui.add_enabled_ui(idle, |ui| {
-                        if primary_button_icon(ui, ICON_ROCKET, t.get(TranslationKey::OptBtnStart)).clicked() {
-                            app.start_texture_optimization();
+                    let secondary = ButtonStyle::Secondary;
+                    if button_if(ui, idle, Some(ICON_ROCKET), t.get(TranslationKey::OptBtnStart), ButtonStyle::Primary)
+                        .clicked()
+                    {
+                        app.start_texture_optimization();
+                    }
+                    if button_if(ui, idle, Some(ICON_SEARCH), t.get(TranslationKey::OptBtnScan), secondary).clicked() {
+                        app.scan_texture_counts();
+                    }
+                    // With "Selected mod" chosen, rollback undoes only that mod (O1).
+                    if app.opt_scope == OptimizeScope::SelectedOnly {
+                        if button_if(ui, idle, Some(ICON_UNDO), t.get(TranslationKey::OptBtnRollbackSelected), secondary)
+                            .on_hover_text(t.get(TranslationKey::OptBtnRollbackSelectedHint))
+                            .clicked()
+                        {
+                            app.rollback_selected_mod_textures();
                         }
-                    });
-                    ui.add_enabled_ui(idle, |ui| {
-                        if secondary_button_icon(ui, ICON_SEARCH, t.get(TranslationKey::OptBtnScan)).clicked() {
-                            app.scan_texture_counts();
-                        }
-                        // With "Selected mod" chosen, rollback undoes only that mod (O1).
-                        if app.opt_scope == OptimizeScope::SelectedOnly {
-                            if secondary_button_icon(ui, ICON_UNDO, t.get(TranslationKey::OptBtnRollbackSelected))
-                                .on_hover_text(t.get(TranslationKey::OptBtnRollbackSelectedHint))
-                                .clicked()
-                            {
-                                app.rollback_selected_mod_textures();
-                            }
-                        } else if secondary_button_icon(ui, ICON_UNDO, t.get(TranslationKey::OptBtnRollback)).clicked() {
-                            app.rollback_textures();
-                        }
-                    });
+                    } else if button_if(ui, idle, Some(ICON_UNDO), t.get(TranslationKey::OptBtnRollback), secondary)
+                        .clicked()
+                    {
+                        app.rollback_textures();
+                    }
                     if !idle {
                         ui.spinner();
                     }

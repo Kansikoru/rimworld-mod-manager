@@ -391,12 +391,14 @@ fn render_grid(
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
-                if ui
-                    .add_enabled_ui(!app.workshop_loading(), |ui| {
-                        secondary_button_icon(ui, ICON_REFRESH, t.get(TranslationKey::WsRetry))
-                    })
-                    .inner
-                    .clicked()
+                if button_if(
+                    ui,
+                    !app.workshop_loading(),
+                    Some(ICON_REFRESH),
+                    t.get(TranslationKey::WsRetry),
+                    ButtonStyle::Secondary,
+                )
+                .clicked()
                 {
                     actions.push(WsAction::Page(app.ws_query.page));
                 }
@@ -490,23 +492,6 @@ fn render_grid(
 }
 
 /// A preview drawn into `rect` without stretching (letterboxed on the dark color).
-/// A button nested in its own Ui (`add_enabled_ui`) is never moved to the next line of a
-/// wrapped row: the row runs past the card, and egui then widens the whole card, so the
-/// description below gets cut by the window edge. This starts a new line first when a button
-/// with this text (plus icon and padding) won't fit.
-fn wrap_before_button(ui: &mut Ui, text: &str, extra: f32) {
-    let font = egui::FontId::proportional(14.0);
-    let width = ui
-        .painter()
-        .layout_no_wrap(text.to_string(), font, Color32::WHITE)
-        .size()
-        .x
-        + extra;
-    if ui.available_size_before_wrap().x < width {
-        ui.end_row();
-    }
-}
-
 fn paint_preview(ui: &Ui, rect: egui::Rect, tex: Option<&egui::TextureHandle>, rounding: CornerRadius) {
     ui.painter().rect_filled(rect, rounding, THEME.bg_dark);
     let Some(tex) = tex else { return };
@@ -664,14 +649,15 @@ fn render_details(
                     tag(ui, t.get(TranslationKey::WsRequested), THEME.accent_cyan);
                 }
                 Have::No => {
-                    wrap_before_button(ui, t.get(TranslationKey::WsDownload), 48.0);
-                    if ui
-                        .add_enabled_ui(!app.steam_busy(), |ui| {
-                            primary_button_icon(ui, ICON_STEAM, t.get(TranslationKey::WsDownload))
-                        })
-                        .inner
-                        .on_hover_text(hint)
-                        .clicked()
+                    if button_if(
+                        ui,
+                        !app.steam_busy(),
+                        Some(ICON_STEAM),
+                        t.get(TranslationKey::WsDownload),
+                        ButtonStyle::Primary,
+                    )
+                    .on_hover_text(hint)
+                    .clicked()
                     {
                         actions.push(WsAction::Download(item.id.clone()));
                     }
@@ -687,10 +673,7 @@ fn render_details(
                     t.get(TranslationKey::WsDownloadWithDeps),
                     &[&missing_deps.len().to_string()],
                 );
-                wrap_before_button(ui, &label, 48.0);
-                if ui
-                    .add_enabled_ui(!app.steam_busy(), |ui| secondary_button_icon(ui, ICON_STEAM, &label))
-                    .inner
+                if button_if(ui, !app.steam_busy(), Some(ICON_STEAM), &label, ButtonStyle::Secondary)
                     .on_hover_text(hint)
                     .clicked()
                 {
@@ -700,7 +683,6 @@ fn render_details(
             if secondary_button(ui, t.get(TranslationKey::NameSearchOpenSteam)).clicked() {
                 open_external(crate::steam::workshop_url(&item.id));
             }
-            wrap_before_button(ui, t.get(TranslationKey::ModsCtxChangelog), 24.0);
             if secondary_button(ui, t.get(TranslationKey::ModsCtxChangelog))
                 .on_hover_text(t.get(TranslationKey::ChangelogBtnHint))
                 .clicked()
@@ -759,12 +741,7 @@ fn render_details(
                 } else {
                     TranslationKey::WorkshopDbBtn
                 };
-                wrap_before_button(ui, t.get(btn_key), 32.0);
-                if ui
-                    .add_enabled_ui(!app.workshop_index_busy(), |ui| {
-                        small_button(ui, t.get(btn_key), ButtonStyle::Secondary)
-                    })
-                    .inner
+                if small_button_if(ui, !app.workshop_index_busy(), t.get(btn_key), ButtonStyle::Secondary)
                     .on_hover_text(t.get(TranslationKey::WorkshopDbBtnHint))
                     .clicked()
                 {
@@ -871,10 +848,7 @@ fn render_collection_details(
                 } else {
                     t.get(TranslationKey::WsViaSteam)
                 };
-                wrap_before_button(ui, &label, 48.0);
-                if ui
-                    .add_enabled_ui(!app.steam_busy(), |ui| primary_button_icon(ui, ICON_STEAM, &label))
-                    .inner
+                if button_if(ui, !app.steam_busy(), Some(ICON_STEAM), &label, ButtonStyle::Primary)
                     .on_hover_text(format!("{}\n{via}", t.get(TranslationKey::WsCollectionMissingHint)))
                     .clicked()
                 {
@@ -883,18 +857,18 @@ fn render_collection_details(
             } else if total > 0 && have_count >= total {
                 tag(ui, t.get(TranslationKey::WsInstalled), THEME.accent_emerald);
             }
-            wrap_before_button(ui, t.get(TranslationKey::WsSaveAsModpack), 24.0);
-            if ui
-                .add_enabled_ui(total > 0 && !app.collection_busy(), |ui| {
-                    secondary_button(ui, t.get(TranslationKey::WsSaveAsModpack))
-                })
-                .inner
-                .on_hover_text(t.get(TranslationKey::WsSaveAsModpackHint))
-                .clicked()
+            if button_if(
+                ui,
+                total > 0 && !app.collection_busy(),
+                None,
+                t.get(TranslationKey::WsSaveAsModpack),
+                ButtonStyle::Secondary,
+            )
+            .on_hover_text(t.get(TranslationKey::WsSaveAsModpackHint))
+            .clicked()
             {
                 actions.push(WsAction::ImportCollection(item.id.clone()));
             }
-            wrap_before_button(ui, t.get(TranslationKey::NameSearchOpenSteam), 24.0);
             if secondary_button(ui, t.get(TranslationKey::NameSearchOpenSteam)).clicked() {
                 open_external(crate::steam::workshop_url(&item.id));
             }

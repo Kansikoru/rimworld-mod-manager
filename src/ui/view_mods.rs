@@ -1707,11 +1707,7 @@ fn render_category_filter(app: &mut App, ui: &mut Ui, toggle_drawn: bool) {
             }
             if updatable > 0 {
                 let label = fmt(t.get(TranslationKey::UpdatesBtnUpdateAll), &[&updatable.to_string()]);
-                if ui
-                    .add_enabled_ui(!app.steam_busy(), |ui| small_button(ui, &label, ButtonStyle::Primary))
-                    .inner
-                    .clicked()
-                {
+                if small_button_if(ui, !app.steam_busy(), &label, ButtonStyle::Primary).clicked() {
                     update_all = true;
                 }
             }
@@ -3463,16 +3459,13 @@ fn render_mod_details_panel(app: &mut App, ui: &mut Ui, side: bool) {
                         } else {
                             tag(ui, label, THEME.accent_rose).on_hover_text(dep);
                             if let Some(ws_id) = app.workshop_id_for(dep, None, None) {
-                                if ui
-                                    .add_enabled_ui(!app.steam_busy(), |ui| {
-                                        small_button(
-                                            ui,
-                                            app.i18n.get(TranslationKey::ModsDepDownload),
-                                            ButtonStyle::Primary,
-                                        )
-                                    })
-                                    .inner
-                                    .on_hover_text(format!("{label} (#{ws_id})"))
+                                if small_button_if(
+                                    ui,
+                                    !app.steam_busy(),
+                                    app.i18n.get(TranslationKey::ModsDepDownload),
+                                    ButtonStyle::Primary,
+                                )
+                                .on_hover_text(format!("{label} (#{ws_id})"))
                                     .clicked()
                                 {
                                     dep_download_ws_id = Some(ws_id);

@@ -182,7 +182,25 @@ pub enum ButtonStyle {
 
 /// One painter for every button: 32 px tall, 12 px side padding, 16 px icon, 12 px semibold text.
 pub fn styled_button(ui: &mut Ui, icon: Option<ImageSource<'static>>, text: &str, style: ButtonStyle) -> Response {
-    styled_button_sized(ui, icon, text, style, 32.0, 12.0)
+    styled_button_sized(ui, icon, text, style, 32.0, 12.0, true)
+}
+
+/// A button greyed out when `enabled` is false, drawn in `ui` itself. Wrapping a button in
+/// `add_enabled_ui` puts it in a Ui of its own, and a wrapped row never moves such a Ui to
+/// the next line: the row runs past its column and the window edge cuts it off.
+pub fn button_if(
+    ui: &mut Ui,
+    enabled: bool,
+    icon: Option<ImageSource<'static>>,
+    text: &str,
+    style: ButtonStyle,
+) -> Response {
+    styled_button_sized(ui, icon, text, style, 32.0, 12.0, enabled)
+}
+
+/// `small_button` greyed out when `enabled` is false (see `button_if`).
+pub fn small_button_if(ui: &mut Ui, enabled: bool, text: &str, style: ButtonStyle) -> Response {
+    styled_button_sized(ui, None, text, style, 24.0, 8.0, enabled)
 }
 
 /// Width a `styled_button` takes (icon-only when `text` is empty).
@@ -205,7 +223,7 @@ pub fn styled_button_width(ui: &Ui, has_icon: bool, text: &str) -> f32 {
 
 /// Compact 24 px button for list rows ("Enable" next to a missing dependency).
 pub fn small_button(ui: &mut Ui, text: &str, style: ButtonStyle) -> Response {
-    styled_button_sized(ui, None, text, style, 24.0, 8.0)
+    styled_button_sized(ui, None, text, style, 24.0, 8.0, true)
 }
 
 fn styled_button_sized(
@@ -215,7 +233,9 @@ fn styled_button_sized(
     style: ButtonStyle,
     height: f32,
     pad: f32,
+    enabled: bool,
 ) -> Response {
+    let enabled = enabled && ui.is_enabled();
     let font = egui::FontId::new(12.0, egui::FontFamily::Proportional);
     let (fill, hover_fill, stroke, fg, hover_fg) = match style {
         ButtonStyle::Primary => (
@@ -254,9 +274,9 @@ fn styled_button_sized(
         0.0
     };
     let size = Vec2::new(pad * 2.0 + icon_w + galley.size().x, height);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let sense = if enabled { Sense::click() } else { Sense::hover() };
+    let (rect, response) = ui.allocate_exact_size(size, sense);
     if ui.is_rect_visible(rect) {
-        let enabled = ui.is_enabled();
         let hovered = enabled && response.hovered();
         let dim = |c: Color32| if enabled { c } else { c.gamma_multiply(0.45) };
         let bg = if hovered { hover_fill } else { fill };
@@ -279,7 +299,7 @@ fn styled_button_sized(
             color,
         );
     }
-    if ui.is_enabled() {
+    if enabled {
         response.on_hover_cursor(egui::CursorIcon::PointingHand)
     } else {
         response
@@ -562,6 +582,14 @@ pub fn paint_top_highlight(ui: &Ui, rect: Rect, radius: u8) {
     );
 }
 
+/// Limits the width of what follows to `max`, or to the space there is when that is less.
+/// `Ui::set_max_width` sets the width outright, wider than the column too, and the window
+/// edge then cuts the content off on the right.
+pub fn cap_width(ui: &mut Ui, max: f32) {
+    let width = ui.available_width().min(max);
+    ui.set_max_width(width);
+}
+
 /// Card: a raised surface with 8 px corners.
 pub fn card_container<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
     let frame = egui::Frame {
@@ -591,7 +619,8 @@ pub fn section_header(ui: &mut Ui, title: &str, subtitle: &str, badge_text: Opti
 }
 
 /// A segmented choice: options side by side in one rounded box, the chosen one on an
-/// accent-tinted segment. Returns whether the choice changed.
+/// accent-tinted segment. Options that don't fit the width go on to the next line inside
+/// the same box. Returns whether the choice changed.
 pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T, &str)]) -> bool {
     let mut changed = false;
     let font = egui::FontId::proportional(13.0);
@@ -604,8 +633,28 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T,
         })
         .collect();
     let height = galleys.iter().map(|g| g.size().y).fold(0.0, f32::max) + pad.y * 2.0;
-    let width: f32 = galleys.iter().map(|g| g.size().x + pad.x * 2.0).sum::<f32>() + 6.0;
-    let (outer, outer_resp) = ui.allocate_exact_size(Vec2::new(width, height + 6.0), Sense::hover());
+    let widths: Vec<f32> = galleys.iter().map(|g| g.size().x + pad.x * 2.0).collect();
+    // Lines of options, each as wide as fits (at least one option per line).
+    let room = (ui.available_width() - 6.0).max(0.0);
+    let mut lines: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut start = 0;
+    let mut line_w = 0.0;
+    for (i, w) in widths.iter().enumerate() {
+        if i > start && line_w + w > room {
+            lines.push(start..i);
+            start = i;
+            line_w = 0.0;
+        }
+        line_w += w;
+    }
+    lines.push(start..widths.len());
+    let width = lines
+        .iter()
+        .map(|line| widths[line.clone()].iter().sum::<f32>())
+        .fold(0.0, f32::max)
+        + 6.0;
+    let total_h = height * lines.len() as f32 + 6.0;
+    let (outer, outer_resp) = ui.allocate_exact_size(Vec2::new(width, total_h), Sense::hover());
     let painter = ui.painter().clone();
     painter.rect_filled(outer, CornerRadius::same(8), THEME.bg_dark);
     painter.rect_stroke(
@@ -614,35 +663,41 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T,
         Stroke::new(1.0, THEME.border_subtle),
         egui::StrokeKind::Inside,
     );
-    let mut x = outer.left() + 3.0;
-    for (i, ((option, _), galley)) in options.iter().zip(galleys).enumerate() {
-        let w = galley.size().x + pad.x * 2.0;
-        let rect = Rect::from_min_size(Pos2::new(x, outer.top() + 3.0), Vec2::new(w, height));
-        x += w;
-        let response = ui
-            .interact(rect, outer_resp.id.with(i), Sense::click())
-            .on_hover_cursor(egui::CursorIcon::PointingHand);
-        let selected = *value == *option;
-        if selected {
-            painter.rect_filled(rect, CornerRadius::same(6), crate::ui::theme::tint(THEME.accent_cyan));
-        } else if response.hovered() {
-            painter.rect_filled(rect, CornerRadius::same(6), THEME.bg_surface_hover);
-        }
-        let color = if selected {
-            THEME.accent_cyan
-        } else if response.hovered() {
-            THEME.text_primary
-        } else {
-            THEME.text_secondary
-        };
-        let pos = Pos2::new(
-            snap(ui, rect.center().x - galley.size().x / 2.0),
-            snap(ui, rect.center().y - galley.size().y / 2.0),
-        );
-        painter.galley(pos, galley, color);
-        if response.clicked() && !selected {
-            *value = *option;
-            changed = true;
+    let mut galleys = galleys.into_iter();
+    for (row, line) in lines.into_iter().enumerate() {
+        let mut x = outer.left() + 3.0;
+        let y = outer.top() + 3.0 + height * row as f32;
+        for i in line {
+            let (option, _) = &options[i];
+            let Some(galley) = galleys.next() else { break };
+            let w = widths[i];
+            let rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(w, height));
+            x += w;
+            let response = ui
+                .interact(rect, outer_resp.id.with(i), Sense::click())
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            let selected = *value == *option;
+            if selected {
+                painter.rect_filled(rect, CornerRadius::same(6), crate::ui::theme::tint(THEME.accent_cyan));
+            } else if response.hovered() {
+                painter.rect_filled(rect, CornerRadius::same(6), THEME.bg_surface_hover);
+            }
+            let color = if selected {
+                THEME.accent_cyan
+            } else if response.hovered() {
+                THEME.text_primary
+            } else {
+                THEME.text_secondary
+            };
+            let pos = Pos2::new(
+                snap(ui, rect.center().x - galley.size().x / 2.0),
+                snap(ui, rect.center().y - galley.size().y / 2.0),
+            );
+            painter.galley(pos, galley, color);
+            if response.clicked() && !selected {
+                *value = *option;
+                changed = true;
+            }
         }
     }
     changed

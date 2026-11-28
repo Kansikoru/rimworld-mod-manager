@@ -133,7 +133,7 @@ pub fn render_translations_view(app: &mut App, ui: &mut Ui) {
             bottom: 4,
         }))
         .show(ui, |ui| {
-            ui.set_max_width(920.0);
+            cap_width(ui, 920.0);
             ui.label(
                 egui::RichText::new(section.title())
                     .color(THEME.text_primary)
@@ -285,15 +285,18 @@ fn render_batch_section(app: &mut App, ui: &mut Ui) {
                 None => tr!("Сначала выберите мод на вкладке «Моды»", "Select a mod on the Mods tab first", "请先在「模组」页选择一个模组").to_string(),
             };
             let searching = app.workshop_rx.is_some();
-            ui.add_enabled_ui(!searching && selected_name.is_some(), |ui| {
-                if secondary_button(ui, tr!("Для выбранного мода", "For the selected mod", "针对所选模组"))
-                    .on_hover_text(&hint)
-                    .on_disabled_hover_text(&hint)
-                    .clicked()
-                {
-                    app.search_workshop_translations_for_selected();
-                }
-            });
+            if button_if(
+                ui,
+                !searching && selected_name.is_some(),
+                None,
+                tr!("Для выбранного мода", "For the selected mod", "针对所选模组"),
+                ButtonStyle::Secondary,
+            )
+            .on_hover_text(&hint)
+            .clicked()
+            {
+                app.search_workshop_translations_for_selected();
+            }
             if searching {
                 ui.spinner();
             }

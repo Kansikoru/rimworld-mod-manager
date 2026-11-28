@@ -135,7 +135,7 @@ pub fn render_sets_view(app: &mut App, ui: &mut Ui) {
                     .id_salt("sets_details")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.set_max_width(DETAILS_MAX_W);
+                        cap_width(ui, DETAILS_MAX_W);
                         if app.modlists.is_empty() {
                             render_empty(app, ui, &mut actions);
                         } else {
@@ -490,7 +490,7 @@ fn render_empty(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>) {
                 .strong(),
         );
         ui.add_space(4.0);
-        ui.set_max_width(420.0);
+        cap_width(ui, 420.0);
         ui.add(
             egui::Label::new(
                 egui::RichText::new(t.get(TranslationKey::SetsHint))
@@ -941,9 +941,13 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SetAction>, with_mod
                     TranslationKey::SetsBtnSubscribeMissing
                 };
                 let label = fmt(t.get(key), &[&workshop.to_string()]);
-                let subscribe = ui
-                    .add_enabled_ui(workshop > 0 && !busy, |ui| primary_button_icon(ui, ICON_STEAM, &label))
-                    .inner;
+                let subscribe = button_if(
+                    ui,
+                    workshop > 0 && !busy,
+                    Some(ICON_STEAM),
+                    &label,
+                    ButtonStyle::Primary,
+                );
                 if subscribe.clicked() {
                     actions.push(SetAction::SubscribeMissing(name.clone()));
                 }

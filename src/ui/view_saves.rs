@@ -378,11 +378,7 @@ fn render_details(app: &App, ui: &mut Ui, actions: &mut Vec<SaveAction>) {
             };
             let label = fmt(t.get(key), &[&workshop_missing.to_string()]);
             let busy = app.steam_busy();
-            if ui
-                .add_enabled_ui(!busy, |ui| primary_button_icon(ui, ICON_STEAM, &label))
-                .inner
-                .clicked()
-            {
+            if button_if(ui, !busy, Some(ICON_STEAM), &label, ButtonStyle::Primary).clicked() {
                 actions.push(SaveAction::SubscribeMissing(name.clone()));
             }
             if busy {

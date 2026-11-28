@@ -181,11 +181,7 @@ pub fn render_name_search_window(app: &mut App, ctx: &egui::Context) {
                     TranslationKey::NameSearchSubscribe
                 };
                 let label = fmt(t.get(key), &[&n.to_string()]);
-                if ui
-                    .add_enabled_ui(n > 0 && !steam_busy, |ui| primary_button_icon(ui, ICON_STEAM, &label))
-                    .inner
-                    .clicked()
-                {
+                if button_if(ui, n > 0 && !steam_busy, Some(ICON_STEAM), &label, ButtonStyle::Primary).clicked() {
                     subscribe = true;
                 }
                 if steam_busy {

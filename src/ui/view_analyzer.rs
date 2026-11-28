@@ -163,7 +163,7 @@ pub fn render_analyzer_view(app: &mut App, ui: &mut Ui) {
                 .id_salt(("analyzer_section_scroll", section as u8))
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    ui.set_max_width(920.0);
+                    cap_width(ui, 920.0);
                     match section {
                         Section::Overview => {
                             if render_overview(app, ui) {
@@ -361,6 +361,7 @@ fn render_culprits(ui: &mut Ui, t: crate::i18n::I18n, report: &crate::analyzer::
         let (badge_bg, badge_fg) = culprit.severity.badge_colors();
 
         card_container(ui, |ui| {
+            ui.set_width(ui.available_width());
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
                     ui.heading(
@@ -877,13 +878,15 @@ fn render_tick_profile_card(app: &App, ui: &mut Ui) -> bool {
             let waiting = crate::tick_profile::request_path().is_file();
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                if ui
-                    .add_enabled_ui(!waiting, |ui| {
-                        secondary_button(ui, t.get(TranslationKey::TickProfileBtn))
-                    })
-                    .inner
-                    .on_hover_text(t.get(TranslationKey::TickProfileBtnHint))
-                    .clicked()
+                if button_if(
+                    ui,
+                    !waiting,
+                    None,
+                    t.get(TranslationKey::TickProfileBtn),
+                    ButtonStyle::Secondary,
+                )
+                .on_hover_text(t.get(TranslationKey::TickProfileBtnHint))
+                .clicked()
                 {
                     clicked = true;
                 }
@@ -1245,6 +1248,7 @@ fn render_report_patches(ui: &mut Ui, t: crate::i18n::I18n, report: &crate::comp
 
 fn render_perf_tips_card(ui: &mut Ui, t: crate::i18n::I18n) {
     card_container(ui, |ui| {
+        ui.set_width(ui.available_width());
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 ui.add(svg_icon(ICON_ROCKET, egui::Vec2::splat(18.0), THEME.accent_cyan));

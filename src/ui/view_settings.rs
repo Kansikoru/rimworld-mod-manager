@@ -88,11 +88,7 @@ fn render_steamcmd_card(app: &mut App, ui: &mut Ui) {
                 } else {
                     t.get(TranslationKey::SteamCmdBtnInstall)
                 };
-                if ui
-                    .add_enabled_ui(!busy, |ui| secondary_button_icon(ui, ICON_STEAM, label))
-                    .inner
-                    .clicked()
-                {
+                if button_if(ui, !busy, Some(ICON_STEAM), label, ButtonStyle::Secondary).clicked() {
                     app.install_steamcmd();
                 }
                 if installed
@@ -482,7 +478,7 @@ pub fn render_settings_view(app: &mut App, ui: &mut Ui) {
                 .id_salt(("settings_section_scroll", section as u8))
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    ui.set_max_width(780.0);
+                    cap_width(ui, 780.0);
                     ui.label(
                         egui::RichText::new(section.title())
                             .color(THEME.text_primary)
@@ -765,11 +761,18 @@ fn paths_section(app: &mut App, ui: &mut Ui) {
         if secondary_button_icon(ui, ICON_REFRESH, t.get(TranslationKey::SettingsAutoDetect)).clicked() {
             app.reset_paths_to_auto();
         }
-        ui.add_enabled_ui(app.steam_rx.is_none(), |ui| {
-            if secondary_button_icon(ui, ICON_STEAM, t.get(TranslationKey::SettingsCheckSteam)).clicked() {
-                app.check_steam_api();
-            }
-        });
+        let idle = app.steam_rx.is_none();
+        if button_if(
+            ui,
+            idle,
+            Some(ICON_STEAM),
+            t.get(TranslationKey::SettingsCheckSteam),
+            ButtonStyle::Secondary,
+        )
+        .clicked()
+        {
+            app.check_steam_api();
+        }
     });
     hint(ui, t.get(TranslationKey::SettingsSavedHint));
 }
@@ -848,20 +851,36 @@ fn community_db_card(app: &mut App, ui: &mut Ui) {
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             let downloading = app.rules_rx.is_some();
-            ui.add_enabled_ui(!downloading, |ui| {
-                if secondary_button_icon(ui, ICON_REFRESH, t.get(TranslationKey::SettingsBtnUpdateDb)).clicked() {
-                    app.update_community_rules();
+            let idle = !downloading;
+            let secondary = ButtonStyle::Secondary;
+            if button_if(
+                ui,
+                idle,
+                Some(ICON_REFRESH),
+                t.get(TranslationKey::SettingsBtnUpdateDb),
+                secondary,
+            )
+            .clicked()
+            {
+                app.update_community_rules();
+            }
+            if button_if(
+                ui,
+                idle,
+                Some(ICON_FOLDER),
+                t.get(TranslationKey::SettingsBtnImportDb),
+                secondary,
+            )
+            .clicked()
+            {
+                let mut dialog = rfd::FileDialog::new().add_filter("communityRules.json", &["json"]);
+                if let Some(dir) = crate::community_rules::find_rimpy_rules_dir() {
+                    dialog = dialog.set_directory(dir);
                 }
-                if secondary_button_icon(ui, ICON_FOLDER, t.get(TranslationKey::SettingsBtnImportDb)).clicked() {
-                    let mut dialog = rfd::FileDialog::new().add_filter("communityRules.json", &["json"]);
-                    if let Some(dir) = crate::community_rules::find_rimpy_rules_dir() {
-                        dialog = dialog.set_directory(dir);
-                    }
-                    if let Some(file) = dialog.pick_file() {
-                        app.import_community_rules(&file);
-                    }
+                if let Some(file) = dialog.pick_file() {
+                    app.import_community_rules(&file);
                 }
-            });
+            }
             if downloading {
                 ui.spinner();
             }
