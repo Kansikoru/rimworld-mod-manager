@@ -16,6 +16,9 @@ name: Release
 #   - variable NEXUS_FILE_ID      - File ID of the main file (its "Advanced" menu)
 # Without the variable the Nexus upload is skipped (with a notice); the zip for a
 # manual upload is kept with the run as an artifact either way.
+#
+# A release that shouldn't go to Nexus at all: put a line `Skip-Nexus: true` in the body of
+# the tagged version commit. The GitHub release is made as usual.
 on:
   push:
     tags: ["v*"]
@@ -105,8 +108,12 @@ jobs:
           "version=$version" >> $env:GITHUB_OUTPUT
           "zip=$zip" >> $env:GITHUB_OUTPUT
           # Changelog: the body of the tagged commit without trailer lines.
-          $notes = (@(git log -1 --format=%b $env:GITHUB_SHA) |
-            Where-Object { $_ -notmatch '^\s*(Co-Authored-By|Automated-by):' }) -join "`n"
+          $body = @(git log -1 --format=%b $env:GITHUB_SHA)
+          $notes = ($body |
+            Where-Object { $_ -notmatch '^\s*(Co-Authored-By|Automated-by|Skip-Nexus):' }) -join "`n"
+          # `Skip-Nexus: true` in the commit: this release is not uploaded to Nexus.
+          $skip = [bool]($body | Where-Object { $_ -match '^\s*Skip-Nexus:\s*true\s*$' })
+          "skip_nexus=$($skip.ToString().ToLower())" >> $env:GITHUB_OUTPUT
           "changelog<<NOTES_END" >> $env:GITHUB_OUTPUT
           $notes.Trim() >> $env:GITHUB_OUTPUT
           "NOTES_END" >> $env:GITHUB_OUTPUT
@@ -122,7 +129,7 @@ jobs:
       # but it is reported below so it doesn't go unnoticed.
       - name: Upload to Nexus Mods
         id: nexus
-        if: ${{ vars.NEXUS_FILE_ID != '' }}
+        if: ${{ vars.NEXUS_FILE_ID != '' && steps.pack.outputs.skip_nexus != 'true' }}
         continue-on-error: true
         uses: Nexus-Mods/upload-action@v1.0.0-beta.11
         with:
@@ -146,6 +153,13 @@ jobs:
         run: |
           Write-Output "::warning title=Nexus Mods::The upload failed. The GitHub release is fine; upload the nexus-zip artifact of this run by hand."
           "Nexus Mods upload FAILED: upload the nexus-zip artifact by hand." >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Nexus upload skipped on purpose
+        if: ${{ steps.pack.outputs.skip_nexus == 'true' }}
+        shell: pwsh
+        run: |
+          Write-Output "::notice title=Nexus Mods::Skipped: the version commit says Skip-Nexus: true. The nexus-zip artifact of this run can be uploaded by hand later."
+          "Nexus Mods upload skipped on purpose (Skip-Nexus: true in the version commit)." >> $env:GITHUB_STEP_SUMMARY
 
       - name: Nexus upload skipped
         if: ${{ vars.NEXUS_FILE_ID == '' }}
