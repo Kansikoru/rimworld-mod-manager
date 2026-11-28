@@ -2,13 +2,18 @@
 
 **English** | [Русский](README.ru.md)
 
-A mod and load order manager for RimWorld 1.6 (Unity) and 1.7 (Waylith). Written in Rust with an egui interface. Runs on Windows. The interface is available in English, Russian and Chinese — [help with translations](#help-with-translations) is welcome.
+A mod and load order manager for RimWorld 1.6 (Unity) and 1.7 (Waylith). Written in Rust with an egui interface. Runs on Windows and Linux. The interface is available in English, Russian and Chinese — [help with translations](#help-with-translations) is welcome.
 
 ![Main window](docs/screenshot.png)
 
 ## Download
 
-The ready-to-run program is in the **[Releases](https://github.com/Kansikoru/rimworld-mod-manager/releases/latest)** section of this repository. Download `rimworld-mod-manager.exe` and run it — no installation needed.
+The ready-to-run program is in the **[Releases](https://github.com/Kansikoru/rimworld-mod-manager/releases/latest)** section of this repository. No installation needed.
+
+- **Windows:** download `rimworld-mod-manager.exe` and run it.
+- **Linux** (from version 2.2.2): download `rimworld-mod-manager-<version>-x86_64.AppImage`, make it executable (`chmod +x`, or "Allow executing" in the file's properties) and run it. There is also `rimworld-mod-manager-<version>-linux-x86_64.tar.gz` with the program, its icon and a `.desktop` file. Supports the native Linux RimWorld and with the Windows one under Proton; Steam from the package manager, Flatpak or Snap is found.
+
+> **The Linux version is new.** So far it has only been tested on Windows through WSL (CachyOS), not yet on a real Linux machine or a Steam Deck. If something doesn't work, please [report it](https://github.com/Kansikoru/rimworld-mod-manager/issues/new?template=bug_report.yml). SteamCMD on Linux needs the 32-bit libraries — the program says which package to install.
 
 ## Features
 
@@ -20,7 +25,7 @@ The ready-to-run program is in the **[Releases](https://github.com/Kansikoru/rim
 - **Saving ModsConfig.xml** with a backup. Mods that aren't on disk are kept when saving. The "Load order history" window brings back the order from any of the last 30 saves.
 - **Modpacks.** Several mod lists to switch between: "Enable", "Enable and play", duplicate, rename. They are kept in the game's `ModLists` folder, so the game's own mod menu shows them too. Import an `.rml` or someone's `ModsConfig.xml`, export an `.rml`, copy a modpack as a list with Workshop links. Missing mods can be subscribed to with one button.
 - **Saves.** For every save you can see which mods it was made with: what is enabled, what is disabled, what isn't on disk. "Enable as in the save" sets exactly its mods and order; the list can be kept as a modpack.
-- **Translations.** Looks for translations of all active mods at once, in one of 13 popular languages: only translations whose title has the mod's name and the chosen language are shown; subscribe to the ticked ones with one button. You can also search for a single selected mod. Deleting the translations of the chosen language asks first and moves them to the Recycle Bin.
+- **Translations.** Looks for translations of all active mods at once, in one of 13 popular languages: only translations whose title has the mod's name and the chosen language are shown; subscribe to the ticked ones with one button. You can also search for a single selected mod. Deleting the translations of the chosen language asks first and moves them to the Recycle Bin (Trash on Linux).
 - **Texture optimizer** (1.6 and 1.7). Converts PNG/JPG to DDS: BC7 for textures with transparency, BC1 for the rest, with mipmaps. On 1.7 textures are stored the way the game expects them; "Flip textures" fixes ones converted for the other version. Every created file is logged, so a rollback removes them all. A maximum texture size (2048 / 1024 / 512) saves video memory. The game's texture cache can be reset too.
 - **Log analyzer.** Reads Player.log in both formats (1.6 and 1.7), points at the mods to blame and prepares a question for an AI assistant. The whole log with search and level filters; graphics card resets and out-of-memory crashes explained; "what changed since the last working run"; the report saved as text or HTML.
 - **Find the broken mod.** When the log doesn't point at the culprit: the program turns off half of the mods, you start the game and say whether the problem is still there — down to one mod (or a pair of mods that only break together). Dependencies are turned on with the mods, any step can be undone, and everything comes back at the end.
@@ -29,7 +34,7 @@ The ready-to-run program is in the **[Releases](https://github.com/Kansikoru/rim
 - **New versions.** Once a day the program checks GitHub for a new release and shows a badge next to the version. It never downloads anything by itself; the check can be turned off in Settings.
 - **Your own layout.** Tabs are in a side bar of icons (names on hover, or next to the icons if you turn them on). Any tab but Settings can be hidden; a first start shows only Mods and Workshop. Ctrl+K (or the magnifier) searches the whole app: tabs, settings, modpacks, saves and actions. Four themes and six accent colours; the window's title bar follows the theme. The window shrinks down to 640×480: buttons turn into icons and columns stack.
 
-Settings, cache and backups are kept in `%LOCALAPPDATA%\RimWorldModManager`.
+Settings, cache and backups are kept in `%LOCALAPPDATA%\RimWorldModManager` on Windows and in `~/.local/share/RimWorldModManager` on Linux.
 
 ## Found a bug?
 
@@ -37,9 +42,10 @@ Settings, cache and backups are kept in `%LOCALAPPDATA%\RimWorldModManager`.
 
 - what happened and how to reproduce it, step by step;
 - the program's version and RimWorld's version;
+- your system: Windows or Linux (which distribution, or Steam Deck);
 - where the game is from: Steam, GOG or another copy without a launcher;
 - screenshots, if you can — they help a lot;
-- `crash_log.txt` from `%LOCALAPPDATA%\RimWorldModManager` if the program closed by itself.
+- `crash_log.txt` from `%LOCALAPPDATA%\RimWorldModManager` (Linux: `~/.local/share/RimWorldModManager`) if the program closed by itself.
 
 **Only bugs of the program itself.** Conflicts between mods, game crashes and errors caused by mods aren't handled here — that's for the mods' authors. To find such a mod, use the **Log Analyzer** tab and **Find the culprit**.
 
@@ -61,7 +67,13 @@ Requires [Rust](https://rustup.rs/) 1.95 or newer.
 cargo build --release
 ```
 
-The program: `target/release/rimworld-mod-manager.exe`.
+The program: `target/release/rimworld-mod-manager.exe` on Windows, `target/release/rimworld-mod-manager` on Linux.
+
+On Linux the build needs a C compiler and the window libraries, e.g. on Debian or Ubuntu:
+
+```bash
+sudo apt install build-essential libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev
+```
 
 ## Tests
 

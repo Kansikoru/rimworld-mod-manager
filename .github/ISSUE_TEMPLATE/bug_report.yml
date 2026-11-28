@@ -54,6 +54,17 @@ body:
       required: true
 
   - type: dropdown
+    id: system
+    attributes:
+      label: Система / System
+      options:
+        - Windows
+        - Linux
+        - Steam Deck (SteamOS)
+    validations:
+      required: true
+
+  - type: dropdown
     id: game-source
     attributes:
       label: Откуда игра / Where the game is from
@@ -91,11 +102,15 @@ body:
         Если ошибка связана с запуском игры через программу — `Player.log`:
         1.6 — `%USERPROFILE%\AppData\LocalLow\Ludeon Studios\RimWorld by Ludeon Studios\Player.log`,
         1.7 — там же, в папке `Logs`.
+        На Linux: `~/.local/share/RimWorldModManager/crash_log.txt` и
+        `~/.config/unity3d/Ludeon Studios/RimWorld by Ludeon Studios/Player.log`.
         Файлы можно просто перетащить сюда.
         If the program closed by itself — attach `%LOCALAPPDATA%\RimWorldModManager\crash_log.txt`.
         If the bug is about starting the game from the program — `Player.log`:
         1.6 — `%USERPROFILE%\AppData\LocalLow\Ludeon Studios\RimWorld by Ludeon Studios\Player.log`,
         1.7 — the same place, in the `Logs` folder.
+        On Linux: `~/.local/share/RimWorldModManager/crash_log.txt` and
+        `~/.config/unity3d/Ludeon Studios/RimWorld by Ludeon Studios/Player.log`.
         Files can simply be dragged here.
 
   - type: textarea

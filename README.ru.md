@@ -2,13 +2,18 @@
 
 [English](README.md) | **Русский**
 
-Менеджер модов и порядка загрузки для RimWorld 1.6 (Unity) и 1.7 (Waylith). Написан на Rust, интерфейс на egui. Работает под Windows. Интерфейс на русском, английском и китайском — [нужна помощь с переводами](#помощь-с-переводами).
+Менеджер модов и порядка загрузки для RimWorld 1.6 (Unity) и 1.7 (Waylith). Написан на Rust, интерфейс на egui. Работает под Windows и Linux. Интерфейс на русском, английском и китайском — [нужна помощь с переводами](#помощь-с-переводами).
 
 ![Главное окно](docs/screenshot-ru.png)
 
 ## Скачать
 
-Готовая программа лежит в разделе **[Releases](https://github.com/Kansikoru/rimworld-mod-manager/releases/latest)** этого репозитория. Скачайте `rimworld-mod-manager.exe` и запустите — установка не нужна.
+Готовая программа лежит в разделе **[Releases](https://github.com/Kansikoru/rimworld-mod-manager/releases/latest)** этого репозитория. Установка не нужна.
+
+- **Windows:** скачайте `rimworld-mod-manager.exe` и запустите.
+- **Linux** (с версии 2.2.2): скачайте `rimworld-mod-manager-<версия>-x86_64.AppImage`, разрешите запуск (`chmod +x` или «Разрешить выполнение» в свойствах файла) и запустите. Есть и архив `rimworld-mod-manager-<версия>-linux-x86_64.tar.gz` с программой, значком и `.desktop`-файлом. Поддерживает Linux-версию RimWorld и Windows-версию под Proton; Steam находится и из пакетов, и из Flatpak, и из Snap.
+
+> **Версия для Linux новая.** Пока она проверялась только на Windows через WSL (CachyOS), на настоящем Linux и на Steam Deck — ещё нет. Если что-то не работает, пожалуйста, [сообщите](https://github.com/Kansikoru/rimworld-mod-manager/issues/new?template=bug_report.yml). SteamCMD на Linux нужны 32-битные библиотеки — программа сама скажет, какой пакет поставить.
 
 ## Что умеет
 
@@ -29,7 +34,7 @@
 - **Новые версии.** Раз в день программа проверяет релизы на GitHub и показывает плашку рядом с версией. Сама ничего не скачивает; проверку можно выключить в настройках.
 - **Интерфейс под себя.** Вкладки — в боковой панели значков (название при наведении или рядом со значком, если включить). Любую вкладку, кроме «Настроек», можно скрыть; при первом запуске видны только «Моды» и «Workshop». Ctrl+K (или лупа) ищет по всей программе: вкладки, настройки, сборки, сохранения и действия. Четыре темы и шесть акцентов; заголовок окна в цвете темы. Окно сжимается до 640×480: кнопки становятся значками, колонки встают друг под другом.
 
-Настройки, кэш и бэкапы хранятся в `%LOCALAPPDATA%\RimWorldModManager`.
+Настройки, кэш и бэкапы хранятся в `%LOCALAPPDATA%\RimWorldModManager` на Windows и в `~/.local/share/RimWorldModManager` на Linux.
 
 ## Нашли ошибку?
 
@@ -37,9 +42,10 @@
 
 - что случилось и как это повторить, по шагам;
 - версию программы и версию RimWorld;
+- ваша система: Windows или Linux (какой дистрибутив или Steam Deck);
 - откуда игра: Steam, GOG или другая копия без лаунчера;
 - скриншоты, если можно — они очень помогают;
-- `crash_log.txt` из `%LOCALAPPDATA%\RimWorldModManager`, если программа закрылась сама.
+- `crash_log.txt` из `%LOCALAPPDATA%\RimWorldModManager` (на Linux — `~/.local/share/RimWorldModManager`), если программа закрылась сама.
 
 **Здесь — только ошибки самой программы.** Конфликты модов между собой, вылеты и ошибки игры из-за модов здесь не разбираются: это вопрос к авторам модов. Чтобы найти такой мод, есть вкладка **«Анализатор логов»** и кнопка **«Найти виновника»**.
 
@@ -61,7 +67,13 @@
 cargo build --release
 ```
 
-Готовая программа: `target/release/rimworld-mod-manager.exe`.
+Готовая программа: `target/release/rimworld-mod-manager.exe` на Windows, `target/release/rimworld-mod-manager` на Linux.
+
+На Linux для сборки нужны компилятор C и библиотеки окна, например в Debian или Ubuntu:
+
+```bash
+sudo apt install build-essential libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev
+```
 
 ## Тесты
 
