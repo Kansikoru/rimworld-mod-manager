@@ -219,9 +219,17 @@ pub fn process_stats(pid: u32) -> Option<ProcessStats> {
     }
 }
 
+/// Linux: from `/proc`. Whether the window answers isn't known there, so it counts as
+/// answering: the end of loading is then told by CPU, reads, memory and the log going quiet.
 #[cfg(not(windows))]
-pub fn process_stats(_pid: u32) -> Option<ProcessStats> {
-    None
+pub fn process_stats(pid: u32) -> Option<ProcessStats> {
+    let (cpu_secs, read_bytes, private_bytes) = crate::platform::process_usage(pid)?;
+    Some(ProcessStats {
+        cpu_secs,
+        read_bytes,
+        private_bytes,
+        responsive: Some(true),
+    })
 }
 
 /// Whether the process's main window answers (Windows calls it "Not responding" after 5 s
@@ -324,12 +332,11 @@ pub fn known_launch_flags(engine: GameEngine) -> &'static [(&'static str, bool)]
 mod tests {
     use super::*;
 
-    #[cfg(windows)]
     #[test]
     fn cpu_time_of_a_running_process_is_read() {
-        // Burn a little CPU so the counter is above zero.
+        // Burn a little CPU so the counter is above zero (Linux counts it in 10 ms ticks).
         let mut x = 0u64;
-        for i in 0..20_000_000u64 {
+        for i in 0..200_000_000u64 {
             x = x.wrapping_add(i ^ (x >> 3));
         }
         std::hint::black_box(x);

@@ -583,8 +583,12 @@ fn appearance_section(app: &mut App, ui: &mut Ui) {
     full_card(ui, |ui| {
         group_title(ui, t.get(TranslationKey::SettingsFont));
         let before = app.ui_prefs;
-        let fonts: Vec<(UiFont, &str)> = UiFont::ALL.iter().map(|f| (*f, f.label())).collect();
-        segmented(ui, &mut app.ui_prefs.font, &fonts);
+        let fonts: Vec<(UiFont, &str)> = UiFont::available().iter().map(|f| (*f, f.label())).collect();
+        // The font drawn is lit (the saved one may be missing here: settings from Windows).
+        let mut shown = app.ui_prefs.font.in_use();
+        if segmented(ui, &mut shown, &fonts) {
+            app.ui_prefs.font = shown;
+        }
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.label(t.get(TranslationKey::SettingsTextSize));

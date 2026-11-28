@@ -6,13 +6,9 @@ use std::collections::HashSet;
 use std::path::Path;
 
 /// A folder's identity for comparing paths: the resolved path if it exists, else the
-/// path itself; in lower case, since Windows paths ignore case.
+/// path itself; in lower case where paths ignore case (Windows).
 fn dir_key(dir: &Path) -> String {
-    std::fs::canonicalize(dir)
-        .unwrap_or_else(|_| dir.to_path_buf())
-        .to_string_lossy()
-        .trim_end_matches(['\\', '/'])
-        .to_lowercase()
+    crate::platform::path_key(&std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()))
 }
 
 /// The folders to read mods from, each once. The same folder can be set both as the
@@ -642,8 +638,14 @@ mod tests {
         std::fs::create_dir_all(&data).unwrap();
         let mods = dir.join("Mods");
         std::fs::create_dir_all(&mods).unwrap();
-        // Same folder, written differently (case, trailing slash), as on a game without Steam.
-        let mods_other_spelling = std::path::PathBuf::from(format!("{}\\", mods.display().to_string().to_uppercase()));
+        // Same folder, written differently, as on a game without Steam: other case and a
+        // trailing slash on Windows, a trailing slash on Linux (where case makes another folder).
+        let spelled = if crate::platform::CASE_INSENSITIVE_PATHS {
+            format!("{}\\", mods.display().to_string().to_uppercase())
+        } else {
+            format!("{}/", mods.display())
+        };
+        let mods_other_spelling = std::path::PathBuf::from(spelled);
 
         let sources = source_dirs(Some(&mods_other_spelling), Some(&mods), Some(&data));
         assert_eq!(sources.len(), 2, "Mods once, Data once");
@@ -673,7 +675,15 @@ mod tests {
         let path = folder.display().to_string();
         let (unique, dups) = dedupe_mods(vec![
             m("com.bymarcin.ArchitectIcons", ModOrigin::Workshop, &path),
-            m("com.bymarcin.ArchitectIcons", ModOrigin::Local, &path.to_uppercase()),
+            m(
+                "com.bymarcin.ArchitectIcons",
+                ModOrigin::Local,
+                &if crate::platform::CASE_INSENSITIVE_PATHS {
+                    path.to_uppercase()
+                } else {
+                    format!("{path}/")
+                },
+            ),
         ]);
         assert_eq!(unique.len(), 1);
         assert!(dups.is_empty(), "one folder seen twice is not two copies");

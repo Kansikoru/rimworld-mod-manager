@@ -21,7 +21,7 @@ pub fn save_data_folder_for(config: &Path, default_dir: Option<&Path>) -> Option
     }
     let data_dir = config_dir.parent()?;
     let same = |a: &Path, b: &Path| {
-        let key = |p: &Path| p.to_string_lossy().trim_end_matches(['\\', '/']).to_lowercase();
+        let key = crate::platform::path_key;
         key(a) == key(b)
     };
     match default_dir {

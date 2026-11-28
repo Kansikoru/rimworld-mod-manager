@@ -34,3 +34,37 @@ jobs:
           name: rimworld-mod-manager
           path: target/release/rimworld-mod-manager.exe
           if-no-files-found: error
+
+  # The Linux build: its own clippy and tests (the platform code differs), then the
+  # release binary. Ubuntu 22.04: a binary built against its older glibc runs on more
+  # distributions (and on SteamOS).
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Libraries for the window
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test
+
+      - name: Release build
+        run: cargo build --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rimworld-mod-manager-linux
+          path: target/release/rimworld-mod-manager
+          if-no-files-found: error

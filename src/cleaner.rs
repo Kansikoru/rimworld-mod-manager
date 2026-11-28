@@ -51,11 +51,11 @@ fn unsubscribe(item_ids: &[&str], steam_paths: &SteamPaths) -> Result<usize, Str
     }
     let dll = steam_paths.steam_dll_path.as_ref().ok_or_else(|| {
         tr!(
-            "steam_api64.dll не найден, отписаться нельзя",
-            "steam_api64.dll not found, can't unsubscribe",
-            "找不到 steam_api64.dll，无法取消订阅"
+            "{} не найден, отписаться нельзя",
+            "{} not found, can't unsubscribe",
+            "找不到 {}，无法取消订阅",
+            crate::platform::STEAM_API_LIB
         )
-        .to_string()
     })?;
     unsubscribe_workshop_items_batch_native(dll, item_ids)
 }

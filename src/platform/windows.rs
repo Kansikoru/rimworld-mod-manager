@@ -8,6 +8,7 @@ use super::{home_dir, GAME_COMPANY, GAME_DATA_NAME};
 pub const UNITY_EXE: &str = "RimWorldWin64.exe";
 pub const WAYLITH_EXE: &str = "RimWorld.exe";
 pub const STEAM_API_LIB: &str = "steam_api64.dll";
+pub const CASE_INSENSITIVE_PATHS: bool = true;
 
 pub const STEAMCMD_INSTALLER_URL: &str = "https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip";
 pub const STEAMCMD_EXE: &str = "steamcmd.exe";
@@ -117,9 +118,19 @@ fn find_game_pid(list: &str) -> Option<u32> {
 }
 
 /// `C:\Windows\Fonts\<file>`.
-pub fn system_font(file: &str) -> Option<Vec<u8>> {
+fn system_font_path(file: &str) -> Option<PathBuf> {
     let windir = std::env::var_os("WINDIR").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
-    std::fs::read(windir.join("Fonts").join(file)).ok()
+    Some(windir.join("Fonts").join(file)).filter(|p| p.is_file())
+}
+
+/// A font file of the system, read.
+pub fn system_font(file: &str) -> Option<Vec<u8>> {
+    std::fs::read(system_font_path(file)?).ok()
+}
+
+/// Whether the system has this font file.
+pub fn has_system_font(file: &str) -> bool {
+    system_font_path(file).is_some()
 }
 
 #[cfg(test)]

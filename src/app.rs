@@ -2268,7 +2268,7 @@ impl App {
         }
         let t = self.i18n;
         let Some(dll) = self.steam_paths.steam_dll_path.clone() else {
-            self.status_message = t.get(TranslationKey::SetsNoSteamDll).to_string();
+            self.status_message = fmt(t.get(TranslationKey::SetsNoSteamDll), &[crate::platform::STEAM_API_LIB]);
             return;
         };
         self.status_message = fmt(t.get(TranslationKey::SetsSubscribing), &[&ids.len().to_string()]);
@@ -3460,11 +3460,11 @@ impl App {
         }
         let Some(dll) = self.steam_paths.steam_dll_path.clone() else {
             self.status_message = tr!(
-                "steam_api64.dll не найден — проверьте папку игры",
-                "steam_api64.dll not found — check the game folder",
-                "找不到 steam_api64.dll — 请检查游戏文件夹"
-            )
-            .to_string();
+                "{} не найден — проверьте папку игры",
+                "{} not found — check the game folder",
+                "找不到 {} — 请检查游戏文件夹",
+                crate::platform::STEAM_API_LIB
+            );
             return;
         };
         self.status_message = tr!(

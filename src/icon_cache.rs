@@ -36,7 +36,7 @@ impl IconDiskCache {
     /// it gives the same name in every build, so the cache survives updates.
     pub fn cache_key(source_path: &Path) -> String {
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-        for byte in source_path.to_string_lossy().to_lowercase().bytes() {
+        for byte in crate::platform::path_key(source_path).bytes() {
             hash ^= u64::from(byte);
             hash = hash.wrapping_mul(0x0100_0000_01b3);
         }
@@ -128,9 +128,10 @@ mod tests {
     fn cache_key_is_stable_and_case_insensitive() {
         let a = IconDiskCache::cache_key(Path::new(r"C:\Mods\Foo\About\Preview.png"));
         let b = IconDiskCache::cache_key(Path::new(r"c:\mods\foo\about\preview.png"));
-        assert_eq!(a, b);
+        // Case counts only where paths ignore it (Windows); on Linux they are two files.
+        assert_eq!(a == b, crate::platform::CASE_INSENSITIVE_PATHS);
         // Fixed value: the key must not change between builds or Rust versions.
-        assert_eq!(a, "v2-82499346215f0d51.png");
+        assert_eq!(b, "v2-82499346215f0d51.png");
         assert!(a.starts_with("v2-") && a.ends_with(".png"));
         assert_ne!(a, IconDiskCache::cache_key(Path::new(r"C:\Mods\Bar\About\Preview.png")));
     }

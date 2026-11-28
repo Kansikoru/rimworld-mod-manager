@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=RimWorld Mod Manager
+Name[ru]=Менеджер модов RimWorld
+GenericName=Mod manager
+GenericName[ru]=Менеджер модов
+Comment=Mods and load order for RimWorld 1.6 and 1.7
+Comment[ru]=Моды и порядок загрузки для RimWorld 1.6 и 1.7
+Exec=rimworld-mod-manager
+Icon=rimworld-mod-manager
+Terminal=false
+Categories=Game;Utility;
+Keywords=RimWorld;mods;Steam;Workshop;

@@ -353,9 +353,9 @@ pub fn source_fingerprint(path: &Path) -> Option<String> {
     Some(format!("{}:{}", meta.len(), secs))
 }
 
-/// Case-insensitive key for Windows paths.
+/// A path as a map key (lower case where the file system ignores case).
 fn path_key(p: &Path) -> String {
-    p.to_string_lossy().to_lowercase()
+    crate::platform::path_key(p)
 }
 
 /// Manifest as a map by DDS path (the latest entry wins).
@@ -1127,9 +1127,10 @@ pub fn detect_dedicated_vram() -> u64 {
     detect_vram_registry().unwrap_or(0)
 }
 
+/// Linux: the `amdgpu` driver's numbers or `nvidia-smi`.
 #[cfg(not(windows))]
 pub fn detect_dedicated_vram() -> u64 {
-    0
+    crate::platform::dedicated_vram()
 }
 
 #[cfg(windows)]

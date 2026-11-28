@@ -264,11 +264,11 @@ where
     }
     if ugc_ptr.is_null() {
         return Err(tr!(
-            "Интерфейс Steam Workshop (UGC) недоступен в этой версии steam_api64.dll",
-            "The Steam Workshop (UGC) interface is not available in this steam_api64.dll",
-            "此 steam_api64.dll 中没有 Steam 创意工坊 (UGC) 接口"
-        )
-        .to_string());
+            "Интерфейс Steam Workshop (UGC) недоступен в этой версии {}",
+            "The Steam Workshop (UGC) interface is not available in this {}",
+            "此 {} 中没有 Steam 创意工坊 (UGC) 接口",
+            crate::platform::STEAM_API_LIB
+        ));
     }
 
     let result = action(ugc_ptr, &lib);
@@ -841,21 +841,32 @@ pub fn launch_rimworld(steam_paths: &SteamPaths, args: &[String]) -> Result<(), 
     let exe_path = steam_paths
         .exe_path
         .clone()
-        .or_else(|| game_install::game_exe_path(game_dir, steam_paths.engine))
-        .ok_or_else(|| {
-            tr!(
-                "Не найден исполняемый файл игры ({} или {}) в {}",
-                "Game executable ({} or {}) not found in {}",
-                "在 {2} 中找不到游戏程序（{0} 或 {1}）",
-                game_install::WAYLITH_EXE,
-                game_install::UNITY_EXE,
-                game_dir.display()
-            )
-        })?;
+        .or_else(|| game_install::game_exe_path(game_dir, steam_paths.engine));
+    // Linux without the Linux build of the game (the Windows one under Proton, as on a Steam
+    // Deck): only Steam can start it.
+    #[cfg(not(windows))]
+    if exe_path.is_none() {
+        return crate::platform::launch_through_steam(RIMWORLD_APP_ID, args);
+    }
+    let exe_path = exe_path.ok_or_else(|| {
+        tr!(
+            "Не найден исполняемый файл игры ({} или {}) в {}",
+            "Game executable ({} or {}) not found in {}",
+            "在 {2} 中找不到游戏程序（{0} 或 {1}）",
+            game_install::WAYLITH_EXE,
+            game_install::UNITY_EXE,
+            game_dir.display()
+        )
+    })?;
 
     let mut cmd = std::process::Command::new(&exe_path);
     cmd.current_dir(game_dir);
     cmd.args(args.iter().filter(|a| !a.trim().is_empty()));
+    // Started outside Steam, the game's Steam API finds out which game it is from these
+    // (the running Steam client then accepts it).
+    #[cfg(not(windows))]
+    cmd.env("SteamAppId", RIMWORLD_APP_ID.to_string())
+        .env("SteamGameId", RIMWORLD_APP_ID.to_string());
 
     match cmd.spawn() {
         Ok(_) => Ok(()),

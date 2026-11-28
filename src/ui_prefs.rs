@@ -8,28 +8,67 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UiFont {
     SegoeUi,
-    #[default]
     SegoeUiSemibold,
     Verdana,
     Tahoma,
     Arial,
     Montserrat,
     MontserratSemibold,
+    /// Linux fonts (Noto Sans comes with most desktops, DejaVu with nearly every system).
+    NotoSans,
+    DejaVuSans,
+    LiberationSans,
+}
+
+/// Segoe UI Semibold on Windows; the bundled Montserrat elsewhere (Segoe UI isn't there).
+impl Default for UiFont {
+    fn default() -> Self {
+        if cfg!(windows) {
+            UiFont::SegoeUiSemibold
+        } else {
+            UiFont::Montserrat
+        }
+    }
 }
 
 impl UiFont {
-    pub const ALL: [UiFont; 7] = [
+    pub const ALL: [UiFont; 10] = [
         UiFont::SegoeUiSemibold,
         UiFont::SegoeUi,
         UiFont::Montserrat,
         UiFont::MontserratSemibold,
+        UiFont::NotoSans,
+        UiFont::DejaVuSans,
+        UiFont::LiberationSans,
         UiFont::Verdana,
         UiFont::Tahoma,
         UiFont::Arial,
     ];
+
+    /// The fonts this system has: the bundled ones and those whose own file is installed
+    /// (looked up once, the font folders don't change while the app runs).
+    pub fn available() -> &'static [UiFont] {
+        static AVAILABLE: std::sync::OnceLock<Vec<UiFont>> = std::sync::OnceLock::new();
+        AVAILABLE.get_or_init(|| {
+            UiFont::ALL
+                .into_iter()
+                .filter(|f| f.bundled().is_some() || crate::platform::has_system_font(f.files()[0]))
+                .collect()
+        })
+    }
+
+    /// The font actually drawn: this one when the system has it, else the bundled default (a
+    /// font chosen on another system, e.g. settings moved from Windows to Linux).
+    pub fn in_use(self) -> UiFont {
+        if self.bundled().is_some() || UiFont::available().contains(&self) {
+            self
+        } else {
+            UiFont::Montserrat
+        }
+    }
 
     pub fn label(&self) -> &'static str {
         match self {
@@ -40,17 +79,27 @@ impl UiFont {
             UiFont::Arial => "Arial",
             UiFont::Montserrat => "Montserrat",
             UiFont::MontserratSemibold => "Montserrat SemiBold",
+            UiFont::NotoSans => "Noto Sans",
+            UiFont::DejaVuSans => "DejaVu Sans",
+            UiFont::LiberationSans => "Liberation Sans",
         }
     }
 
-    /// Font files to try, in order (Windows Fonts folder).
+    /// Font files to try, in order: the font's own file first (`available` looks for that
+    /// one), then fonts that fill in letters it lacks — Segoe UI on Windows, Noto Sans or
+    /// DejaVu Sans on Linux.
     pub fn files(&self) -> &'static [&'static str] {
         match self {
-            UiFont::SegoeUi | UiFont::Montserrat | UiFont::MontserratSemibold => &["segoeui.ttf"],
+            UiFont::SegoeUi | UiFont::Montserrat | UiFont::MontserratSemibold => {
+                &["segoeui.ttf", "NotoSans-Regular.ttf", "DejaVuSans.ttf"]
+            }
             UiFont::SegoeUiSemibold => &["seguisb.ttf", "segoeui.ttf"],
-            UiFont::Verdana => &["verdana.ttf", "segoeui.ttf"],
-            UiFont::Tahoma => &["tahoma.ttf", "segoeui.ttf"],
-            UiFont::Arial => &["arial.ttf", "segoeui.ttf"],
+            UiFont::Verdana => &["verdana.ttf", "segoeui.ttf", "DejaVuSans.ttf"],
+            UiFont::Tahoma => &["tahoma.ttf", "segoeui.ttf", "DejaVuSans.ttf"],
+            UiFont::Arial => &["arial.ttf", "segoeui.ttf", "DejaVuSans.ttf"],
+            UiFont::NotoSans => &["NotoSans-Regular.ttf", "DejaVuSans.ttf"],
+            UiFont::DejaVuSans => &["DejaVuSans.ttf", "NotoSans-Regular.ttf"],
+            UiFont::LiberationSans => &["LiberationSans-Regular.ttf", "DejaVuSans.ttf"],
         }
     }
 

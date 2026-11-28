@@ -23,10 +23,13 @@ pub fn setup_custom_fonts(ctx: &egui::Context, prefs: &UiPrefs) {
         ..Default::default()
     };
     let mut primary: Vec<(&str, FontData)> = Vec::new();
-    if let Some(bytes) = prefs.font.bundled() {
+    // A font chosen on another system that this one lacks: the bundled default instead,
+    // not egui's own font.
+    let font = prefs.font.in_use();
+    if let Some(bytes) = font.bundled() {
         primary.push(("BundledPrimaryFont", FontData::from_static(bytes).tweak(tweak.clone())));
     }
-    if let Some(bytes) = prefs.font.files().iter().find_map(|f| windows_font(f)) {
+    if let Some(bytes) = font.files().iter().find_map(|f| windows_font(f)) {
         primary.push(("SystemPrimaryFont", FontData::from_owned(bytes).tweak(tweak)));
     }
     for (i, (name, data)) in primary.into_iter().enumerate() {
@@ -39,7 +42,13 @@ pub fn setup_custom_fonts(ctx: &egui::Context, prefs: &UiPrefs) {
     }
 
     // Monospace (log excerpts, package IDs): Consolas is designed for screens.
-    if let Some(bytes) = windows_font("consola.ttf") {
+    let mono = [
+        "consola.ttf",
+        "DejaVuSansMono.ttf",
+        "NotoSansMono-Regular.ttf",
+        "LiberationMono-Regular.ttf",
+    ];
+    if let Some(bytes) = mono.iter().find_map(|f| windows_font(f)) {
         fonts.font_data.insert(
             "SystemMono".to_owned(),
             Arc::new(FontData::from_owned(bytes).tweak(FontTweak {

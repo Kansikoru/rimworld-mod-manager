@@ -82,21 +82,34 @@ lib32-glibc lib32-gcc-libs` (последние два нужны SteamCMD).
 - [x] Проверено в окне на поддельной установке (`~/.local/share/Steam`, `~/.config/unity3d`):
       моды из Workshop и игры найдены, активный список прочитан из `ModsConfig.xml`.
 
+- [x] **Тексты** называют библиотеку Steam API этой ОС (`steam_api64.dll` / `libsteam_api.so`).
+- [x] **Пути сравниваются с учётом регистра на Linux** (`platform::path_key`): на Windows как
+      раньше без учёта, на Linux `Mods` и `mods` — разные папки.
+- [x] **Видеопамять на Linux**: драйвер `amdgpu` (`/sys/class/drm/card*/device/mem_info_vram_total`),
+      иначе `nvidia-smi`; без них 0, как раньше (Intel, виртуальные машины).
+- [x] **Нагрузка процесса** для замера загрузки без компаньона: `/proc/<pid>/stat` (процессор),
+      `io` (`rchar`, чтение), `status` (`RssAnon`, память). Отвечает ли окно, на Linux не
+      узнать — конец загрузки определяется по тишине процессора, чтения, памяти и лога.
+- [x] **Шрифты в Настройках** — только те, что есть в системе, плюс встроенный Montserrat;
+      для Linux добавлены Noto Sans, DejaVu Sans, Liberation Sans. На Linux по умолчанию
+      Montserrat; шрифт из настроек с Windows, которого тут нет, заменяется Montserrat (и он
+      подсвечен в списке). Моноширинный: DejaVu Sans Mono / Noto Sans Mono / Liberation Mono.
+- [x] **Запуск игры**: Linux-версия запускается напрямую с `SteamAppId=294100`; без неё (Windows-
+      версия под Proton, как на Steam Deck) — через `steam -applaunch 294100`, а для Flatpak Steam
+      через `flatpak run com.valvesoftware.Steam`. Данные Windows-версии под Proton ищутся в
+      `steamapps/compatdata/294100/pfx/.../AppData/LocalLow/...`.
+- [x] **CI**: задание `linux` на Ubuntu 22.04 — clippy, тесты, релизная сборка.
+- [x] **Выпуск**: задание `linux` в `release.yml` после Windows-релиза добавляет к нему
+      `rimworld-mod-manager-<версия>-linux-x86_64.tar.gz`, `…-x86_64.AppImage` и `.sha256`
+      (`packaging/linux/package.sh`). На Nexus по-прежнему только zip для Windows.
+
 ## Осталось
 
-1. **Тексты** со словом `steam_api64.dll` в `i18n.rs`, `cleaner.rs`, `app.rs`,
-   `app/translations_tab.rs`: подставлять `platform::STEAM_API_LIB`.
-2. **Запуск игры**: сейчас исполняемый файл запускается напрямую. На Linux проверить, нужен ли
-   запуск через Steam (`steam -applaunch 294100`) или `steam_appid.txt`.
-3. **Список шрифтов в Настройках** сейчас из Windows (Segoe UI, Verdana, Tahoma): на Linux их нет,
-   остаётся встроенный Montserrat. Показывать шрифты, которые есть в системе.
-4. **Видеопамять**: сейчас только DXGI (Windows). На Linux: `/sys/class/drm/card*/device/mem_info_vram_total`
-   (AMD), `nvidia-smi` (NVIDIA).
-5. **Нагрузка процесса** (время загрузки без мода-компаньона): `process_stats` на Linux через
-   `/proc/<pid>/stat` и `/proc/<pid>/io`.
-6. **Сравнение путей без учёта регистра** (`mods_config::save_data_folder_for` и др.): на Linux
-   регистр важен.
-7. **Проверить на настоящей установке RimWorld под Linux**: имя исполняемого файла 1.7 и
-   папку данных 1.7.
-8. **CI**: задание `ubuntu-latest` в `.github/workflows/`.
-9. **Выпуск**: `tar.gz` и AppImage.
+1. **Проверить на настоящей установке RimWorld под Linux** (и на Steam Deck): запуск игры,
+   имя исполняемого файла 1.7, папка данных 1.7, мод-компаньон, замер загрузки.
+2. **AppImage** проверен только скриптом, не сборкой: шаг скачивает `appimagetool`, и здесь его
+   не запускали. Первый настоящий запуск — в GitHub Actions (ветку нужно запушить).
+   `tar.gz` собран и проверен в CachyOS.
+3. **Wayland в WSL**: в CachyOS под WSL окно открывается только через X11 (сокет WSLg не в
+   `XDG_RUNTIME_DIR`). На настоящем Linux не мешает; для WSL запускать с `env -u WAYLAND_DISPLAY`.
+4. Слить `port/linux` в `main` и выпустить (Linux-задания в CI и `release.yml` начнут работать).

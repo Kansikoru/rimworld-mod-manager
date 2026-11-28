@@ -351,10 +351,9 @@ pub enum Linked {
 
 fn same_dir(a: &Path, b: &Path) -> bool {
     let key = |p: &Path| {
-        plain_path(&std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()))
-            .to_string_lossy()
-            .trim_end_matches(['\\', '/'])
-            .to_lowercase()
+        crate::platform::path_key(&plain_path(
+            &std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()),
+        ))
     };
     key(a) == key(b)
 }

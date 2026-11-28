@@ -12,12 +12,13 @@
 //! - `manager_data_base()`: the folder that holds this manager's `RimWorldModManager` folder;
 //! - `desktop_dir()`: the user's desktop;
 //! - `game_pid()`: the running game's process ID;
-//! - `system_font(file)`: a font file of the system, by its file name;
+//! - `system_font(file)`, `has_system_font(file)`: a font file of the system, by its file name;
 //! - `STEAMCMD_INSTALLER_URL`, `STEAMCMD_EXE`: Valve's SteamCMD for this OS and the file that
 //!   starts it;
 //! - `STEAMCMD_STEAM_ROOT`: the folder inside SteamCMD's own one that holds its `steamapps`
 //!   (empty when it is that folder itself);
-//! - `steamcmd_missing_requirement()`: what the system lacks to run SteamCMD, if anything.
+//! - `steamcmd_missing_requirement()`: what the system lacks to run SteamCMD, if anything;
+//! - `CASE_INSENSITIVE_PATHS`: whether `C:\Mods` and `c:\mods` are the same folder.
 
 #[cfg(windows)]
 mod windows;
@@ -38,6 +39,18 @@ use std::path::PathBuf;
 pub const GAME_DATA_NAME: &str = "RimWorld by Ludeon Studios";
 /// The game's company folder.
 pub const GAME_COMPANY: &str = "Ludeon Studios";
+
+/// A path as text for comparing and as a map key: without a trailing slash, and in lower case
+/// where the file system ignores case (Windows). On Linux `Mods` and `mods` are two folders.
+pub fn path_key(path: &std::path::Path) -> String {
+    let text = path.to_string_lossy();
+    let text = text.trim_end_matches(['\\', '/']);
+    if CASE_INSENSITIVE_PATHS {
+        text.to_lowercase()
+    } else {
+        text.to_string()
+    }
+}
 
 /// The user's home folder.
 pub fn home_dir() -> Option<PathBuf> {

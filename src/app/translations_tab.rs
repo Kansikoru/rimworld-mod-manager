@@ -336,11 +336,11 @@ impl App {
         }
         let Some(dll) = self.steam_paths.steam_dll_path.clone() else {
             self.status_message = tr!(
-                "steam_api64.dll не найден — проверьте папку игры в Настройках",
-                "steam_api64.dll not found — check the game folder in Settings",
-                "找不到 steam_api64.dll — 请在设置中检查游戏文件夹"
-            )
-            .to_string();
+                "{} не найден — проверьте папку игры в Настройках",
+                "{} not found — check the game folder in Settings",
+                "找不到 {} — 请在设置中检查游戏文件夹",
+                crate::platform::STEAM_API_LIB
+            );
             return;
         };
         let ids: Vec<String> = self.translations.batch_checked.drain().collect();

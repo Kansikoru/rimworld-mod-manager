@@ -1,6 +1,7 @@
 name: Release
 
-# Push a tag like v2.0.0 to build the exe, attach it to a GitHub release and
+# Push a tag like v2.0.0 to build the exe (and, in the `linux` job, the Linux .tar.gz and
+# AppImage, added to the same release), attach it to a GitHub release and
 # upload it to Nexus Mods as a new version of the main file, next to the previous
 # one (which is not archived automatically). The bullet list of
 # the tagged version commit becomes the Nexus changelog for that version.
@@ -152,3 +153,48 @@ jobs:
         run: |
           Write-Output "::notice title=Nexus Mods::Skipped: the NEXUS_FILE_ID variable is not set. Upload the nexus-zip artifact of this run by hand."
           "Nexus Mods upload skipped (NEXUS_FILE_ID not set): upload the nexus-zip artifact by hand." >> $env:GITHUB_STEP_SUMMARY
+
+  # The Linux build, added to the same GitHub release once the Windows job has made it:
+  # a .tar.gz and an AppImage (packaging/linux/package.sh) with their SHA-256. Nexus gets
+  # the Windows zip only. Ubuntu 22.04: its older glibc lets the binary run on more systems.
+  linux:
+    needs: release
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Libraries for the window
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+
+      - name: Version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # The Linux code paths differ from Windows: checked on their own before publishing.
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Pack
+        run: sh packaging/linux/package.sh target/release/rimworld-mod-manager "${{ steps.version.outputs.version }}" dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/rimworld-mod-manager-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz
+            dist/rimworld-mod-manager-${{ steps.version.outputs.version }}-x86_64.AppImage
+            dist/rimworld-mod-manager-${{ steps.version.outputs.version }}-linux.sha256
+          fail_on_unmatched_files: true

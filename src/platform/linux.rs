@@ -12,6 +12,7 @@ pub const UNITY_EXE: &str = "RimWorldLinux";
 /// Not confirmed yet: the name of the 1.7 executable on Linux.
 pub const WAYLITH_EXE: &str = "RimWorld";
 pub const STEAM_API_LIB: &str = "libsteam_api.so";
+pub const CASE_INSENSITIVE_PATHS: bool = false;
 
 pub const STEAMCMD_INSTALLER_URL: &str = "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz";
 pub const STEAMCMD_EXE: &str = "steamcmd.sh";
@@ -93,8 +94,9 @@ pub fn steam_install_dir() -> Option<PathBuf> {
     steam_dirs().into_iter().find(|d| d.join("steamapps").is_dir())
 }
 
-/// Unity's `$XDG_CONFIG_HOME/unity3d/<company>/<product>`, and the same inside the Flatpak
-/// Steam sandbox (a game started from Flatpak Steam keeps its data there).
+/// Unity's `$XDG_CONFIG_HOME/unity3d/<company>/<product>`, the same inside the Flatpak Steam
+/// sandbox (a game started from Flatpak Steam keeps its data there), and the Windows build's
+/// `AppData\LocalLow` inside its Proton prefix (`steamapps/compatdata/294100`).
 pub fn game_data_dirs() -> Vec<PathBuf> {
     let in_config = |config: PathBuf| config.join("unity3d").join(GAME_COMPANY).join(GAME_DATA_NAME);
     let mut dirs = Vec::new();
@@ -112,6 +114,23 @@ pub fn game_data_dirs() -> Vec<PathBuf> {
                 .join("com.valvesoftware.Steam")
                 .join(".config"),
         ));
+    }
+    for steam in steam_dirs() {
+        let proton = steam
+            .join("steamapps")
+            .join("compatdata")
+            .join("294100")
+            .join("pfx")
+            .join("drive_c")
+            .join("users")
+            .join("steamuser")
+            .join("AppData")
+            .join("LocalLow")
+            .join(GAME_COMPANY)
+            .join(GAME_DATA_NAME);
+        if !dirs.contains(&proton) {
+            dirs.push(proton);
+        }
     }
     dirs
 }
@@ -144,6 +163,112 @@ fn is_game_process(comm: &str) -> bool {
         .any(|exe| name == &exe[..exe.len().min(15)])
 }
 
+/// What a process has used so far: CPU seconds (user + system, all threads), bytes read
+/// (every read, from the page cache too, like Windows counts them) and private memory, from
+/// `/proc/<pid>/stat`, `io` and `status`.
+pub fn process_usage(pid: u32) -> Option<(f64, u64, u64)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let cpu_secs = cpu_secs_from_stat(&stat)?;
+    // `io` is readable for one's own processes only; without it the reads count as 0.
+    let io = std::fs::read_to_string(format!("/proc/{pid}/io")).unwrap_or_default();
+    let read_bytes = proc_field(&io, "rchar:").unwrap_or(0);
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let private_bytes = proc_field(&status, "RssAnon:").unwrap_or(0) * 1024;
+    Some((cpu_secs, read_bytes, private_bytes))
+}
+
+/// The kernel counts CPU time in ticks of `USER_HZ`, which is 100 on Linux.
+const CLOCK_TICKS: f64 = 100.0;
+
+/// `utime` + `stime` of a `/proc/<pid>/stat` line. The name in brackets may hold spaces and
+/// brackets itself, so the fields are counted from the last `)`: the state is the first one
+/// after it, `utime` and `stime` the 12th and 13th.
+fn cpu_secs_from_stat(stat: &str) -> Option<f64> {
+    let fields: Vec<&str> = stat[stat.rfind(')')? + 1..].split_whitespace().collect();
+    let utime: u64 = fields.get(11)?.parse().ok()?;
+    let stime: u64 = fields.get(12)?.parse().ok()?;
+    Some((utime + stime) as f64 / CLOCK_TICKS)
+}
+
+/// The number after `name` in a `/proc` file of `Name: value` lines ("RssAnon:  1234 kB").
+fn proc_field(text: &str, name: &str) -> Option<u64> {
+    text.lines()
+        .find_map(|line| line.strip_prefix(name)?.split_whitespace().next()?.parse().ok())
+}
+
+/// Dedicated video memory in bytes: what the `amdgpu` driver reports for each card, else
+/// `nvidia-smi`; 0 when neither knows (Intel graphics, or a virtual machine).
+pub fn dedicated_vram() -> u64 {
+    let amd = std::fs::read_dir("/sys/class/drm")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with("card") && !n.contains('-'))
+        })
+        .filter_map(|e| {
+            std::fs::read_to_string(e.path().join("device").join("mem_info_vram_total"))
+                .ok()?
+                .trim()
+                .parse::<u64>()
+                .ok()
+        })
+        .max()
+        .unwrap_or(0);
+    if amd > 0 {
+        return amd;
+    }
+    nvidia_vram().unwrap_or(0)
+}
+
+/// `nvidia-smi` gives each card's memory in MiB, one per line.
+fn nvidia_vram() -> Option<u64> {
+    let out = std::process::Command::new("nvidia-smi")
+        .args(["--query-gpu=memory.total", "--format=csv,noheader,nounits"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.trim().parse::<u64>().ok())
+        .max()
+        .map(|mib| mib * 1024 * 1024)
+}
+
+/// Starts a game through the Steam client (`steam -applaunch <id> <args>`; the Flatpak client
+/// when `steam` isn't on the PATH): for a game only Steam can start, like the Windows build
+/// under Proton.
+pub fn launch_through_steam(app_id: u32, args: &[String]) -> Result<(), String> {
+    let args: Vec<&str> = args.iter().map(|a| a.trim()).filter(|a| !a.is_empty()).collect();
+    let id = app_id.to_string();
+    let native = std::process::Command::new("steam")
+        .args(["-applaunch", &id])
+        .args(&args)
+        .spawn();
+    if native.is_ok() {
+        return Ok(());
+    }
+    std::process::Command::new("flatpak")
+        .args(["run", "com.valvesoftware.Steam", "-applaunch", &id])
+        .args(&args)
+        .spawn()
+        .map(|_| ())
+        .map_err(|_| {
+            crate::i18n::tr!(
+                "Не нашлось ни Linux-версии игры, ни клиента Steam, чтобы её запустить",
+                "Neither the Linux build of the game nor a Steam client to start it was found",
+                "既没有找到游戏的 Linux 版本，也没有找到可启动它的 Steam 客户端"
+            )
+            .to_string()
+        })
+}
+
 /// Where fonts are installed: the system's folders and the user's own.
 fn font_dirs() -> Vec<PathBuf> {
     let mut dirs = vec![
@@ -162,13 +287,22 @@ fn font_dirs() -> Vec<PathBuf> {
 /// A font file by its name anywhere in the font folders (they keep fonts in subfolders
 /// per family, e.g. `/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc`).
 pub fn system_font(file: &str) -> Option<Vec<u8>> {
+    std::fs::read(system_font_path(file)?).ok()
+}
+
+/// Whether the system has this font file.
+pub fn has_system_font(file: &str) -> bool {
+    system_font_path(file).is_some()
+}
+
+fn system_font_path(file: &str) -> Option<PathBuf> {
     font_dirs().into_iter().find_map(|dir| {
         walkdir::WalkDir::new(dir)
             .max_depth(4)
             .into_iter()
             .flatten()
             .find(|e| e.file_type().is_file() && e.file_name().to_str().is_some_and(|n| n.eq_ignore_ascii_case(file)))
-            .and_then(|e| std::fs::read(e.path()).ok())
+            .map(|e| e.into_path())
     })
 }
 
@@ -182,6 +316,17 @@ mod tests {
         assert!(is_game_process("RimWorld\n"));
         assert!(!is_game_process("RimWorldModMan\n"));
         assert!(!is_game_process("steam\n"));
+    }
+
+    #[test]
+    fn cpu_time_and_fields_from_proc() {
+        // A name with a space and a bracket; utime 250, stime 50 ticks.
+        let stat = "1234 (Rim World) x) S 1 1234 1234 0 -1 4194560 100 0 0 0 250 50 0 0 20 0 30 0 5 0 0";
+        assert_eq!(cpu_secs_from_stat(stat), Some(3.0));
+        let status = "Name:\tRimWorldLinux\nRssAnon:\t  204800 kB\nRssFile:\t 1000 kB\n";
+        assert_eq!(proc_field(status, "RssAnon:"), Some(204_800));
+        assert_eq!(proc_field("rchar: 777\nwchar: 1\n", "rchar:"), Some(777));
+        assert_eq!(proc_field(status, "VmSwap:"), None);
     }
 
     #[test]
