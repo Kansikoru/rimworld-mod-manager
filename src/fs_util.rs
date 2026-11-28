@@ -34,6 +34,19 @@ impl From<CopyError> for io::Error {
     }
 }
 
+/// Removes a link to a folder, not the folder it points to: a junction on Windows (removed
+/// like an empty folder), a symlink elsewhere (removed like a file).
+pub fn remove_dir_link(link: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        std::fs::remove_dir(link)
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::remove_file(link)
+    }
+}
+
 /// Copies a folder with everything in it. Links and junctions are followed (a mod can be
 /// one, e.g. SteamCMD's link in the Mods folder), except one that leads back into a folder
 /// being copied: that would never end.

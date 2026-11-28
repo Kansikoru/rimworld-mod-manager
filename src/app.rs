@@ -789,10 +789,8 @@ impl App {
         let db_rules_count = community_db.rules.len();
 
         let mut opt_ignore_list = std::collections::HashSet::new();
-        if let Some(local_appdata) = std::env::var_os("LOCALAPPDATA") {
-            let ignore_path = std::path::PathBuf::from(local_appdata)
-                .join("RimWorldModManager")
-                .join("optimizer_ignore.txt");
+        {
+            let ignore_path = crate::game_install::manager_data_dir().join("optimizer_ignore.txt");
             if let Ok(content) = std::fs::read_to_string(&ignore_path) {
                 for line in content.lines() {
                     let trimmed = line.trim();

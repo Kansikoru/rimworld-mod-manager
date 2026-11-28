@@ -29,6 +29,12 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 flate2 = "1"
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
+# Linux: the window through X11 and Wayland both (eframe's default features are off above).
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.37", default-features = false, features = ["x11", "wayland"] }
+# Valve's SteamCMD for Linux comes as a .tar.gz.
+tar = "0.4"
+
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
 # The window handle, to paint the title bar in the theme's colors (eframe uses the same 0.6).

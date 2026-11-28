@@ -14,7 +14,8 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
-pub const INSTALLER_URL: &str = "https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip";
+/// Valve's SteamCMD for this OS: `steamcmd.zip` on Windows, `steamcmd_linux.tar.gz` on Linux.
+pub const INSTALLER_URL: &str = crate::platform::STEAMCMD_INSTALLER_URL;
 pub const RIMWORLD_APP_ID: &str = "294100";
 /// Items per SteamCMD run: the command line has a length limit.
 const CHUNK: usize = 150;
@@ -41,17 +42,26 @@ pub fn default_dir() -> PathBuf {
     crate::game_install::manager_data_dir().join("steamcmd")
 }
 
+/// The file that starts SteamCMD: `steamcmd.exe` on Windows, `steamcmd.sh` on Linux.
 pub fn exe_path(dir: &Path) -> PathBuf {
-    dir.join("steamcmd.exe")
+    dir.join(crate::platform::STEAMCMD_EXE)
 }
 
 pub fn is_installed(dir: &Path) -> bool {
     exe_path(dir).is_file()
 }
 
-/// Where SteamCMD puts RimWorld's Workshop items: `<dir>\steamapps\workshop\content\294100`.
+/// Where SteamCMD puts RimWorld's Workshop items: `<dir>\steamapps\workshop\content\294100`
+/// on Windows, `<dir>/Steam/steamapps/workshop/content/294100` on Linux.
 pub fn content_dir(dir: &Path) -> PathBuf {
-    dir.join("steamapps")
+    let root = crate::platform::STEAMCMD_STEAM_ROOT;
+    let library = if root.is_empty() {
+        dir.to_path_buf()
+    } else {
+        dir.join(root)
+    };
+    library
+        .join("steamapps")
         .join("workshop")
         .join("content")
         .join(RIMWORLD_APP_ID)
@@ -61,14 +71,19 @@ pub fn is_downloaded(dir: &Path, id: &str) -> bool {
     content_dir(dir).join(id).is_dir()
 }
 
-/// A mod folder inside some SteamCMD's download folder (`...\content\294100\<id>` with
-/// `steamcmd.exe` five levels up): such files may be deleted with the mod.
+/// A mod folder inside some SteamCMD's download folder (`...\content\294100\<id>`, with that
+/// SteamCMD's start file above it): such files may be deleted with the mod.
 pub fn is_steamcmd_item(path: &Path) -> bool {
     let path = plain_path(path);
+    // How far the SteamCMD folder is above an item: `content_dir` plus the item itself.
+    let depth = content_dir(Path::new("")).components().count() + 1;
     path.parent()
         .and_then(Path::file_name)
         .is_some_and(|n| n == RIMWORLD_APP_ID)
-        && path.ancestors().nth(5).is_some_and(|d| exe_path(d).is_file())
+        && path
+            .ancestors()
+            .nth(depth)
+            .is_some_and(|d| exe_path(d).is_file() && path.parent() == Some(content_dir(d).as_path()))
 }
 
 /// `\\?\C:\x` -> `C:\x` (what links and `canonicalize` return on Windows).
@@ -154,11 +169,22 @@ fn run(
         .stderr(Stdio::null());
     if let Some(dir) = exe.parent() {
         cmd.current_dir(dir);
+        // On Linux SteamCMD keeps everything in `$HOME/Steam`: its own folder as HOME keeps
+        // it all in there (and away from a Steam client in the real home).
+        #[cfg(unix)]
+        cmd.env("HOME", dir);
     }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    // A process group of its own: `steamcmd.sh` starts the real SteamCMD as a child, and a
+    // stop has to reach both.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
     }
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
     let mut out = child.stdout.take().ok_or("no output")?;
@@ -246,7 +272,13 @@ fn kill_tree(pid: u32) {
     }
     #[cfg(not(windows))]
     {
-        let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+        // The whole group (`run` starts SteamCMD as the leader of one).
+        let _ = Command::new("kill")
+            .args(["-9", "--", &format!("-{pid}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 }
 
@@ -259,7 +291,7 @@ pub fn stop(kill: &KillSwitch) {
     }
 }
 
-/// Downloads Valve's installer and unpacks `steamcmd.exe` into `dir`.
+/// Downloads Valve's installer and unpacks SteamCMD into `dir`.
 pub fn download_installer(dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(120)).build();
@@ -270,6 +302,29 @@ pub fn download_installer(dir: &Path) -> Result<(), String> {
         .take(MAX_INSTALLER)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
+    unpack_installer(&bytes, dir)
+}
+
+/// Linux: the `.tar.gz` holds `steamcmd.sh` and the `linux32` folder, unpacked with their
+/// run permissions. `unpack_in` keeps every file inside `dir`.
+#[cfg(not(windows))]
+fn unpack_installer(bytes: &[u8], dir: &Path) -> Result<(), String> {
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(bytes));
+    archive.set_preserve_permissions(true);
+    for entry in archive.entries().map_err(|e| e.to_string())? {
+        let mut entry = entry.map_err(|e| e.to_string())?;
+        entry.unpack_in(dir).map_err(|e| e.to_string())?;
+    }
+    if is_installed(dir) {
+        Ok(())
+    } else {
+        Err(format!("{} not found in the installer", crate::platform::STEAMCMD_EXE))
+    }
+}
+
+/// Windows: `steamcmd.exe` from the `.zip`.
+#[cfg(windows)]
+fn unpack_installer(bytes: &[u8], dir: &Path) -> Result<(), String> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?;
     let mut file = zip.by_name("steamcmd.exe").map_err(|e| e.to_string())?;
     let mut exe = Vec::new();
@@ -312,7 +367,7 @@ pub fn link_into_mods(source: &Path, mods_dir: &Path, id: &str) -> Result<Linked
             return Ok(Linked::Already);
         }
         // A link to somewhere else (an old SteamCMD folder): replaced.
-        std::fs::remove_dir(&target).map_err(|e| e.to_string())?;
+        crate::fs_util::remove_dir_link(&target).map_err(|e| e.to_string())?;
     } else if target.exists() {
         return Ok(Linked::OwnCopy);
     }
@@ -477,6 +532,10 @@ impl Job {
 /// watchdog: an update in the middle of a download could hang it with no way to tell.
 /// Err = the phase the job ends with.
 fn prepare(dir: &Path, kill: &KillSwitch, send: &dyn Fn(Msg)) -> Result<(), Phase> {
+    // A system that can't run it at all (Linux without 32-bit libraries): say what to install.
+    if let Some(missing) = crate::platform::steamcmd_missing_requirement() {
+        return Err(Phase::Failed(missing));
+    }
     if !is_installed(dir) {
         send(Msg::Phase(Phase::Installing));
         download_installer(dir).map_err(Phase::Failed)?;
@@ -498,7 +557,7 @@ fn prepare(dir: &Path, kill: &KillSwitch, send: &dyn Fn(Msg)) -> Result<(), Phas
     if is_installed(dir) {
         Ok(())
     } else {
-        Err(Phase::Failed("steamcmd.exe".to_string()))
+        Err(Phase::Failed(crate::platform::STEAMCMD_EXE.to_string()))
     }
 }
 
@@ -782,7 +841,7 @@ mod tests {
         assert_eq!(link_into_mods(&item, &mods, "43"), Ok(Linked::OwnCopy));
 
         // Removing the link keeps the downloaded files.
-        std::fs::remove_dir(mods.join("42")).unwrap();
+        crate::fs_util::remove_dir_link(&mods.join("42")).unwrap();
         assert!(item.join("About").join("About.xml").is_file());
         let _ = std::fs::remove_dir_all(&root);
     }

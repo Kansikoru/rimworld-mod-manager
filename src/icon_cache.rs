@@ -19,13 +19,10 @@ impl IconDiskCache {
         Self { cache_dir }
     }
 
-    /// `%LOCALAPPDATA%\RimWorldModManager\cache\thumbnails`, or `<exe dir>\cache\thumbnails`.
+    /// `<manager data>/cache/thumbnails`, or `<exe dir>/cache/thumbnails`.
     pub fn default_cache_dir() -> PathBuf {
-        if let Some(local_appdata) = std::env::var_os("LOCALAPPDATA") {
-            return PathBuf::from(local_appdata)
-                .join("RimWorldModManager")
-                .join("cache")
-                .join("thumbnails");
+        if let Some(base) = crate::platform::manager_data_base() {
+            return base.join("RimWorldModManager").join("cache").join("thumbnails");
         }
         if let Ok(exe) = std::env::current_exe() {
             if let Some(dir) = exe.parent() {

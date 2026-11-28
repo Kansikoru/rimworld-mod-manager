@@ -2069,6 +2069,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn backup_path_keeps_folders() {
+        let root = PathBuf::from("/backup");
+        let p = backup_path_for(&root, Path::new("/mnt/games/Steam/294100/123/Textures/a.png"));
+        assert_eq!(p, PathBuf::from("/backup/mnt/games/Steam/294100/123/Textures/a.png"));
+    }
+
+    #[cfg(windows)]
     #[test]
     fn backup_path_keeps_drive_and_folders() {
         let root = PathBuf::from(r"C:\backup");

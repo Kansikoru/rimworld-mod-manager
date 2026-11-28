@@ -458,6 +458,7 @@ mod tests {
         assert!(same.matches());
     }
 
+    #[cfg(windows)]
     #[test]
     fn saves_folder_is_next_to_config() {
         let cfg =
@@ -465,6 +466,16 @@ mod tests {
         assert_eq!(
             saves_dir(cfg).unwrap(),
             PathBuf::from(r"C:\Users\u\AppData\LocalLow\Ludeon Studios\RimWorld by Ludeon Studios\Saves")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saves_folder_is_next_to_config() {
+        let cfg = Path::new("/home/u/.config/unity3d/Ludeon Studios/RimWorld by Ludeon Studios/Config/ModsConfig.xml");
+        assert_eq!(
+            saves_dir(cfg).unwrap(),
+            PathBuf::from("/home/u/.config/unity3d/Ludeon Studios/RimWorld by Ludeon Studios/Saves")
         );
     }
 

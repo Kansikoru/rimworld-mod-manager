@@ -46,10 +46,8 @@ impl App {
             self.optimizer.ignore_list.insert(lower);
         }
 
-        if let Some(local_appdata) = std::env::var_os("LOCALAPPDATA") {
-            let ignore_path = std::path::PathBuf::from(local_appdata)
-                .join("RimWorldModManager")
-                .join("optimizer_ignore.txt");
+        {
+            let ignore_path = crate::game_install::manager_data_dir().join("optimizer_ignore.txt");
 
             let content = self
                 .optimizer

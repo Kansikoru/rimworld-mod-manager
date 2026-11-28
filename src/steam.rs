@@ -1,8 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
-use winreg::RegKey;
 
 use crate::game_install::{self, GameEngine};
 use crate::i18n::tr;
@@ -45,17 +43,19 @@ impl SteamPaths {
     }
 }
 
-/// steam_api64.dll next to Steam itself or next to this manager's exe.
+/// The Steam API library (`steam_api64.dll` / `libsteam_api.so`) next to Steam itself or
+/// next to this manager's executable.
 fn fallback_steam_dll() -> Option<PathBuf> {
+    let lib = crate::platform::STEAM_API_LIB;
     let mut candidates = Vec::new();
     if let Some(s_dir) = get_steam_install_dir() {
-        candidates.push(s_dir.join("steam_api64.dll"));
+        candidates.push(s_dir.join(lib));
     }
     if let Some(exe_dir) = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(Path::to_path_buf))
     {
-        candidates.push(exe_dir.join("steam_api64.dll"));
+        candidates.push(exe_dir.join(lib));
     }
     candidates.into_iter().find(|p| p.is_file())
 }
@@ -112,27 +112,7 @@ pub fn detect_steam_paths() -> SteamPaths {
 }
 
 fn get_steam_install_dir() -> Option<PathBuf> {
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    if let Ok(steam_key) = hkcu.open_subkey(r"Software\Valve\Steam") {
-        if let Ok(val) = steam_key.get_value::<String, _>("SteamPath") {
-            let p = PathBuf::from(val);
-            if p.exists() {
-                return Some(p);
-            }
-        }
-    }
-
-    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-    if let Ok(steam_key) = hklm.open_subkey(r"SOFTWARE\WOW6432Node\Valve\Steam") {
-        if let Ok(val) = steam_key.get_value::<String, _>("InstallPath") {
-            let p = PathBuf::from(val);
-            if p.exists() {
-                return Some(p);
-            }
-        }
-    }
-
-    None
+    crate::platform::steam_install_dir()
 }
 
 static LIBRARYFOLDERS_PATH_RE: std::sync::LazyLock<regex::Regex> =

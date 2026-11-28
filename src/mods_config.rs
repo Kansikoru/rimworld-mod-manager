@@ -6,13 +6,10 @@ use std::path::{Path, PathBuf};
 
 use crate::i18n::tr;
 
-/// The game's own data folder (`...\LocalLow\Ludeon Studios\RimWorld by Ludeon Studios`),
-/// where it keeps Config and Saves unless started with `-savedatafolder`.
+/// The game's own data folder (`...\LocalLow\Ludeon Studios\RimWorld by Ludeon Studios` on
+/// Windows), where it keeps Config and Saves unless started with `-savedatafolder`.
 pub fn default_save_data_dir() -> Option<PathBuf> {
-    let local_low = std::env::var_os("USERPROFILE")
-        .map(|p| PathBuf::from(p).join("AppData").join("LocalLow"))
-        .or_else(|| std::env::var_os("APPDATA").and_then(|a| Some(PathBuf::from(a).parent()?.join("LocalLow"))))?;
-    Some(local_low.join("Ludeon Studios").join("RimWorld by Ludeon Studios"))
+    crate::platform::game_data_dir()
 }
 
 /// The `-savedatafolder` the game must get so it reads `config` (`<folder>\Config\ModsConfig.xml`):
@@ -33,37 +30,12 @@ pub fn save_data_folder_for(config: &Path, default_dir: Option<&Path>) -> Option
     }
 }
 
+/// `Config/ModsConfig.xml` in the game's data folder, the first one that exists.
 pub fn get_default_mods_config_path() -> Option<PathBuf> {
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let appdata_path = Path::new(&appdata);
-        // %APPDATA%\..\LocalLow\...
-        if let Some(parent) = appdata_path.parent() {
-            let config_path = parent
-                .join("LocalLow")
-                .join("Ludeon Studios")
-                .join("RimWorld by Ludeon Studios")
-                .join("Config")
-                .join("ModsConfig.xml");
-            if config_path.exists() {
-                return Some(config_path);
-            }
-        }
-    }
-
-    if let Ok(userprofile) = std::env::var("USERPROFILE") {
-        let config_path = Path::new(&userprofile)
-            .join("AppData")
-            .join("LocalLow")
-            .join("Ludeon Studios")
-            .join("RimWorld by Ludeon Studios")
-            .join("Config")
-            .join("ModsConfig.xml");
-        if config_path.exists() {
-            return Some(config_path);
-        }
-    }
-
-    None
+    crate::platform::game_data_dirs()
+        .into_iter()
+        .map(|dir| dir.join("Config").join("ModsConfig.xml"))
+        .find(|p| p.exists())
 }
 
 pub fn load_active_mods(config_path: &Path) -> Vec<String> {
@@ -522,6 +494,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn save_data_folder_only_when_config_is_elsewhere_on_linux() {
+        let default = Path::new("/home/u/.config/unity3d/Ludeon Studios/RimWorld by Ludeon Studios");
+        let own = default.join("Config").join("ModsConfig.xml");
+        assert_eq!(save_data_folder_for(&own, Some(default)), None);
+        let portable = Path::new("/games/RimWorld/SaveData/Config/ModsConfig.xml");
+        assert_eq!(
+            save_data_folder_for(portable, Some(default)),
+            Some(PathBuf::from("/games/RimWorld/SaveData"))
+        );
+        assert_eq!(
+            save_data_folder_for(Path::new("/tmp/ModsConfig.xml"), Some(default)),
+            None
+        );
+    }
+
+    #[cfg(windows)]
     #[test]
     fn save_data_folder_only_when_config_is_elsewhere() {
         let default = Path::new(r"C:\Users\u\AppData\LocalLow\Ludeon Studios\RimWorld by Ludeon Studios");

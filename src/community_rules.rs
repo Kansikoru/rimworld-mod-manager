@@ -175,7 +175,7 @@ pub fn download_rules() -> Result<usize, String> {
 
 /// Where a RimPy install keeps its copy of the rules, if one is found on the desktop.
 pub fn find_rimpy_rules_dir() -> Option<PathBuf> {
-    let desktop = PathBuf::from(std::env::var_os("USERPROFILE")?).join("Desktop");
+    let desktop = crate::platform::desktop_dir()?;
     std::fs::read_dir(&desktop)
         .ok()?
         .flatten()

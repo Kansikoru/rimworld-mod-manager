@@ -29,6 +29,7 @@ pub mod modlists;
 pub mod mods_config;
 pub mod name_search;
 pub mod optimizer;
+pub mod platform;
 pub mod relations;
 pub mod saves;
 pub mod scanner;

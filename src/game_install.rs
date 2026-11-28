@@ -29,8 +29,8 @@ impl GameEngine {
     }
 }
 
-pub const UNITY_EXE: &str = "RimWorldWin64.exe";
-pub const WAYLITH_EXE: &str = "RimWorld.exe";
+/// The game's executables on this OS (1.6 Unity, 1.7 Waylith).
+pub use crate::platform::{UNITY_EXE, WAYLITH_EXE};
 
 /// Detects the engine from the files in the game folder.
 pub fn detect_engine(game_dir: &Path) -> GameEngine {
@@ -86,46 +86,26 @@ pub fn game_exe_path(game_dir: &Path, engine: GameEngine) -> Option<PathBuf> {
     candidates.iter().map(|name| game_dir.join(name)).find(|p| p.is_file())
 }
 
-/// `steam_api64.dll` shipped with the game: game root (1.7) or Unity plugin folder (1.6).
+/// The Steam API library shipped with the game (`steam_api64.dll` / `libsteam_api.so`):
+/// the game root (1.7) or Unity's plugin folder (1.6).
 pub fn game_steam_dll_path(game_dir: &Path) -> Option<PathBuf> {
-    [
-        game_dir.join("steam_api64.dll"),
-        game_dir
-            .join("RimWorldWin64_Data")
-            .join("Plugins")
-            .join("x86_64")
-            .join("steam_api64.dll"),
-    ]
-    .into_iter()
-    .find(|p| p.is_file())
+    crate::platform::steam_api_in_game(game_dir)
+        .into_iter()
+        .find(|p| p.is_file())
 }
 
-/// RimWorld user data folder: `%USERPROFILE%\AppData\LocalLow\Ludeon Studios\RimWorld by Ludeon Studios`.
+/// RimWorld's user data folder (Config, Saves, ModLists, Player.log) that exists: on
+/// Windows `%USERPROFILE%\AppData\LocalLow\Ludeon Studios\RimWorld by Ludeon Studios`,
+/// on Linux `~/.config/unity3d/Ludeon Studios/RimWorld by Ludeon Studios`.
 pub fn user_data_dir() -> Option<PathBuf> {
-    let candidates = [
-        std::env::var_os("USERPROFILE").map(|p| {
-            PathBuf::from(p)
-                .join("AppData")
-                .join("LocalLow")
-                .join("Ludeon Studios")
-                .join("RimWorld by Ludeon Studios")
-        }),
-        std::env::var_os("LOCALAPPDATA").and_then(|p| {
-            PathBuf::from(p).parent().map(|parent| {
-                parent
-                    .join("LocalLow")
-                    .join("Ludeon Studios")
-                    .join("RimWorld by Ludeon Studios")
-            })
-        }),
-    ];
-    candidates.into_iter().flatten().find(|p| p.is_dir())
+    crate::platform::game_data_dirs().into_iter().find(|p| p.is_dir())
 }
 
-/// The manager's own data folder: `%LOCALAPPDATA%\RimWorldModManager` (created if missing).
+/// The manager's own data folder (created if missing): `%LOCALAPPDATA%\RimWorldModManager`
+/// on Windows, `~/.local/share/RimWorldModManager` on Linux.
 pub fn manager_data_dir() -> PathBuf {
-    let dir = if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        PathBuf::from(local).join("RimWorldModManager")
+    let dir = if let Some(base) = crate::platform::manager_data_base() {
+        base.join("RimWorldModManager")
     } else if let Some(exe_dir) = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(Path::to_path_buf))
@@ -138,38 +118,14 @@ pub fn manager_data_dir() -> PathBuf {
     dir
 }
 
-/// Whether RimWorld is running right now (1.6: RimWorldWin64.exe, 1.7: RimWorld.exe).
+/// Whether RimWorld is running right now (either engine).
 pub fn is_game_running() -> bool {
     game_pid().is_some()
 }
 
 /// Process ID of the running game (either engine), if any.
 pub fn game_pid() -> Option<u32> {
-    let mut cmd = std::process::Command::new("tasklist");
-    cmd.args(["/NH", "/FO", "CSV"]);
-    #[cfg(windows)]
-    {
-        // No console window flashing: this app has no console of its own.
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    let out = cmd.output().ok()?;
-    find_game_pid(&String::from_utf8_lossy(&out.stdout))
-}
-
-/// The game's PID in `tasklist /NH /FO CSV` output. Rows start with the quoted image name
-/// and PID: "RimWorldWin64.exe","1234",...
-fn find_game_pid(list: &str) -> Option<u32> {
-    let exes = [UNITY_EXE.to_lowercase(), WAYLITH_EXE.to_lowercase()];
-    list.lines().find_map(|row| {
-        let mut cols = row.split(',').map(|c| c.trim().trim_matches('"'));
-        let name = cols.next()?.to_lowercase();
-        if !exes.contains(&name) {
-            return None;
-        }
-        cols.next()?.parse().ok()
-    })
+    crate::platform::game_pid()
 }
 
 /// What the game process is doing right now (F11): CPU time used so far (user + kernel, all
@@ -406,22 +362,6 @@ mod tests {
     }
 
     #[test]
-    fn game_pid_is_read_from_tasklist_csv() {
-        let list = "\"System\",\"4\",\"Services\",\"0\",\"144 K\"\r\n\
-                    \"RimWorldWin64.exe\",\"12345\",\"Console\",\"1\",\"3,104,220 K\"\r\n";
-        assert_eq!(find_game_pid(list), Some(12345));
-        assert_eq!(
-            find_game_pid("\"RimWorld.exe\",\"77\",\"Console\",\"1\",\"1 K\""),
-            Some(77)
-        );
-        // A name that only contains the exe name is another program.
-        assert_eq!(
-            find_game_pid("\"MyRimWorldWin64.exe\",\"9\",\"Console\",\"1\",\"1 K\""),
-            None
-        );
-    }
-
-    #[test]
     fn parses_major_minor() {
         assert_eq!(major_minor("1.7.4985 rev1269").as_deref(), Some("1.7"));
         assert_eq!(major_minor("1.6.4871 rev591").as_deref(), Some("1.6"));
@@ -438,13 +378,15 @@ mod tests {
 
     #[test]
     fn detects_waylith_layout() {
+        // The file names of the OS the test runs on (RimWorld.exe / RimWorld, ...).
         let dir = temp_dir("waylith");
-        std::fs::write(dir.join("RimWorld.exe"), b"").unwrap();
+        let lib = crate::platform::STEAM_API_LIB;
+        std::fs::write(dir.join(WAYLITH_EXE), b"").unwrap();
         std::fs::write(dir.join("Waylith.dll"), b"").unwrap();
-        std::fs::write(dir.join("steam_api64.dll"), b"").unwrap();
+        std::fs::write(dir.join(lib), b"").unwrap();
         assert_eq!(detect_engine(&dir), GameEngine::Waylith);
-        assert_eq!(game_exe_path(&dir, GameEngine::Waylith), Some(dir.join("RimWorld.exe")));
-        assert_eq!(game_steam_dll_path(&dir), Some(dir.join("steam_api64.dll")));
+        assert_eq!(game_exe_path(&dir, GameEngine::Waylith), Some(dir.join(WAYLITH_EXE)));
+        assert_eq!(game_steam_dll_path(&dir), Some(dir.join(lib)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -491,17 +433,15 @@ mod tests {
 
     #[test]
     fn detects_unity_layout() {
+        // Unity keeps the Steam library in its plugin folder (the last place looked at).
         let dir = temp_dir("unity");
-        std::fs::write(dir.join("RimWorldWin64.exe"), b"").unwrap();
-        let plugins = dir.join("RimWorldWin64_Data").join("Plugins").join("x86_64");
-        std::fs::create_dir_all(&plugins).unwrap();
-        std::fs::write(plugins.join("steam_api64.dll"), b"").unwrap();
+        std::fs::write(dir.join(UNITY_EXE), b"").unwrap();
+        let lib = crate::platform::steam_api_in_game(&dir).pop().unwrap();
+        std::fs::create_dir_all(lib.parent().unwrap()).unwrap();
+        std::fs::write(&lib, b"").unwrap();
         assert_eq!(detect_engine(&dir), GameEngine::Unity);
-        assert_eq!(
-            game_exe_path(&dir, GameEngine::Unity),
-            Some(dir.join("RimWorldWin64.exe"))
-        );
-        assert_eq!(game_steam_dll_path(&dir), Some(plugins.join("steam_api64.dll")));
+        assert_eq!(game_exe_path(&dir, GameEngine::Unity), Some(dir.join(UNITY_EXE)));
+        assert_eq!(game_steam_dll_path(&dir), Some(lib));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

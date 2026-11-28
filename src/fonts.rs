@@ -1,15 +1,12 @@
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily, FontId, FontTweak, TextStyle};
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::ui_prefs::UiPrefs;
 
+/// A font of the system by its file name (`C:\Windows\Fonts` on Windows, the font folders
+/// on Linux).
 fn windows_font(name: &str) -> Option<Vec<u8>> {
-    let dir = std::env::var_os("WINDIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("C:\\Windows"))
-        .join("Fonts");
-    std::fs::read(dir.join(name)).ok()
+    crate::platform::system_font(name)
 }
 
 /// Loads the interface font chosen in the preferences and sets the base text sizes.
@@ -57,22 +54,51 @@ pub fn setup_custom_fonts(ctx: &egui::Context, prefs: &UiPrefs) {
             .insert(0, "SystemMono".to_owned());
     }
 
-    // CJK (Chinese, Japanese, Korean) fallback — loaded after the primary font
-    for (file, name) in [
-        ("msyh.ttc", "CJK_Chinese"),
-        ("meiryo.ttc", "CJK_Japanese"),
-        ("malgun.ttf", "CJK_Korean"),
+    // CJK (Chinese, Japanese, Korean) fallback — loaded after the primary font. Each
+    // script has the Windows font first, then the usual Linux ones; a file already loaded
+    // for another script (Noto CJK covers all three) isn't loaded twice.
+    let mut loaded: Vec<&str> = Vec::new();
+    for (name, files) in [
+        (
+            "CJK_Chinese",
+            &[
+                "msyh.ttc",
+                "NotoSansCJK-Regular.ttc",
+                "NotoSansCJKsc-Regular.otf",
+                "wqy-microhei.ttc",
+                "wqy-zenhei.ttc",
+                "DroidSansFallbackFull.ttf",
+            ][..],
+        ),
+        (
+            "CJK_Japanese",
+            &["meiryo.ttc", "NotoSansCJK-Regular.ttc", "NotoSansCJKjp-Regular.otf"][..],
+        ),
+        (
+            "CJK_Korean",
+            &["malgun.ttf", "NotoSansCJK-Regular.ttc", "NotoSansCJKkr-Regular.otf"][..],
+        ),
     ] {
-        if let Some(bytes) = windows_font(file) {
-            fonts
-                .font_data
-                .insert(name.to_owned(), Arc::new(FontData::from_owned(bytes)));
-            fonts
-                .families
-                .entry(FontFamily::Proportional)
-                .or_default()
-                .push(name.to_owned());
+        let mut found = None;
+        for file in files {
+            if loaded.contains(file) {
+                break;
+            }
+            if let Some(bytes) = windows_font(file) {
+                found = Some((*file, bytes));
+                break;
+            }
         }
+        let Some((file, bytes)) = found else { continue };
+        loaded.push(file);
+        fonts
+            .font_data
+            .insert(name.to_owned(), Arc::new(FontData::from_owned(bytes)));
+        fonts
+            .families
+            .entry(FontFamily::Proportional)
+            .or_default()
+            .push(name.to_owned());
     }
 
     // Emoji / symbols fallback
