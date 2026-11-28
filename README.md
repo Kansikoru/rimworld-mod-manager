@@ -11,7 +11,7 @@ A mod and load order manager for RimWorld 1.6 (Unity) and 1.7 (Waylith). Written
 The ready-to-run program is in the **[Releases](https://github.com/Kansikoru/rimworld-mod-manager/releases/latest)** section of this repository. No installation needed.
 
 - **Windows:** download `rimworld-mod-manager.exe` and run it.
-- **Linux** (from version 2.2.2): download `rimworld-mod-manager-<version>-x86_64.AppImage`, make it executable (`chmod +x`, or "Allow executing" in the file's properties) and run it. There is also `rimworld-mod-manager-<version>-linux-x86_64.tar.gz` with the program, its icon and a `.desktop` file. Supports the native Linux RimWorld and with the Windows one under Proton; Steam from the package manager, Flatpak or Snap is found.
+- **Linux** (from version 2.2.2): download `rimworld-mod-manager-<version>-x86_64.AppImage`, make it executable (`chmod +x`, or "Allow executing" in the file's properties) and run it. There is also `rimworld-mod-manager-<version>-linux-x86_64.tar.gz` with the program, its icon and a `.desktop` file. Supports the native Linux RimWorld and the Windows one under Proton; Steam from the package manager, Flatpak or Snap is found.
 
 > **The Linux version is new.** So far it has only been tested on Windows through WSL (CachyOS), not yet on a real Linux machine or a Steam Deck. If something doesn't work, please [report it](https://github.com/Kansikoru/rimworld-mod-manager/issues/new?template=bug_report.yml). SteamCMD on Linux needs the 32-bit libraries — the program says which package to install.
 
