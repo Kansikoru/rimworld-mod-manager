@@ -1,0 +1,76 @@
+name: Linux release
+
+# Builds the Linux version of a release tag and adds it to that GitHub release: a .tar.gz
+# and an AppImage (packaging/linux/package.sh) with their SHA-256. Nexus gets nothing from
+# here (it keeps getting the Windows zip from release.yml).
+#
+# release.yml calls this after the Windows release is made. It can also be run by hand
+# (Actions > Linux release > Run workflow) for a tag whose Linux files are missing; the
+# Windows files and Nexus are left alone then.
+#
+# Ubuntu 22.04: a binary built against its older glibc runs on more distributions (and on
+# SteamOS).
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag with a GitHub release already made, e.g. v2.2.2"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The window libraries for the build; desktop-file-validate, which appimagetool
+      # refuses to work without.
+      - name: Packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev desktop-file-utils
+
+      - name: Version
+        id: version
+        env:
+          TAG: ${{ inputs.tag }}
+        run: echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      # The Linux code paths differ from Windows: checked on their own before publishing.
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Pack
+        run: sh packaging/linux/package.sh target/release/rimworld-mod-manager "${{ steps.version.outputs.version }}" dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: |
+            dist/rimworld-mod-manager-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz
+            dist/rimworld-mod-manager-${{ steps.version.outputs.version }}-x86_64.AppImage
+            dist/rimworld-mod-manager-${{ steps.version.outputs.version }}-linux.sha256
+          fail_on_unmatched_files: true
